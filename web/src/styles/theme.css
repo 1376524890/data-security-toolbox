@@ -1,0 +1,72 @@
+/* =========================================================
+   数据安全检测工具箱 - 全局主题（方案 A · 清渊蓝）
+   WCAG AA 对比度：正文 ≥ 4.5:1
+   本文件为唯一色值来源，各视图通过 var() 引用，禁用散落 hardcode
+   ========================================================= */
+
+:root {
+  /* ---- 主色调 ---- */
+  --color-primary: #2563eb;          /* 按钮/激活/链接/主强调 */
+  --color-primary-hover: #1d4ed8;    /* hover 加深 */
+  --color-primary-light: #93c5fd;    /* 浅蓝高亮（深底激活文本） */
+
+  /* ---- 背景 ---- */
+  --bg-app: #f4f6fb;                 /* 主内容区背景 */
+  --bg-card: #ffffff;                /* 卡片/面板/表格背景 */
+  --bg-aside: #0f172a;               /* 侧栏背景 */
+  --bg-aside-sub: #1e293b;           /* 侧栏子菜单背景 */
+  --bg-code: #f6f7f9;                /* 代码/预格式化背景 */
+
+  /* ---- 文本色（含对比度）---- */
+  --text-primary: #1f2937;           /* 主文本/标题 (对 #fff ≈15:1) */
+  --text-secondary: #4b5563;         /* 次要文本/标签 小字号 (对 #fff ≈7:1) */
+  --text-muted: #6b7280;             /* 弱化文本/图标 (对 #fff 4.83:1) */
+  --text-on-dark: #e2e8f0;           /* 深底主文本 (侧栏菜单) */
+  --text-on-dark-sub: #cbd5e1;       /* 深底子菜单文本 */
+  --text-on-dark-active: #ffffff;    /* 深底激活项 */
+
+  /* ---- 边框 ---- */
+  --border-color: #e5e7eb;
+  --border-dark: rgba(255, 255, 255, 0.1);
+
+  /* ---- 语义色（状态/标签，已校对比度）---- */
+  --color-success: #047857;          /* 成功/online (对 #fff ≈5.5:1) */
+  --color-warning: #b45309;          /* 警告/pending (对 #fff ≈4.5:1) */
+  --color-danger: #b91c1c;           /* 危险/危险 (对 #fff ≈6:1) */
+  --color-info: #4b5563;             /* 中性标签文本 */
+  --tag-ok-bg: #d1fae5;              /* 成功标签浅底 */
+  --tag-warn-bg: #fef3c7;            /* 警告标签浅底 */
+  --tag-info-bg: #e5e7eb;            /* 中性标签浅底 */
+
+  /* ---- 圆角 ---- */
+  --radius: 10px;
+  --radius-sm: 6px;
+
+  /* ---- 间距（统一）---- */
+  --space: 16px;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+/* =========================================================
+   Element Plus 主色统一覆盖（使按钮/标签/表格与主题一致）
+   ========================================================= */
+:root {
+  --el-color-primary: var(--color-primary);
+  --el-color-primary-dark-2: var(--color-primary-hover);
+  --el-color-primary-light-3: #7c9bef;  /* 认证用的浅蓝按钮底 */
+  --el-color-primary-light-5: #a9c4f5;
+  --el-color-primary-light-7: #d6e3fa;
+  --el-color-primary-light-8: #e8effc;
+  --el-color-primary-light-9: #eef3fe;
+  --el-border-color-lighter: var(--border-color);
+  --el-fill-color-light: #f7fafd;
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-muted);
+  --el-bg-color: var(--bg-card);
+
+  --el-success-color: var(--color-success);
+  --el-warning-color: var(--color-warning);
+  --el-danger-color: var(--color-danger);
+  --el-info-color: var(--color-info);
+}

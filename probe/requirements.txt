@@ -1,0 +1,8 @@
+# 探针依赖（阶段一 + 阶段二资产扫描）
+requests
+psutil
+pyyaml
+python-nmap
+
+# 可选：若需要 ExifTool 之外的 Python 原生 EXIF 解析
+# python-exif

@@ -1,0 +1,84 @@
+# 数据安全检测工具箱 —— 部署编排
+# 架构：Nginx(前端) + FastAPI(后端) + Celery Worker + PostgreSQL + Redis
+# 用法：docker-compose up -d --build
+version: "3.9"
+
+services:
+  # ---------- 数据存储 ----------
+  postgres:
+    image: postgres:16-alpine
+    container_name: toolbox-postgres
+    environment:
+      POSTGRES_USER: toolbox
+      POSTGRES_PASSWORD: toolbox
+      POSTGRES_DB: toolbox
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toolbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [toolbox-net]
+
+  redis:
+    image: redis:7-alpine
+    container_name: toolbox-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [toolbox-net]
+
+  # ---------- 后端 API ----------
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    container_name: toolbox-backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://toolbox:toolbox@postgres:5432/toolbox
+      REDIS_URL: redis://redis:6379/0
+      TOOLBOX_UPLOAD_DIR: /data/uploads
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [toolbox-net]
+
+  # ---------- 异步任务 Worker（Celery） ----------
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    container_name: toolbox-worker
+    command: celery -A server.celery_app:celery_app worker -l info
+    environment:
+      DATABASE_URL: postgresql+psycopg2://toolbox:toolbox@postgres:5432/toolbox
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [toolbox-net]
+
+  # ---------- 前端 + 反向代理 ----------
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    container_name: toolbox-frontend
+    depends_on: [backend]
+    ports:
+      - "80:80"
+    networks: [toolbox-net]
+
+networks:
+  toolbox-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  uploads:

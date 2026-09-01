@@ -1,0 +1,28 @@
+# 探针配置文件示例
+server:
+  url: http://localhost:8000/api
+  token: ""
+
+collect:
+  metadata:
+    enabled: true
+    scan_dirs: ["./samples"]
+    file_types: [jpg, png, pdf, docx, mp3, mp4]
+  traffic:
+    enabled: false
+    interface: eth0
+    duration: 60
+  system:
+    enabled: true
+    interval: 300
+  asset:
+    enabled: false
+    scan_type: quick
+    scan_hosts: [192.168.1.0/24]
+    db_detect: true
+
+report:
+  interval: 30
+  max_pcap_size: 100
+  retry_count: 3
+  local_cache: ./data/probe_cache

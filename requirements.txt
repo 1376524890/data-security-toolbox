@@ -1,0 +1,8 @@
+# 全仓统一依赖：先安装后端，再按需安装探针
+# 后端：
+#   pip install -r server/requirements.txt
+# 探针：
+#   pip install -r probe/requirements.txt
+# 运行时（开发）：
+#   uvicorn server.app:app --reload --port 8000
+#   python -m probe.main --once

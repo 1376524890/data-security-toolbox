@@ -1,0 +1,15 @@
+# 后端依赖（阶段一 + 阶段三协议分析）
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pydantic
+celery
+redis
+python-multipart
+
+# 协议分析
+dpkt               # 纯 Python pcap 解析
+pyshark            # 可选：需安装 tshark 才能工作
+# opendlp          # 数据资产识别（阶段二，可选安装）
+# scikit-learn     # 算法评估（阶段五）

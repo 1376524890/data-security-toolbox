@@ -1,0 +1,42 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints
+
+# ---- Node / 前端 ----
+node_modules/
+web/node_modules/
+web/dist/
+dist/
+npm-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# ---- IDE / 编辑器 ----
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ---- 环境 / 密钥 ----
+.env
+.env.*
+*.local
+config.local.yaml
+
+# ---- Docker 数据卷缓存 ----
+deploy/pgdata/
+deploy/redis-data/
+
+# ---- 测试 / 临时 ----
+samples/
+*.pcap
+*.py

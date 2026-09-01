@@ -1,0 +1,38 @@
+# FastAPI 后端镜像
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# 系统依赖（pcap 解析可选用 dpkt，纯 Python 无需额外库）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 先复制依赖以利用缓存
+COPY server/requirements.txt server/requirements.txt
+COPY probe/requirements.txt probe/requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r server/requirements.txt \
+    && pip install -r probe/requirements.txt
+
+# 复制源码
+COPY server ./server
+COPY shared ./shared
+COPY probe ./probe
+
+# 上传/暂存目录
+RUN mkdir -p /data/uploads /tmp/toolbox_uploads && \
+    chmod -R 777 /data /tmp/toolbox_uploads
+
+ENV TOOLBOX_UPLOAD_DIR=/data/uploads
+
+EXPOSE 8000
+
+# 启动 uvicorn（单进程以避免多 worker 并发 create_all 建表竞态；
+# 生产横向扩展可改用独立建表脚本 + 多 worker）
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
