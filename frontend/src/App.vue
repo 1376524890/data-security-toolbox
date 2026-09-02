@@ -12,6 +12,10 @@
         <el-menu-item index="/reports">报告</el-menu-item>
         <el-menu-item index="/audit">安全审计</el-menu-item>
         <el-menu-item index="/probes">探针</el-menu-item>
+        <el-menu-item index="/detections">检测结果</el-menu-item>
+        <el-menu-item index="/data-assets">数据资产</el-menu-item>
+        <el-menu-item index="/risk">风险评分</el-menu-item>
+        <el-menu-item index="/graph">关系图</el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
@@ -28,4 +32,3 @@ html, body, #app { margin: 0; height: 100%; background: #f1f5f9; }
 .logo { color: #38bdf8; font-size: 18px; font-weight: 700; padding: 20px 16px; }
 .header { background: #fff; border-bottom: 1px solid #e2e8f0; line-height: 60px; font-weight: 600; color: #1e293b; }
 </style>
-

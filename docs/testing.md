@@ -18,6 +18,15 @@ npm run build
 
 PCAP 解析使用真实 tshark 或 dpkt，测试数据在 `backend/tests/fixtures` 中生成。
 
+Benchmark：
+
+```bash
+cd backend
+python scripts/benchmark.py
+```
+
+覆盖正常流量、扫描流量、C2 流量、敏感数据文件。
+
 在已构建的后端镜像中运行测试：
 
 ```bash
