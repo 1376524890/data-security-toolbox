@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,32 @@ class PresidioAdapter(IntegrationAdapter):
     name = "presidio"
     version = "2.1.0"
     supported_types = ("text", "file")
+    capabilities = ("regex-fallback", "cn-pii", "secret", "model-metadata")
+
+    def health(self) -> dict[str, Any]:
+        try:
+            import presidio_analyzer  # noqa: F401
+
+            runtime = "presidio-analyzer"
+            status = "ready"
+            message = ""
+        except Exception:
+            runtime = "regex-fallback"
+            status = "ready"
+            message = "Presidio analyzer unavailable; regex recognizers active"
+        return {
+            "name": self.name,
+            "adapter_version": self.version,
+            "installed": True,
+            "enabled": True,
+            "healthy": True,
+            "runtime_version": runtime,
+            "supported_types": list(self.supported_types),
+            "capabilities": list(self.capabilities),
+            "last_check": datetime.now(UTC).isoformat(),
+            "status": status,
+            "message": message,
+        }
 
     def parse(self, payload: Any) -> list[dict[str, str]]:
         text = extract_text(payload)

@@ -16,8 +16,8 @@ class TrafficEngine(DetectionEngine):
     def analyze(self, context: DetectionContext) -> list[DetectionResult]:
         rule_dir = Path(__file__).resolve().parents[2] / "rules" / "network"
         findings = interpret_rules(context, rule_dir)
-        legacy = detect_anomalies(context.flows, context.packets)
-        for item in legacy:
+        builtin_anomalies = detect_anomalies(context.flows, context.packets)
+        for item in builtin_anomalies:
             findings.append(DetectionResult(
                 engine=self.name,
                 rule_id=item["rule"],

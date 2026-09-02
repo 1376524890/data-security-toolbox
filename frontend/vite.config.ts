@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
@@ -13,4 +13,4 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
   },
-})
+} as any)

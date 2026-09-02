@@ -21,7 +21,7 @@ class IntegrationRegistry:
         return list(self._adapters.values())
 
     def metadata(self) -> list[dict[str, Any]]:
-        return [item.metadata() for item in self.all()]
+        return [{**item.metadata(), **item.health()} for item in self.all()]
 
 
 integration_registry = IntegrationRegistry()

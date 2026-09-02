@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from app.engine.core.context import DetectionContext
@@ -12,6 +13,23 @@ class SuricataAdapter(IntegrationAdapter):
     name = "suricata"
     version = "2.1.0"
     supported_types = ("alert", "flow", "dns", "http", "fileinfo")
+    capabilities = ("pcap", "alert", "flow", "dns", "http", "fileinfo")
+
+    def health(self) -> dict[str, Any]:
+        runtime = self._binary_available("suricata")
+        return {
+            "name": self.name,
+            "adapter_version": self.version,
+            "installed": bool(runtime),
+            "enabled": True,
+            "healthy": bool(runtime),
+            "runtime_version": runtime,
+            "supported_types": list(self.supported_types),
+            "capabilities": list(self.capabilities),
+            "last_check": datetime.now(UTC).isoformat(),
+            "status": "ready" if runtime else "unavailable",
+            "message": "" if runtime else "Suricata binary not found",
+        }
 
     def parse(self, payload: Any) -> list[dict[str, Any]]:
         return parse_eve_payload(payload)

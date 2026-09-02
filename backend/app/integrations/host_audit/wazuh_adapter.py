@@ -1,16 +1,35 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from app.engine.core.context import DetectionContext
 from app.integrations.base import AdapterResult, IntegrationAdapter, finding, severity_map
 from app.integrations.host_audit.parsers import parse_payload
+from app.core.config import settings
 
 
 class WazuhAdapter(IntegrationAdapter):
     name = "wazuh"
     version = "2.1.0"
     supported_types = ("alert", "asset", "process", "user", "config", "log")
+    capabilities = ("alert", "asset", "process", "user", "config", "log")
+
+    def health(self) -> dict[str, Any]:
+        configured = bool(settings.wazuh_url)
+        return {
+            "name": self.name,
+            "adapter_version": self.version,
+            "installed": True,
+            "enabled": True,
+            "healthy": configured,
+            "runtime_version": settings.wazuh_url or "offline-parser",
+            "supported_types": list(self.supported_types),
+            "capabilities": list(self.capabilities),
+            "last_check": datetime.now(UTC).isoformat(),
+            "status": "ready" if configured else "unavailable",
+            "message": "" if configured else "Wazuh API not configured; offline parser available",
+        }
 
     def parse(self, payload: Any) -> list[dict[str, Any]]:
         return parse_payload(payload, "wazuh")

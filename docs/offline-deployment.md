@@ -25,7 +25,7 @@ docker compose -f docker-compose.yml -f docker-compose.integrations.yml --profil
 
 ```bash
 docker compose exec backend python -c \
-  "from app.integrations.offline import import_offline_bundle; print(import_offline_bundle('/app/app/integrations/offline_data'))"
+  "from app.core.database import SessionLocal; from app.integrations.offline_manager import import_offline_path; import pathlib; db=SessionLocal(); print(import_offline_path(db, pathlib.Path('/app/data/offline'), resource_type=None, name='bundle', version='1.0').to_dict()); db.close()"
 ```
 
 离线包目录 `dist-offline/data` 包含：

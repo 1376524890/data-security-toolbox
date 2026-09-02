@@ -21,7 +21,7 @@ def main() -> None:
         "3. docker save -o security-toolbox-images.tar postgres:16-alpine redis:7-alpine mher/flower:2.0 security-toolbox-backend security-toolbox-frontend\n"
         "4. copy security-toolbox-images.tar, dist-offline, compose files, .env to target\n"
         "5. docker compose --profile integrations up -d\n"
-        "6. docker compose exec backend python -c \"from app.integrations.offline import import_offline_bundle; print(import_offline_bundle('/app/app/integrations/offline_data'))\"\n",
+        "6. docker compose exec backend python -c \"from app.core.database import SessionLocal; from app.integrations.offline_manager import import_offline_path; import pathlib; db=SessionLocal(); print(import_offline_path(db, pathlib.Path('/app/data/offline'), resource_type=None, name='bundle', version='1.0').to_dict()); db.close()\"\n",
         encoding="utf-8",
     )
     print(f"offline instructions written to {target}")

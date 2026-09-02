@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.models import AnalysisResult, Anomaly, Asset, DataAsset, DetectionFinding, FileRecord, Flow, GraphRelation, IOC, Incident, PacketRecord, PcapRecord, Task
+from app.models import AnalysisResult, Anomaly, Asset, DataAsset, DetectionFinding, FileRecord, Flow, GraphRelation, IOC, Incident, LocalCve, PacketRecord, PcapRecord, Task
 from app.services.asset_service import classify_assets
 from app.services.metadata_service import extract_metadata
 from app.services.protocol_service import parse_pcap
@@ -26,6 +26,17 @@ incident_engine = IncidentEngine()
 
 
 def run_pipeline(context: DetectionContext, task_id: int, db=None) -> None:
+    if db is not None:
+        context.data["ioc_library"] = [
+            {"value": item.value, "type": item.ioc_type, "source": item.source}
+            for item in db.scalars(select(IOC)).all()
+        ]
+        context.data["local_cves"] = [
+            {"cve_id": item.cve_id, "severity": item.severity, "cvss_score": item.cvss_score, "description": item.description}
+            for item in db.scalars(select(LocalCve)).all()
+        ]
+        if context.data.get("local_cves"):
+            context.data["cve_lookup_enabled"] = True
     result = pipeline.run(context)
     owned = db is None
     session = db or SessionLocal()
@@ -47,6 +58,9 @@ def run_pipeline(context: DetectionContext, task_id: int, db=None) -> None:
             ))
         incidents = incident_engine.correlate(result.findings)
         for incident in incidents:
+            duplicate = session.scalar(select(Incident).where(Incident.title == incident.title, Incident.timestamp == incident.timestamp, Incident.risk_score == incident.risk_score))
+            if duplicate:
+                continue
             session.add(Incident(
                 title=incident.title,
                 severity=incident.severity,
@@ -167,6 +181,17 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
         db.add_all([Anomaly(pcap_id=pcap_id, **item) for item in anomalies])
         context = DetectionContext(target_type="pcap", target_id=str(pcap_id), path=path, flows=parsed["flows"], packets=parsed["packets"], data={"protocol_summary": parsed["protocol_summary"], "anomalies": anomalies})
         run_pipeline(context, task_id, db)
+        db.add(AnalysisResult(
+            task_id=task_id,
+            module="protocol_details",
+            content={
+                "tcp_streams": context.data.get("tcp_streams", []),
+                "dns": context.data.get("dns", {"queries": [], "high_entropy": [], "txt_large": []}),
+                "tls": context.data.get("tls", {"handshakes": [], "ja3": {}, "sni": {}}),
+                "http": context.data.get("http", {"requests": []}),
+            },
+            risk_level="Low",
+        ))
         external = external_engine_analysis(path, settings.external_engine_dir)
         if external["engines"]:
             db.add(AnalysisResult(task_id=task_id, module="external_engine", content=external, risk_level="Low"))

@@ -261,3 +261,45 @@ class SystemSetting(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class IntegrationStatus(TimestampMixin, Base):
+    __tablename__ = "integration_status"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    adapter_version: Mapped[str] = mapped_column(String(64), default="")
+    installed: Mapped[bool] = mapped_column(Boolean, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    healthy: Mapped[bool] = mapped_column(Boolean, default=False)
+    runtime_version: Mapped[str] = mapped_column(String(64), default="")
+    supported_types: Mapped[list[str]] = mapped_column(JSON, default=list)
+    capabilities: Mapped[list[str]] = mapped_column(JSON, default=list)
+    last_check: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="unavailable")
+    message: Mapped[str] = mapped_column(Text, default="")
+
+
+class OfflineResource(TimestampMixin, Base):
+    __tablename__ = "offline_resources"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    resource_type: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    version: Mapped[str] = mapped_column(String(128), default="")
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="imported", index=True)
+    storage_path: Mapped[str] = mapped_column(String(1024), default="")
+    manifest_path: Mapped[str] = mapped_column(String(1024), default="")
+    resource_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LocalCve(TimestampMixin, Base):
+    __tablename__ = "local_cves"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cve_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(128), default="offline")
+    severity: Mapped[str] = mapped_column(String(16), default="Medium", index=True)
+    cvss_score: Mapped[float] = mapped_column(Float, default=0.0)
+    published: Mapped[str] = mapped_column(String(64), default="")
+    modified: Mapped[str] = mapped_column(String(64), default="")
+    description: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

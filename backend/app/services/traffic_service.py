@@ -6,6 +6,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
+
 
 def traffic_trend(packets: list[dict[str, Any]], bucket_seconds: int = 10) -> list[dict[str, Any]]:
     buckets: dict[int, dict[str, float | int]] = defaultdict(lambda: {"packets": 0, "bytes": 0, "flows": set()})
@@ -85,7 +87,13 @@ def external_engine_analysis(pcap_path: Path, output_dir: Path) -> dict[str, Any
     if suricata:
         suricata_dir = output_dir / "suricata"
         suricata_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run([suricata, "-r", str(pcap_path), "-l", str(suricata_dir), "-q"], check=False, timeout=300)
+        command = [suricata, "-r", str(pcap_path), "-l", str(suricata_dir), "-q"]
+        rule_dir = settings.integration_dir / "suricata_rules"
+        if rule_dir.exists():
+            rule_files = sorted(rule_dir.glob("*.rules"))
+            if rule_files:
+                command = [suricata, "-r", str(pcap_path), "-l", str(suricata_dir), "-q", "-S", ",".join(str(path) for path in rule_files)]
+        subprocess.run(command, check=False, timeout=300)
         eve = suricata_dir / "eve.json"
         events = []
         if eve.exists():

@@ -57,7 +57,6 @@ def _ioc_keys(finding: DetectionResult) -> list[str]:
             if record.get(field_name):
                 keys.append(str(record[field_name]).lower())
     return sorted(set(keys))
-    return []
 
 
 def _stage(finding: DetectionResult) -> str:
@@ -106,42 +105,89 @@ class IncidentEngine:
     def correlate(self, findings: list[DetectionResult], window_seconds: int = 3600) -> list[Incident]:
         if not findings:
             return []
-        buckets: dict[tuple[str, str], list[DetectionResult]] = defaultdict(list)
-        for item in findings:
-            assets = _asset_keys(item) or ["global"]
-            iocs = _ioc_keys(item) or [""]
-            stage = _stage(item)
-            for asset in assets:
-                for ioc in iocs:
-                    buckets[(asset, ioc)].append(item)
-            buckets[(assets[0], f"stage:{stage}")].append(item)
+        ordered = sorted(findings, key=lambda item: (_parse_ts(item.timestamp), item.rule_id))
+        buckets: dict[str, list[DetectionResult]] = defaultdict(list)
+        for item in ordered:
+            for key in self._correlation_keys(item):
+                buckets[key].append(item)
         incidents: list[Incident] = []
-        for (asset, ioc), items in sorted(buckets.items(), key=lambda item: len(item[1]), reverse=True):
-            items = self._within_window(items, window_seconds)
-            if len(items) < 2:
-                continue
-            stages = sorted({_stage(item) for item in items})
-            if len(stages) < 2 and not ioc:
-                continue
-            score = max(item.risk_score for item in items)
-            level = self._level(score)
-            incidents.append(Incident(
-                id=f"INC-{asset or ioc}-{len(incidents) + 1}",
-                title=self._title(items, asset, ioc),
-                severity=_severity(items),
-                confidence=round(sum(item.confidence for item in items) / len(items), 3),
-                findings=[item.to_dict() for item in items],
-                evidence={"asset": asset, "ioc": ioc, "stages": stages, "finding_ids": [item.rule_id for item in items]},
-                risk_score=score,
-                risk_level=level,
-            ))
+        seen: set[tuple[str, ...]] = set()
+        for key, items in sorted(buckets.items(), key=lambda item: len(item[1]), reverse=True):
+            for cluster in self._time_clusters(items, window_seconds):
+                if len(cluster) < 2:
+                    continue
+                asset = self._asset_label(cluster, key)
+                ioc = self._ioc_label(cluster, key)
+                stages = sorted({_stage(item) for item in cluster})
+                if len(stages) < 2 and not ioc and not asset:
+                    continue
+                signature = tuple(sorted(self._finding_signature(item) for item in cluster))
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                score = max(item.risk_score for item in cluster)
+                incidents.append(Incident(
+                    id=f"INC-{asset or ioc or 'global'}-{len(incidents) + 1}",
+                    title=self._title(cluster, asset, ioc),
+                    severity=_severity(cluster),
+                    confidence=round(sum(item.confidence for item in cluster) / len(cluster), 3),
+                    findings=[item.to_dict() for item in cluster],
+                    evidence={
+                        "asset": asset,
+                        "ioc": ioc,
+                        "stages": stages,
+                        "finding_ids": [item.rule_id for item in cluster],
+                        "window_seconds": window_seconds,
+                    },
+                    risk_score=score,
+                    risk_level=self._level(score),
+                ))
         return incidents[:100]
 
-    def _within_window(self, items: list[DetectionResult], window_seconds: int) -> list[DetectionResult]:
-        timestamps = sorted(_parse_ts(item.timestamp) for item in items)
-        if not timestamps or timestamps[-1] - timestamps[0] <= window_seconds:
-            return items
-        return items
+    @staticmethod
+    def _correlation_keys(finding: DetectionResult) -> list[str]:
+        assets = _asset_keys(finding)
+        iocs = _ioc_keys(finding)
+        keys = [f"asset:{asset}" for asset in assets] or ["asset:global"]
+        if iocs:
+            keys.extend(f"ioc:{ioc}" for ioc in iocs)
+        if assets and iocs:
+            keys.extend(f"asset-ioc:{asset}:{ioc}" for asset in assets for ioc in iocs)
+        return list(dict.fromkeys(keys))
+
+    @staticmethod
+    def _time_clusters(items: list[DetectionResult], window_seconds: int) -> list[list[DetectionResult]]:
+        clusters: list[list[DetectionResult]] = []
+        current: list[DetectionResult] = []
+        window = max(1, int(window_seconds))
+        for item in items:
+            ts = _parse_ts(item.timestamp)
+            if not current:
+                current = [item]
+                continue
+            first_ts = _parse_ts(current[0].timestamp)
+            if first_ts and ts and ts - first_ts > window:
+                clusters.append(current)
+                current = [item]
+            else:
+                current.append(item)
+        if current:
+            clusters.append(current)
+        return clusters
+
+    @staticmethod
+    def _asset_label(items: list[DetectionResult], key: str) -> str:
+        values = sorted({value for item in items for value in _asset_keys(item)})
+        return values[0] if values else (key.removeprefix("asset:") if key.startswith("asset:") else "")
+
+    @staticmethod
+    def _ioc_label(items: list[DetectionResult], key: str) -> str:
+        values = sorted({value for item in items for value in _ioc_keys(item)})
+        return values[0] if values else (key.removeprefix("ioc:") if key.startswith("ioc:") else "")
+
+    @staticmethod
+    def _finding_signature(item: DetectionResult) -> str:
+        return f"{item.engine}|{item.rule_id}|{_parse_ts(item.timestamp)}|{sorted(_asset_keys(item))}|{sorted(_ioc_keys(item))}"
 
     def _title(self, items: list[DetectionResult], asset: str, ioc: str) -> str:
         stages = sorted({_stage(item) for item in items})

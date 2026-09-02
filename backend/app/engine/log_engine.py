@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.core.config import settings
 from app.engine.core.base import DetectionEngine
 from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
@@ -12,8 +13,12 @@ class SigmaLogEngine(DetectionEngine):
 
     def analyze(self, context: DetectionContext) -> list[DetectionResult]:
         rule_dir = Path(__file__).resolve().parents[1] / "rules" / "logs"
+        custom_dir = settings.integration_dir / "sigma_rules"
         findings = []
-        for rule in load_sigma_rules(rule_dir):
+        rules = load_sigma_rules(rule_dir)
+        if custom_dir.exists():
+            rules.extend(load_sigma_rules(custom_dir))
+        for rule in rules:
             if evaluate_sigma(rule, context.log_lines):
                 findings.append(DetectionResult(
                     engine=self.name,
@@ -24,4 +29,3 @@ class SigmaLogEngine(DetectionEngine):
                     recommendation=rule.recommendation,
                 ).normalize())
         return findings
-

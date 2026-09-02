@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import shutil
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,6 +31,7 @@ class IntegrationAdapter(ABC):
     name: str = "base"
     version: str = "1.0.0"
     supported_types: tuple[str, ...] = ()
+    capabilities: tuple[str, ...] = ()
 
     @abstractmethod
     def adapt(self, payload: Any, context: Any | None = None) -> AdapterResult:
@@ -40,7 +42,36 @@ class IntegrationAdapter(ABC):
         return []
 
     def metadata(self) -> dict[str, Any]:
-        return {"name": self.name, "version": self.version, "supported_types": list(self.supported_types)}
+        return {
+            "name": self.name,
+            "adapter_version": self.version,
+            "version": self.version,
+            "supported_types": list(self.supported_types),
+            "capabilities": list(self.capabilities),
+        }
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "adapter_version": self.version,
+            "installed": True,
+            "enabled": True,
+            "healthy": True,
+            "runtime_version": "",
+            "supported_types": list(self.supported_types),
+            "capabilities": list(self.capabilities),
+            "last_check": datetime.now(UTC).isoformat(),
+            "status": "ready",
+            "message": "",
+        }
+
+    @staticmethod
+    def _binary_available(*names: str) -> str:
+        for name in names:
+            path = shutil.which(name)
+            if path:
+                return name
+        return ""
 
 
 def finding(

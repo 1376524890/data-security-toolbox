@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from app.engine.core.context import DetectionContext
 from app.integrations.base import AdapterResult, IntegrationAdapter, finding
 from app.integrations.misp.client import MISPClient, extract_iocs
 from app.integrations.misp.store import MISPStore
+from app.core.config import settings
 
 
 def _collect_observations(context: DetectionContext | None) -> dict[str, set[str]]:
@@ -38,6 +40,23 @@ class MISPAdapter(IntegrationAdapter):
     name = "misp"
     version = "2.1.0"
     supported_types = ("ip", "domain", "hash", "url")
+    capabilities = ("offline-store", "api-sync", "ioc-match")
+
+    def health(self) -> dict[str, Any]:
+        configured = bool(settings.misp_url and settings.misp_api_key)
+        return {
+            "name": self.name,
+            "adapter_version": self.version,
+            "installed": True,
+            "enabled": True,
+            "healthy": True,
+            "runtime_version": "offline-store" if not configured else "MISP API",
+            "supported_types": list(self.supported_types),
+            "capabilities": list(self.capabilities),
+            "last_check": datetime.now(UTC).isoformat(),
+            "status": "ready",
+            "message": "" if configured else "Offline IOC store available; MISP API not configured",
+        }
 
     def parse(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
@@ -55,6 +74,8 @@ class MISPAdapter(IntegrationAdapter):
 
     def adapt(self, payload: Any, context: DetectionContext | None = None) -> AdapterResult:
         iocs = self.parse(payload)
+        if not iocs and context and context.data.get("ioc_library"):
+            iocs = context.data["ioc_library"]
         if isinstance(payload, dict) and payload.get("sync"):
             client = MISPClient(payload["url"], payload["api_key"], bool(payload.get("verify_ssl", True)))
             iocs = client.sync(payload.get("last", ""), int(payload.get("limit", 1000)))

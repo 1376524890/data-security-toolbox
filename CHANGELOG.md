@@ -27,3 +27,14 @@
 - 数据资产地图与资产关系图
 - 专业安全报告（资产、风险排行、敏感数据、检测结果、整改建议）
 - Engine 单元测试、PCAP 集成测试、Benchmark
+
+## v2.1
+
+- Incident 真实时间窗口聚类与多 Incident 生成
+- Offline Resource Manager：IOC/CVE/Suricata/Sigma/模型真实导入、去重、版本与 manifest
+- Integration 完整健康状态与能力元数据
+- 统一分页、筛选与关联查询
+- Dashboard 风险趋势、Severity、Engine、敏感数据分布
+- PCAP Workbench：Overview/Flows/Packets/Protocols/DNS/HTTP/TLS/Files/Alerts
+- 管理控制台信息架构、公共组件与设计系统
+- 敏感样本统一脱敏

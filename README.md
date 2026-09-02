@@ -2,7 +2,7 @@
 
 面向企业内网离线环境的数据安全检测与安全审计综合平台。
 
-当前版本采用统一插件化检测引擎：`engine/core` + 资产/协议/流量/数据/风险/合规/威胁情报引擎，并新增 `Integration Adapter Layer` 接入 Zeek、Suricata、Presidio、MISP、Wazuh/osquery、OpenSCAP，检测结果统一输出 `DetectionResult`。
+当前版本采用统一插件化检测引擎：`engine/core` + 资产/协议/流量/数据/风险/合规/威胁情报引擎，并通过 `Integration Adapter Layer` 接入 Zeek、Suricata、Presidio、MISP、Wazuh/osquery、OpenSCAP，检测结果统一输出 `DetectionResult`。
 
 ## 能力
 
@@ -15,9 +15,11 @@
 - 集成适配器：Zeek JSON/TAB 日志、Suricata eve.json、Presidio 中文 PII、MISP IOC、osquery/Wazuh 主机审计、OpenSCAP CIS/等保
 - 事件关联：`incident_engine` 按时间、资产、IOC、攻击链聚合 Finding 为 Incident
 - 离线能力：规则、IOC、CVE、模型支持离线包导入
+- 离线资源中心：安全 Upload、受控 staging、真实入库、版本记录、重复处理与 manifest
 - 安全审计：文件、资产暴露、敏感数据泄露、网络行为、日志分析
 - 任务系统：异步任务、进度、阶段、日志
 - 报告系统：HTML/PDF/CSV 报告
+- 管理控制台：安全态势、事件调查、检测结果、风险分析、资产与数据、PCAP Workbench、威胁情报、集成组件、任务、探针、报告和离线资源
 
 ## 检测引擎
 
@@ -53,6 +55,18 @@ docker compose -f docker-compose.yml -f docker-compose.integrations.yml --profil
 ```
 
 访问 `http://localhost:8080`。
+
+## 管理控制台导航
+
+- 安全态势：总览
+- 安全调查：安全事件、检测结果、风险分析
+- 资产与数据：IT资产、数据资产、资产关系图、文件分析
+- 网络分析：PCAP分析
+- 威胁与检测：威胁情报、检测组件、安全审计、算法评估
+- 运行管理：任务中心、探针管理、报告中心
+- 系统：离线资源
+
+所有列表接口使用统一分页格式 `{ items, page, page_size, total }`，支持筛选与搜索。离线资源通过 `POST /api/v1/integrations/offline/upload` 上传，不使用服务器任意路径导入。
 
 ## 离线部署
 
