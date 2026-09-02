@@ -16,4 +16,10 @@ FastAPI 启动后可在 `http://localhost:8000/docs` 查看 OpenAPI 文档。
 - `POST /reports/generate` 生成报告
 - `GET /reports/{id}/download` 下载报告
 - `GET /dashboard/summary` 总览
-
+- `GET /integrations` 集成组件列表
+- `POST /integrations/{name}/analyze` 运行第三方适配器
+- `POST /integrations/offline/import` 导入离线包
+- `GET /incidents` 关联事件列表
+- `GET /incidents/{id}` 关联事件详情
+- `POST /incidents/correlate` 手工事件关联
+- `GET /iocs` IOC 列表

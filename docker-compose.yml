@@ -36,6 +36,12 @@ services:
       STORAGE_DIR: /app/data/storage
       REPORT_DIR: /app/data/reports
       EXTERNAL_ENGINE_DIR: /app/data/external
+      INTEGRATION_DIR: /app/data/integrations
+      OFFLINE_DIR: /app/app/integrations/offline_data
+      MISP_URL: ${MISP_URL:-}
+      MISP_API_KEY: ${MISP_API_KEY:-}
+      WAZUH_URL: ${WAZUH_URL:-}
+      OSQUERY_SOCKET: ${OSQUERY_SOCKET:-}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
       PROBE_TOKEN: ${PROBE_TOKEN:-}
       SECRET_KEY: ${SECRET_KEY:-}
@@ -57,6 +63,11 @@ services:
     build:
       context: ./backend
     command: ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import celery; print('ok')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
     environment:
       APP_ENV: production
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD:-security}@postgres:5432/${POSTGRES_DB:-security_toolbox}
@@ -66,6 +77,12 @@ services:
       STORAGE_DIR: /app/data/storage
       REPORT_DIR: /app/data/reports
       EXTERNAL_ENGINE_DIR: /app/data/external
+      INTEGRATION_DIR: /app/data/integrations
+      OFFLINE_DIR: /app/app/integrations/offline_data
+      MISP_URL: ${MISP_URL:-}
+      MISP_API_KEY: ${MISP_API_KEY:-}
+      WAZUH_URL: ${WAZUH_URL:-}
+      OSQUERY_SOCKET: ${OSQUERY_SOCKET:-}
     volumes:
       - backend_data:/app/data
     depends_on:

@@ -1,0 +1,8 @@
+{
+  "iocs": [
+    {"value": "203.0.113.66", "type": "ip", "source": "offline", "tags": ["suspicious"]},
+    {"value": "evil.example", "type": "domain", "source": "offline", "tags": ["c2"]},
+    {"value": "https://evil.example/payload", "type": "url", "source": "offline"},
+    {"value": "44d88612fea8a8f36de82e1278abb02f", "type": "hash", "source": "offline"}
+  ]
+}

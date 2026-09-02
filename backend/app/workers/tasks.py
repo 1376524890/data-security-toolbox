@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.models import AnalysisResult, Anomaly, Asset, DataAsset, DetectionFinding, FileRecord, Flow, GraphRelation, PacketRecord, PcapRecord, Task
+from app.models import AnalysisResult, Anomaly, Asset, DataAsset, DetectionFinding, FileRecord, Flow, GraphRelation, IOC, Incident, PacketRecord, PcapRecord, Task
 from app.services.asset_service import classify_assets
 from app.services.metadata_service import extract_metadata
 from app.services.protocol_service import parse_pcap
@@ -18,9 +18,11 @@ from app.engine.core.context import DetectionContext
 from app.engine.core.pipeline import DetectionPipeline
 from app.engine.graph import build_graph
 from app.engine.risk_engine.engine import RiskEngine
+from app.incident_engine.engine import IncidentEngine
 
 
 pipeline = DetectionPipeline(registry, RiskEngine())
+incident_engine = IncidentEngine()
 
 
 def run_pipeline(context: DetectionContext, task_id: int, db=None) -> None:
@@ -42,6 +44,31 @@ def run_pipeline(context: DetectionContext, task_id: int, db=None) -> None:
                 risk_score=finding.risk_score,
                 risk_level=finding.risk_level,
                 timestamp=finding.timestamp,
+            ))
+        incidents = incident_engine.correlate(result.findings)
+        for incident in incidents:
+            session.add(Incident(
+                title=incident.title,
+                severity=incident.severity,
+                confidence=incident.confidence,
+                status=incident.status,
+                findings={"items": incident.findings},
+                evidence=incident.evidence,
+                risk_score=incident.risk_score,
+                risk_level=incident.risk_level,
+                timestamp=incident.timestamp,
+            ))
+        for item in context.data.get("iocs", []):
+            if not isinstance(item, dict):
+                continue
+            session.add(IOC(
+                ioc_type=item.get("type", item.get("ioc_type", "unknown")),
+                value=item.get("value", ""),
+                source=item.get("source", "integration"),
+                first_seen=item.get("first_seen", ""),
+                last_seen=item.get("last_seen", ""),
+                tags=item.get("tags", []),
+                extra=item,
             ))
         for item in context.data.get("data_assets", []):
             session.add(DataAsset(

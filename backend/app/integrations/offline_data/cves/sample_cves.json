@@ -1,0 +1,5 @@
+{
+  "items": [
+    {"cve_id": "CVE-2026-0001", "severity": "High", "description": "Sample CVE for offline import."}
+  ]
+}

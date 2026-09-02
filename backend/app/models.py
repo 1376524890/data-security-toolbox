@@ -33,7 +33,7 @@ class Probe(TimestampMixin, Base):
     ip_address: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(32), default="offline")
     token: Mapped[str] = mapped_column(String(255), default="")
-    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     assets: Mapped[list["Asset"]] = relationship(back_populates="probe")
 
@@ -41,7 +41,7 @@ class Probe(TimestampMixin, Base):
 class Asset(TimestampMixin, Base):
     __tablename__ = "assets"
     id: Mapped[int] = mapped_column(primary_key=True)
-    probe_id: Mapped[int | None] = mapped_column(ForeignKey("probes.id"), nullable=True)
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), nullable=True)
     ip: Mapped[str] = mapped_column(String(64), index=True)
     hostname: Mapped[str] = mapped_column(String(255), default="")
     os: Mapped[str] = mapped_column(String(128), default="")
@@ -54,13 +54,13 @@ class Asset(TimestampMixin, Base):
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    probe: Mapped[Probe | None] = relationship(back_populates="assets")
+    probe: Mapped[Probe] = relationship(back_populates="assets")
 
 
 class FileRecord(TimestampMixin, Base):
     __tablename__ = "files"
     id: Mapped[int] = mapped_column(primary_key=True)
-    probe_id: Mapped[int | None] = mapped_column(ForeignKey("probes.id"), nullable=True)
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(512), index=True)
     path: Mapped[str] = mapped_column(String(1024), default="")
     size: Mapped[int] = mapped_column(Integer, default=0)
@@ -73,7 +73,7 @@ class FileRecord(TimestampMixin, Base):
 class PcapRecord(TimestampMixin, Base):
     __tablename__ = "pcaps"
     id: Mapped[int] = mapped_column(primary_key=True)
-    probe_id: Mapped[int | None] = mapped_column(ForeignKey("probes.id"), nullable=True)
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), nullable=True)
     filename: Mapped[str] = mapped_column(String(512), index=True)
     storage_path: Mapped[str] = mapped_column(String(1024), default="")
     size: Mapped[int] = mapped_column(Integer, default=0)
@@ -126,7 +126,7 @@ class Anomaly(Base):
     __tablename__ = "anomalies"
     id: Mapped[int] = mapped_column(primary_key=True)
     pcap_id: Mapped[int] = mapped_column(ForeignKey("pcaps.id"), index=True)
-    flow_id: Mapped[int | None] = mapped_column(ForeignKey("flows.id"), nullable=True)
+    flow_id: Mapped[int] = mapped_column(ForeignKey("flows.id"), nullable=True)
     rule: Mapped[str] = mapped_column(String(128))
     severity: Mapped[str] = mapped_column(String(16))
     description: Mapped[str] = mapped_column(Text)
@@ -145,14 +145,14 @@ class Task(TimestampMixin, Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str] = mapped_column(Text, default="")
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AnalysisResult(TimestampMixin, Base):
     __tablename__ = "analysis_results"
     id: Mapped[int] = mapped_column(primary_key=True)
-    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), nullable=True)
     module: Mapped[str] = mapped_column(String(128), index=True)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     score: Mapped[float] = mapped_column(Float, default=0.0)
@@ -162,7 +162,7 @@ class AnalysisResult(TimestampMixin, Base):
 class DetectionFinding(TimestampMixin, Base):
     __tablename__ = "detection_findings"
     id: Mapped[int] = mapped_column(primary_key=True)
-    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), nullable=True)
     target_type: Mapped[str] = mapped_column(String(64), index=True)
     target_id: Mapped[str] = mapped_column(String(128), default="")
     engine: Mapped[str] = mapped_column(String(128), index=True)
@@ -176,10 +176,36 @@ class DetectionFinding(TimestampMixin, Base):
     timestamp: Mapped[str] = mapped_column(String(64), default="")
 
 
+class Incident(TimestampMixin, Base):
+    __tablename__ = "incidents"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), index=True)
+    severity: Mapped[str] = mapped_column(String(16), index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    findings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_level: Mapped[str] = mapped_column(String(16), default="Low")
+    timestamp: Mapped[str] = mapped_column(String(64), default="")
+
+
+class IOC(TimestampMixin, Base):
+    __tablename__ = "iocs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ioc_type: Mapped[str] = mapped_column(String(32), index=True)
+    value: Mapped[str] = mapped_column(String(1024), index=True)
+    source: Mapped[str] = mapped_column(String(128), default="")
+    first_seen: Mapped[str] = mapped_column(String(64), default="")
+    last_seen: Mapped[str] = mapped_column(String(64), default="")
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
 class Vulnerability(TimestampMixin, Base):
     __tablename__ = "vulnerabilities"
     id: Mapped[int] = mapped_column(primary_key=True)
-    asset_id: Mapped[int | None] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"), nullable=True)
     cve_id: Mapped[str] = mapped_column(String(64), index=True)
     cwe_id: Mapped[str] = mapped_column(String(64), default="")
     severity: Mapped[str] = mapped_column(String(16), default="Medium")

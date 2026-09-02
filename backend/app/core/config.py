@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     storage_dir: Path = Path("./data/storage")
     report_dir: Path = Path("./data/reports")
     external_engine_dir: Path = Path("./data/external")
+    integration_dir: Path = Path("./data/integrations")
+    offline_dir: Path = Path("./data/offline")
+    misp_url: str = ""
+    misp_api_key: str = ""
+    wazuh_url: str = ""
+    osquery_socket: str = ""
     max_upload_mb: int = 2048
     probe_token: str = ""
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8080"]
@@ -24,6 +30,8 @@ class Settings(BaseSettings):
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self.external_engine_dir.mkdir(parents=True, exist_ok=True)
+        self.integration_dir.mkdir(parents=True, exist_ok=True)
+        self.offline_dir.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache

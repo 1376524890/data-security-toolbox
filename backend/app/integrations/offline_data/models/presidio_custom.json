@@ -1,0 +1,10 @@
+{
+  "models": [
+    {
+      "name": "chinese_pii_recognizer",
+      "language": "zh",
+      "entities": ["CN_ID_CARD", "CN_PHONE", "BANK_CARD", "MEDICAL_RECORD", "SECRET"],
+      "source": "presidio custom recognizer"
+    }
+  ]
+}

@@ -1,4 +1,3 @@
-from collections import Counter
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -6,29 +5,62 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.storage import save_bytes
-from app.models import AnalysisResult, Anomaly, Asset, AuditLog, DataAsset, DetectionFinding, FileRecord, Flow, GraphRelation, PacketRecord, PcapRecord, Probe, Report, Task
-from app.schemas import AlgorithmRandomnessRequest, EvaluateRequest, GenerateReportRequest, Heartbeat, LogAnalysisRequest, ProbeRegister, TaskCreate
-from app.services.algorithm_service import evaluate_model, performance_test, randomness_report
-from app.services.asset_service import asset_relations, classify_assets
-from app.services.audit_service import audit_summary, log_analysis
-from app.services.metadata_service import extract_metadata, sha256_file
-from app.services.protocol_service import protocol_tree
-from app.services.report_service import build_summary, render_csv, render_html, render_pdf
-from app.services.traffic_service import detect_anomalies, host_behavior, protocol_distribution, top_n_communication, traffic_trend
-from app.workers.tasks import analyze_pcap_task, asset_task, create_task, metadata_task
 from app.engine import registry
 from app.engine.core.context import DetectionContext
 from app.engine.core.pipeline import DetectionPipeline
-from app.engine.graph import build_graph
 from app.engine.risk_engine.engine import RiskEngine
+from app.incident_engine.engine import IncidentEngine
+from app.integrations import integration_registry
+from app.integrations.offline import import_offline_bundle
+from app.integrations.runner import run_adapter
+from app.models import (
+    IOC,
+    AnalysisResult,
+    Anomaly,
+    Asset,
+    DataAsset,
+    DetectionFinding,
+    FileRecord,
+    Flow,
+    GraphRelation,
+    Incident,
+    PacketRecord,
+    PcapRecord,
+    Probe,
+    Report,
+    Task,
+)
+from app.schemas import (
+    AlgorithmRandomnessRequest,
+    EvaluateRequest,
+    GenerateReportRequest,
+    Heartbeat,
+    LogAnalysisRequest,
+    ProbeRegister,
+    TaskCreate,
+)
+from app.services.algorithm_service import evaluate_model, performance_test, randomness_report
+from app.services.asset_service import asset_relations
+from app.services.audit_service import audit_summary, log_analysis
+from app.services.protocol_service import protocol_tree
+from app.services.report_service import build_summary, render_html, render_pdf
+from app.services.traffic_service import (
+    detect_anomalies,
+    host_behavior,
+    protocol_distribution,
+    top_n_communication,
+    traffic_trend,
+)
+from app.workers.tasks import analyze_pcap_task, asset_task, create_task, metadata_task
 
 router = APIRouter(prefix="/api/v1")
+incident_engine = IncidentEngine()
 
 
 def _serialize_task(task: Task) -> dict[str, Any]:
@@ -275,8 +307,9 @@ def generate_report(payload: GenerateReportRequest, db: Session = Depends(get_db
     anomalies = [{"rule": item.rule, "severity": item.severity, "description": item.description} for item in db.scalars(select(Anomaly)).all()]
     findings = [{"engine": item.engine, "rule_id": item.rule_id, "severity": item.severity, "confidence": item.confidence, "evidence": item.evidence, "recommendation": item.recommendation, "risk_score": item.risk_score, "risk_level": item.risk_level} for item in db.scalars(select(DetectionFinding).order_by(DetectionFinding.risk_score.desc())).all()]
     data_assets = [{"name": item.name, "asset_type": item.asset_type, "sensitivity": item.sensitivity, "source": item.source, "columns": item.columns} for item in db.scalars(select(DataAsset).order_by(DataAsset.id.desc())).all()]
-    summary = build_summary(assets, files, pcaps, anomalies, audit_summary(assets, files, pcaps, anomalies), findings, data_assets)
-    html = render_html(summary, assets, files, pcaps, anomalies, findings, data_assets)
+    incidents = [{"id": item.id, "title": item.title, "severity": item.severity, "confidence": item.confidence, "status": item.status, "evidence": item.evidence, "risk_score": item.risk_score, "risk_level": item.risk_level} for item in db.scalars(select(Incident).order_by(Incident.risk_score.desc())).all()]
+    summary = build_summary(assets, files, pcaps, anomalies, audit_summary(assets, files, pcaps, anomalies), findings, data_assets, incidents)
+    html = render_html(summary, assets, files, pcaps, anomalies, findings, data_assets, incidents)
     report_format = payload.format
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     output = settings.report_dir / f"{payload.title.replace(' ', '_')}_{stamp}.{report_format}"
@@ -320,9 +353,92 @@ def analysis_results(module: str | None = None, db: Session = Depends(get_db)) -
     return [{"id": item.id, "task_id": item.task_id, "module": item.module, "content": item.content, "score": item.score, "risk_level": item.risk_level, "created_at": item.created_at} for item in db.scalars(query.order_by(AnalysisResult.id.desc())).all()]
 
 
+@router.get("/incidents")
+def list_incidents(status: str | None = None, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    query = select(Incident)
+    if status:
+        query = query.where(Incident.status == status)
+    return [{"id": item.id, "title": item.title, "severity": item.severity, "confidence": item.confidence, "status": item.status, "findings": item.findings, "evidence": item.evidence, "risk_score": item.risk_score, "risk_level": item.risk_level, "timestamp": item.timestamp, "created_at": item.created_at} for item in db.scalars(query.order_by(Incident.risk_score.desc())).all()]
+
+
+@router.get("/incidents/{incident_id}")
+def incident_detail(incident_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    item = db.get(Incident, incident_id)
+    if not item:
+        raise HTTPException(404, "incident not found")
+    return {"id": item.id, "title": item.title, "severity": item.severity, "confidence": item.confidence, "status": item.status, "findings": item.findings, "evidence": item.evidence, "risk_score": item.risk_score, "risk_level": item.risk_level, "timestamp": item.timestamp, "created_at": item.created_at}
+
+
+@router.post("/incidents/correlate")
+def correlate_incidents(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    from app.engine.core.result import DetectionResult
+
+    findings = [DetectionResult(**item) for item in payload.get("findings", [])]
+    return [item.to_dict() for item in incident_engine.correlate(findings, int(payload.get("window_seconds", 3600)))]
+
+
+@router.get("/iocs")
+def list_iocs(ioc_type: str | None = None, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    query = select(IOC)
+    if ioc_type:
+        query = query.where(IOC.ioc_type == ioc_type)
+    return [{"id": item.id, "type": item.ioc_type, "value": item.value, "source": item.source, "first_seen": item.first_seen, "last_seen": item.last_seen, "tags": item.tags, "metadata": item.extra} for item in db.scalars(query.order_by(IOC.id.desc())).all()]
+
+
 @router.get("/engine/registry")
 def engine_registry() -> list[dict[str, Any]]:
     return [engine.metadata() for engine in registry.all()]
+
+
+@router.get("/integrations")
+def list_integrations() -> list[dict[str, Any]]:
+    return integration_registry.metadata()
+
+
+@router.post("/integrations/{name}/analyze")
+def run_integration(name: str, payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
+    try:
+        adapter = integration_registry.get(name)
+    except KeyError:
+        raise HTTPException(404, "integration not found")
+    context = DetectionContext(target_type="integration", target_id=name, data=payload.get("context", {}))
+    result = run_adapter(adapter, payload, context, RiskEngine())
+    for item in result.findings:
+        db.add(DetectionFinding(
+            target_type="integration",
+            target_id=name,
+            engine=item.engine,
+            rule_id=item.rule_id,
+            severity=item.severity,
+            confidence=item.confidence,
+            evidence=item.evidence,
+            recommendation=item.recommendation,
+            risk_score=item.risk_score,
+            risk_level=item.risk_level,
+            timestamp=item.timestamp,
+        ))
+    for incident in incident_engine.correlate(result.findings):
+        db.add(Incident(
+            title=incident.title,
+            severity=incident.severity,
+            confidence=incident.confidence,
+            status=incident.status,
+            findings={"items": incident.findings},
+            evidence=incident.evidence,
+            risk_score=incident.risk_score,
+            risk_level=incident.risk_level,
+            timestamp=incident.timestamp,
+        ))
+    db.commit()
+    return result.to_dict()
+
+
+@router.post("/integrations/offline/import")
+def import_offline(payload: dict[str, Any]) -> dict[str, Any]:
+    path = payload.get("path", "")
+    if not path:
+        raise HTTPException(400, "path is required")
+    return import_offline_bundle(path, payload.get("categories")).to_dict()
 
 
 @router.post("/engine/pipeline")
@@ -384,4 +500,6 @@ def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
         "tasks": db.scalar(select(func.count(Task.id))) or 0,
         "reports": db.scalar(select(func.count(Report.id))) or 0,
         "probes": db.scalar(select(func.count(Probe.id))) or 0,
+        "incidents": db.scalar(select(func.count(Incident.id))) or 0,
+        "iocs": db.scalar(select(func.count(IOC.id))) or 0,
     }

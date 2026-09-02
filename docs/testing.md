@@ -7,6 +7,19 @@ cd backend
 python -m pytest -q
 ```
 
+当前测试规模：79 个，其中原有 35 个，新增 Integration Adapter 测试 44 个。
+
+新增覆盖：
+
+- Zeek：DNS、TLS、HTTP、files、weird
+- Suricata：alert、flow、dns、http、fileinfo、ET Open 规则导入
+- Presidio：身份证、手机号、银行卡、医疗数据、Secret
+- MISP：IP、Domain、Hash、URL 离线导入与匹配
+- Host Audit：osquery、Wazuh 资产/进程/用户/配置/日志
+- OpenSCAP：XCCDF/ARF、CIS/等保结果
+- Incident Engine：时间、资产、IOC、攻击链关联
+- Offline Bundle：规则、IOC、CVE、模型导入
+
 前端：
 
 ```bash
