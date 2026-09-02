@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+  redis:
+    image: redis:7-alpine
+    restart: always
+  backend:
+    restart: always
+  worker:
+    restart: always
+  frontend:
+    ports:
+      - "80:80"
+    restart: always
+  flower:
+    restart: always
+

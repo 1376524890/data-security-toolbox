@@ -1,0 +1,322 @@
+from collections import Counter
+from datetime import datetime, timezone
+from hashlib import sha256
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.core.database import get_db
+from app.core.storage import save_bytes
+from app.models import AnalysisResult, Anomaly, Asset, AuditLog, FileRecord, Flow, PacketRecord, PcapRecord, Probe, Report, Task
+from app.schemas import AlgorithmRandomnessRequest, EvaluateRequest, GenerateReportRequest, Heartbeat, LogAnalysisRequest, ProbeRegister, TaskCreate
+from app.services.algorithm_service import evaluate_model, performance_test, randomness_report
+from app.services.asset_service import asset_relations, classify_assets
+from app.services.audit_service import audit_summary, log_analysis
+from app.services.metadata_service import extract_metadata, sha256_file
+from app.services.protocol_service import protocol_tree
+from app.services.report_service import build_summary, render_csv, render_html, render_pdf
+from app.services.traffic_service import detect_anomalies, host_behavior, protocol_distribution, top_n_communication, traffic_trend
+from app.workers.tasks import analyze_pcap_task, asset_task, create_task, metadata_task
+
+router = APIRouter(prefix="/api/v1")
+
+
+def _serialize_task(task: Task) -> dict[str, Any]:
+    return {"id": task.id, "kind": task.kind, "status": task.status, "progress": task.progress, "current_stage": task.current_stage, "log": task.log, "payload": task.payload, "result": task.result, "error": task.error, "created_at": task.created_at, "started_at": task.started_at, "finished_at": task.finished_at}
+
+
+def _dispatch(task_id: int, kind: str, func, *args: Any) -> None:
+    if settings.app_env == "development":
+        func(*args, task_id)
+        return
+    try:
+        func.delay(*args, task_id)
+    except Exception:
+        func(*args, task_id)
+
+
+@router.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": settings.app_name}
+
+
+@router.post("/probes/register")
+def register_probe(payload: ProbeRegister, db: Session = Depends(get_db)) -> dict[str, Any]:
+    probe = db.scalar(select(Probe).where(Probe.name == payload.name))
+    if not probe:
+        probe = Probe(name=payload.name, hostname=payload.hostname, ip_address=payload.ip_address, extra=payload.metadata, status="online")
+        db.add(probe)
+        db.commit()
+        db.refresh(probe)
+    else:
+        probe.hostname = payload.hostname
+        probe.ip_address = payload.ip_address
+        probe.extra = payload.metadata
+        probe.status = "online"
+        db.commit()
+    return {"id": probe.id, "name": probe.name}
+
+
+@router.post("/probes/{probe_id}/heartbeat")
+def heartbeat(probe_id: int, payload: Heartbeat, db: Session = Depends(get_db)) -> dict[str, str]:
+    probe = db.get(Probe, probe_id)
+    if not probe:
+        raise HTTPException(404, "probe not found")
+    probe.status = payload.status
+    probe.extra = payload.metadata or probe.extra
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/probes")
+def list_probes(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [{"id": item.id, "name": item.name, "hostname": item.hostname, "ip_address": item.ip_address, "status": item.status, "last_seen": item.last_seen} for item in db.scalars(select(Probe).order_by(Probe.id.desc())).all()]
+
+
+@router.post("/probes/{probe_id}/analyze")
+def analyze_probe_assets(probe_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    task = create_task(db, "assets", {"probe_id": probe_id})
+    _dispatch(task.id, "assets", asset_task, probe_id)
+    return _serialize_task(task)
+
+
+@router.get("/assets")
+def list_assets(risk: str | None = None, asset_type: str | None = None, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    query = select(Asset)
+    if risk:
+        query = query.where(Asset.risk_level == risk)
+    if asset_type:
+        query = query.where(Asset.asset_type == asset_type)
+    return [{"id": item.id, "probe_id": item.probe_id, "ip": item.ip, "hostname": item.hostname, "os": item.os, "port": item.port, "protocol": item.protocol, "service": item.service, "asset_type": item.asset_type, "risk_level": item.risk_level, "sensitive_categories": item.sensitive_categories, "metadata": item.extra} for item in db.scalars(query.order_by(Asset.id.desc())).all()]
+
+
+@router.get("/assets/summary")
+def asset_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
+    rows = db.execute(select(Asset.risk_level, func.count(Asset.id)).group_by(Asset.risk_level)).all()
+    return {"count": db.scalar(select(func.count(Asset.id))) or 0, "risk": {risk: count for risk, count in rows}}
+
+
+@router.get("/assets/relations")
+def asset_relation_list(db: Session = Depends(get_db)) -> list[dict[str, str]]:
+    assets = db.scalars(select(Asset)).all()
+    return asset_relations([{"ip": item.ip, "service": item.service, "port": item.port} for item in assets])
+
+
+@router.post("/files/upload")
+async def upload_file(file: UploadFile = File(...), probe_id: int | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+    data = await file.read()
+    if len(data) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, "file too large")
+    path = save_bytes(data, file.filename or "upload.bin")
+    record = FileRecord(probe_id=probe_id, name=path.name, path=str(path), size=len(data), sha256=sha256(data).hexdigest(), file_type="")
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    task = create_task(db, "metadata", {"file_id": record.id})
+    _dispatch(task.id, "metadata", metadata_task, record.id)
+    return {"id": record.id, "task_id": task.id, "name": record.name, "size": record.size}
+
+
+@router.get("/files")
+def list_files(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [{"id": item.id, "probe_id": item.probe_id, "name": item.name, "path": item.path, "size": item.size, "sha256": item.sha256, "file_type": item.file_type, "metadata_json": item.metadata_json, "risk_level": item.risk_level} for item in db.scalars(select(FileRecord).order_by(FileRecord.id.desc())).all()]
+
+
+@router.get("/files/{file_id}")
+def file_detail(file_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    item = db.get(FileRecord, file_id)
+    if not item:
+        raise HTTPException(404, "file not found")
+    return {"id": item.id, "probe_id": item.probe_id, "name": item.name, "path": item.path, "size": item.size, "sha256": item.sha256, "file_type": item.file_type, "metadata_json": item.metadata_json, "risk_level": item.risk_level}
+
+
+@router.post("/files/{file_id}/analyze")
+def analyze_file(file_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    task = create_task(db, "metadata", {"file_id": file_id})
+    _dispatch(task.id, "metadata", metadata_task, file_id)
+    return _serialize_task(task)
+
+
+@router.post("/pcaps/upload")
+async def upload_pcap(file: UploadFile = File(...), probe_id: int | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+    data = await file.read()
+    if len(data) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, "pcap too large")
+    path = save_bytes(data, file.filename or "capture.pcap", subdir="pcaps")
+    record = PcapRecord(probe_id=probe_id, filename=path.name, storage_path=str(path), size=len(data), sha256=sha256(data).hexdigest())
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    task = create_task(db, "pcap", {"pcap_id": record.id})
+    _dispatch(task.id, "pcap", analyze_pcap_task, record.id)
+    return {"id": record.id, "task_id": task.id, "filename": record.filename, "size": record.size}
+
+
+@router.get("/pcaps")
+def list_pcaps(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [{"id": item.id, "probe_id": item.probe_id, "filename": item.filename, "size": item.size, "sha256": item.sha256, "packet_count": item.packet_count, "duration": item.duration, "capture_start": item.capture_start, "capture_end": item.capture_end, "protocol_summary": item.protocol_summary, "status": item.status} for item in db.scalars(select(PcapRecord).order_by(PcapRecord.id.desc())).all()]
+
+
+@router.get("/pcaps/{pcap_id}")
+def pcap_detail(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    item = db.get(PcapRecord, pcap_id)
+    if not item:
+        raise HTTPException(404, "pcap not found")
+    return {"id": item.id, "probe_id": item.probe_id, "filename": item.filename, "size": item.size, "sha256": item.sha256, "packet_count": item.packet_count, "duration": item.duration, "capture_start": item.capture_start, "capture_end": item.capture_end, "protocol_summary": item.protocol_summary, "status": item.status}
+
+
+@router.post("/pcaps/{pcap_id}/analyze")
+def analyze_pcap(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    task = create_task(db, "pcap", {"pcap_id": pcap_id})
+    _dispatch(task.id, "pcap", analyze_pcap_task, pcap_id)
+    return _serialize_task(task)
+
+
+@router.get("/pcaps/{pcap_id}/flows")
+def pcap_flows(pcap_id: int, limit: int = Query(200, le=5000), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [{"id": item.id, "src_ip": item.src_ip, "src_port": item.src_port, "dst_ip": item.dst_ip, "dst_port": item.dst_port, "protocol": item.protocol, "packets": item.packets, "bytes": item.bytes, "start_time": item.start_time, "end_time": item.end_time} for item in db.scalars(select(Flow).where(Flow.pcap_id == pcap_id).order_by(Flow.bytes.desc()).limit(limit)).all()]
+
+
+@router.get("/pcaps/{pcap_id}/packets")
+def pcap_packets(pcap_id: int, limit: int = Query(500, le=5000), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [{"number": item.number, "timestamp": item.timestamp, "src_ip": item.src_ip, "dst_ip": item.dst_ip, "src_port": item.src_port, "dst_port": item.dst_port, "protocol": item.protocol, "length": item.length, "info": item.info} for item in db.scalars(select(PacketRecord).where(PacketRecord.pcap_id == pcap_id).order_by(PacketRecord.number).limit(limit)).all()]
+
+
+@router.get("/pcaps/{pcap_id}/anomalies")
+def pcap_anomalies(pcap_id: int, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [{"id": item.id, "rule": item.rule, "severity": item.severity, "description": item.description, "evidence": item.evidence} for item in db.scalars(select(Anomaly).where(Anomaly.pcap_id == pcap_id).order_by(Anomaly.id.desc())).all()]
+
+
+@router.get("/pcaps/{pcap_id}/protocols")
+def pcap_protocols(pcap_id: int, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    item = db.get(PcapRecord, pcap_id)
+    if not item:
+        raise HTTPException(404, "pcap not found")
+    return protocol_tree(item.protocol_summary or {})
+
+
+@router.get("/pcaps/{pcap_id}/traffic")
+def pcap_traffic(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    flows = [{"src_ip": item.src_ip, "src_port": item.src_port, "dst_ip": item.dst_ip, "dst_port": item.dst_port, "protocol": item.protocol, "packets": item.packets, "bytes": item.bytes, "start_time": item.start_time, "end_time": item.end_time} for item in db.scalars(select(Flow).where(Flow.pcap_id == pcap_id)).all()]
+    packets = [{"timestamp": item.timestamp, "length": item.length, "src_ip": item.src_ip, "dst_ip": item.dst_ip, "protocol": item.protocol} for item in db.scalars(select(PacketRecord).where(PacketRecord.pcap_id == pcap_id).order_by(PacketRecord.number)).all()]
+    return {"trend": traffic_trend(packets), "top_n": top_n_communication(flows), "protocols": protocol_distribution(flows), "hosts": host_behavior(flows, packets), "anomalies": detect_anomalies(flows, packets)}
+
+
+@router.post("/algorithms/randomness")
+def randomness(payload: AlgorithmRandomnessRequest) -> dict[str, Any]:
+    return randomness_report(payload.data.encode("utf-8"))
+
+
+@router.post("/algorithms/evaluate")
+def evaluate(payload: EvaluateRequest) -> dict[str, Any]:
+    try:
+        return evaluate_model(payload.X, payload.y)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/algorithms/performance")
+def performance(payload: AlgorithmRandomnessRequest) -> dict[str, Any]:
+    return performance_test(payload.data.encode("utf-8"))
+
+
+@router.get("/tasks")
+def list_tasks(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [_serialize_task(item) for item in db.scalars(select(Task).order_by(Task.id.desc())).all()]
+
+
+@router.post("/tasks")
+def create_generic_task(payload: TaskCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
+    task = create_task(db, payload.kind, payload.payload)
+    return _serialize_task(task)
+
+
+@router.get("/tasks/{task_id}")
+def task_detail(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "task not found")
+    return _serialize_task(task)
+
+
+@router.post("/audit/logs")
+def analyze_log(payload: LogAnalysisRequest) -> dict[str, Any]:
+    return log_analysis(payload.content.splitlines())
+
+
+@router.get("/audit/summary")
+def audit(db: Session = Depends(get_db)) -> dict[str, Any]:
+    assets = [{"ip": item.ip, "service": item.service, "port": item.port, "asset_type": item.asset_type, "risk_level": item.risk_level, "sensitive_categories": item.sensitive_categories} for item in db.scalars(select(Asset)).all()]
+    files = [{"name": item.name, "file_type": item.file_type, "risk_level": item.risk_level} for item in db.scalars(select(FileRecord)).all()]
+    pcaps = [{"filename": item.filename, "protocol_summary": item.protocol_summary} for item in db.scalars(select(PcapRecord)).all()]
+    anomalies = [{"severity": item.severity, "rule": item.rule, "description": item.description} for item in db.scalars(select(Anomaly)).all()]
+    return audit_summary(assets, files, pcaps, anomalies)
+
+
+@router.post("/reports/generate")
+def generate_report(payload: GenerateReportRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    assets = [{"ip": item.ip, "service": item.service, "port": item.port, "asset_type": item.asset_type, "risk_level": item.risk_level, "sensitive_categories": item.sensitive_categories} for item in db.scalars(select(Asset)).all()]
+    files = [{"name": item.name, "file_type": item.file_type, "risk_level": item.risk_level} for item in db.scalars(select(FileRecord)).all()]
+    pcaps = [{"filename": item.filename, "packet_count": item.packet_count, "protocol_summary": item.protocol_summary} for item in db.scalars(select(PcapRecord)).all()]
+    anomalies = [{"rule": item.rule, "severity": item.severity, "description": item.description} for item in db.scalars(select(Anomaly)).all()]
+    summary = build_summary(assets, files, pcaps, anomalies, audit_summary(assets, files, pcaps, anomalies))
+    html = render_html(summary, assets, files, pcaps, anomalies)
+    report_format = payload.format
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    output = settings.report_dir / f"{payload.title.replace(' ', '_')}_{stamp}.{report_format}"
+    if report_format == "pdf":
+        try:
+            render_pdf(html, output)
+        except ImportError:
+            report_format = "html"
+            output = output.with_suffix(".html")
+            output.write_text(html, encoding="utf-8")
+    else:
+        output.write_text(html, encoding="utf-8")
+    record = Report(title=payload.title, report_type=payload.report_type, format=report_format, storage_path=str(output), summary=summary)
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {"id": record.id, "title": record.title, "format": record.format, "storage_path": record.storage_path}
+
+
+@router.get("/reports")
+def list_reports(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [{"id": item.id, "title": item.title, "report_type": item.report_type, "format": item.format, "summary": item.summary, "created_at": item.created_at} for item in db.scalars(select(Report).order_by(Report.id.desc())).all()]
+
+
+@router.get("/reports/{report_id}/download")
+def download_report(report_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    item = db.get(Report, report_id)
+    if not item:
+        raise HTTPException(404, "report not found")
+    path = Path(item.storage_path)
+    if not path.exists():
+        raise HTTPException(404, "report file not found")
+    return FileResponse(str(path), filename=path.name)
+
+
+@router.get("/analysis/results")
+def analysis_results(module: str | None = None, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    query = select(AnalysisResult)
+    if module:
+        query = query.where(AnalysisResult.module == module)
+    return [{"id": item.id, "task_id": item.task_id, "module": item.module, "content": item.content, "score": item.score, "risk_level": item.risk_level, "created_at": item.created_at} for item in db.scalars(query.order_by(AnalysisResult.id.desc())).all()]
+
+
+@router.get("/dashboard/summary")
+def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
+    return {
+        "assets": db.scalar(select(func.count(Asset.id))) or 0,
+        "files": db.scalar(select(func.count(FileRecord.id))) or 0,
+        "pcaps": db.scalar(select(func.count(PcapRecord.id))) or 0,
+        "anomalies": db.scalar(select(func.count(Anomaly.id))) or 0,
+        "tasks": db.scalar(select(func.count(Task.id))) or 0,
+        "reports": db.scalar(select(func.count(Report.id))) or 0,
+        "probes": db.scalar(select(func.count(Probe.id))) or 0,
+    }
