@@ -62,6 +62,8 @@ def detect_anomalies(flows: list[dict[str, Any]], packets: list[dict[str, Any]])
 
 
 def external_engine_analysis(pcap_path: Path, output_dir: Path) -> dict[str, Any]:
+    if not pcap_path.exists():
+        return {"engines": []}
     output_dir.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"engines": []}
     zeek = shutil.which("zeek")

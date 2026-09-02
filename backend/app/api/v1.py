@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.storage import save_bytes
-from app.models import AnalysisResult, Anomaly, Asset, AuditLog, FileRecord, Flow, PacketRecord, PcapRecord, Probe, Report, Task
+from app.models import AnalysisResult, Anomaly, Asset, AuditLog, DataAsset, DetectionFinding, FileRecord, Flow, GraphRelation, PacketRecord, PcapRecord, Probe, Report, Task
 from app.schemas import AlgorithmRandomnessRequest, EvaluateRequest, GenerateReportRequest, Heartbeat, LogAnalysisRequest, ProbeRegister, TaskCreate
 from app.services.algorithm_service import evaluate_model, performance_test, randomness_report
 from app.services.asset_service import asset_relations, classify_assets
@@ -22,6 +22,11 @@ from app.services.protocol_service import protocol_tree
 from app.services.report_service import build_summary, render_csv, render_html, render_pdf
 from app.services.traffic_service import detect_anomalies, host_behavior, protocol_distribution, top_n_communication, traffic_trend
 from app.workers.tasks import analyze_pcap_task, asset_task, create_task, metadata_task
+from app.engine import registry
+from app.engine.core.context import DetectionContext
+from app.engine.core.pipeline import DetectionPipeline
+from app.engine.graph import build_graph
+from app.engine.risk_engine.engine import RiskEngine
 
 router = APIRouter(prefix="/api/v1")
 
@@ -246,7 +251,11 @@ def task_detail(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @router.post("/audit/logs")
 def analyze_log(payload: LogAnalysisRequest) -> dict[str, Any]:
-    return log_analysis(payload.content.splitlines())
+    lines = payload.content.splitlines()
+    context = DetectionContext(target_type="log", data={}, log_lines=lines)
+    pipeline = DetectionPipeline(registry, RiskEngine())
+    result = pipeline.run(context)
+    return {"legacy": log_analysis(lines), "findings": [item.to_dict() for item in result.findings], "risk": {"score": result.risk_score, "level": result.risk_level}}
 
 
 @router.get("/audit/summary")
@@ -264,8 +273,10 @@ def generate_report(payload: GenerateReportRequest, db: Session = Depends(get_db
     files = [{"name": item.name, "file_type": item.file_type, "risk_level": item.risk_level} for item in db.scalars(select(FileRecord)).all()]
     pcaps = [{"filename": item.filename, "packet_count": item.packet_count, "protocol_summary": item.protocol_summary} for item in db.scalars(select(PcapRecord)).all()]
     anomalies = [{"rule": item.rule, "severity": item.severity, "description": item.description} for item in db.scalars(select(Anomaly)).all()]
-    summary = build_summary(assets, files, pcaps, anomalies, audit_summary(assets, files, pcaps, anomalies))
-    html = render_html(summary, assets, files, pcaps, anomalies)
+    findings = [{"engine": item.engine, "rule_id": item.rule_id, "severity": item.severity, "confidence": item.confidence, "evidence": item.evidence, "recommendation": item.recommendation, "risk_score": item.risk_score, "risk_level": item.risk_level} for item in db.scalars(select(DetectionFinding).order_by(DetectionFinding.risk_score.desc())).all()]
+    data_assets = [{"name": item.name, "asset_type": item.asset_type, "sensitivity": item.sensitivity, "source": item.source, "columns": item.columns} for item in db.scalars(select(DataAsset).order_by(DataAsset.id.desc())).all()]
+    summary = build_summary(assets, files, pcaps, anomalies, audit_summary(assets, files, pcaps, anomalies), findings, data_assets)
+    html = render_html(summary, assets, files, pcaps, anomalies, findings, data_assets)
     report_format = payload.format
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     output = settings.report_dir / f"{payload.title.replace(' ', '_')}_{stamp}.{report_format}"
@@ -307,6 +318,60 @@ def analysis_results(module: str | None = None, db: Session = Depends(get_db)) -
     if module:
         query = query.where(AnalysisResult.module == module)
     return [{"id": item.id, "task_id": item.task_id, "module": item.module, "content": item.content, "score": item.score, "risk_level": item.risk_level, "created_at": item.created_at} for item in db.scalars(query.order_by(AnalysisResult.id.desc())).all()]
+
+
+@router.get("/engine/registry")
+def engine_registry() -> list[dict[str, Any]]:
+    return [engine.metadata() for engine in registry.all()]
+
+
+@router.post("/engine/pipeline")
+def run_engine_pipeline(payload: dict[str, Any]) -> dict[str, Any]:
+    context = DetectionContext(
+        target_type=payload.get("target_type", "manual"),
+        target_id=payload.get("target_id"),
+        data=payload.get("data", {}),
+        assets=payload.get("assets", []),
+        flows=payload.get("flows", []),
+        packets=payload.get("packets", []),
+        metadata=payload.get("metadata", {}),
+        log_lines=payload.get("log_lines", []),
+    )
+    pipeline = DetectionPipeline(registry, RiskEngine())
+    return pipeline.run(context).to_dict()
+
+
+@router.get("/detections")
+def list_detections(severity: str | None = None, engine: str | None = None, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    query = select(DetectionFinding)
+    if severity:
+        query = query.where(DetectionFinding.severity == severity)
+    if engine:
+        query = query.where(DetectionFinding.engine == engine)
+    return [{"id": item.id, "task_id": item.task_id, "target_type": item.target_type, "target_id": item.target_id, "engine": item.engine, "rule_id": item.rule_id, "severity": item.severity, "confidence": item.confidence, "evidence": item.evidence, "recommendation": item.recommendation, "risk_score": item.risk_score, "risk_level": item.risk_level, "timestamp": item.timestamp, "created_at": item.created_at} for item in db.scalars(query.order_by(DetectionFinding.risk_score.desc())).all()]
+
+
+@router.get("/risk/summary")
+def risk_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
+    rows = db.execute(select(DetectionFinding.risk_level, func.count(DetectionFinding.id)).group_by(DetectionFinding.risk_level)).all()
+    return {
+        "count": db.scalar(select(func.count(DetectionFinding.id))) or 0,
+        "risk_levels": {level: count for level, count in rows},
+        "max_score": db.scalar(select(func.max(DetectionFinding.risk_score))) or 0,
+        "avg_score": db.scalar(select(func.avg(DetectionFinding.risk_score))) or 0,
+    }
+
+
+@router.get("/data/assets")
+def data_assets(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [{"id": item.id, "name": item.name, "asset_type": item.asset_type, "sensitivity": item.sensitivity, "source": item.source, "columns": item.columns, "extra": item.extra} for item in db.scalars(select(DataAsset).order_by(DataAsset.id.desc())).all()]
+
+
+@router.get("/graph")
+def graph(db: Session = Depends(get_db)) -> dict[str, Any]:
+    relations = [{"source_node": item.source_node, "source_type": item.source_type, "target_node": item.target_node, "target_type": item.target_type, "relation": item.relation, "risk": item.risk} for item in db.scalars(select(GraphRelation).order_by(GraphRelation.id.desc())).all()]
+    nodes = sorted({item["source_node"] for item in relations} | {item["target_node"] for item in relations})
+    return {"nodes": nodes, "relations": relations}
 
 
 @router.get("/dashboard/summary")

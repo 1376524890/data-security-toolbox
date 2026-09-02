@@ -1,0 +1,7 @@
+rule_id: LOG_AUTH_001
+title: 认证失败
+severity: Medium
+confidence: 0.8
+condition: auth_failure_count > 3
+recommendation: 结合源 IP 和账号确认是否存在暴力破解，必要时启用锁定和 MFA。
+

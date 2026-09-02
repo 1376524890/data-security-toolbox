@@ -1,0 +1,7 @@
+rule_id: NET_RATE_001
+title: 高包速率
+severity: Medium
+confidence: 0.8
+condition: packet_rate > 500
+recommendation: 对短时间高包速率会话进行取证，结合协议和源/目标判断是否存在扫描或突发流量。
+

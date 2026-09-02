@@ -1,0 +1,16 @@
+id: LOG_SIGMA_AUTH_001
+title: 多次认证失败
+level: medium
+confidence: 0.85
+condition: all of them
+recommendation: 结合源 IP 和账号确认是否存在暴力破解，必要时启用锁定和 MFA。
+detection:
+  selector_failure:
+    - "failed"
+    - "failure"
+    - "denied"
+  selector_login:
+    - "login"
+    - "auth"
+    - "password"
+

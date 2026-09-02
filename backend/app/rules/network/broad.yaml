@@ -1,0 +1,7 @@
+rule_id: NET_BROAD_001
+title: 大范围横向通信
+severity: Medium
+confidence: 0.75
+condition: dst_count > 10 and total_bytes > 10000000
+recommendation: 检查主机是否进行异常批量通信，确认是否存在数据外传或横向扩散。
+

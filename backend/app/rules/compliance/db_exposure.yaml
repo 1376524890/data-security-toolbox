@@ -1,0 +1,7 @@
+rule_id: COMP_DB_EXPOSURE_001
+title: 公网数据库暴露
+severity: Critical
+confidence: 0.95
+condition: public_database_count > 0
+recommendation: 数据库不得直接暴露在公网，应限制来源网段并启用加密认证。
+

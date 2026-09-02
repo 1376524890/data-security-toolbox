@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.models import AnalysisResult, Anomaly, Asset, FileRecord, Flow, PacketRecord, PcapRecord, Task
+from app.models import AnalysisResult, Anomaly, Asset, DataAsset, DetectionFinding, FileRecord, Flow, GraphRelation, PacketRecord, PcapRecord, Task
 from app.services.asset_service import classify_assets
 from app.services.metadata_service import extract_metadata
 from app.services.protocol_service import parse_pcap
@@ -13,6 +13,54 @@ from app.services.traffic_service import detect_anomalies
 from app.services.traffic_service import external_engine_analysis
 from app.core.config import settings
 from app.workers.celery_app import celery_app
+from app.engine import registry
+from app.engine.core.context import DetectionContext
+from app.engine.core.pipeline import DetectionPipeline
+from app.engine.graph import build_graph
+from app.engine.risk_engine.engine import RiskEngine
+
+
+pipeline = DetectionPipeline(registry, RiskEngine())
+
+
+def run_pipeline(context: DetectionContext, task_id: int, db=None) -> None:
+    result = pipeline.run(context)
+    owned = db is None
+    session = db or SessionLocal()
+    try:
+        for finding in result.findings:
+            session.add(DetectionFinding(
+                task_id=task_id,
+                target_type=context.target_type,
+                target_id=str(context.target_id or ""),
+                engine=finding.engine,
+                rule_id=finding.rule_id,
+                severity=finding.severity,
+                confidence=finding.confidence,
+                evidence=finding.evidence,
+                recommendation=finding.recommendation,
+                risk_score=finding.risk_score,
+                risk_level=finding.risk_level,
+                timestamp=finding.timestamp,
+            ))
+        for item in context.data.get("data_assets", []):
+            session.add(DataAsset(
+                name=item.get("name", ""),
+                asset_type=item.get("asset_type", "file"),
+                sensitivity=item.get("sensitivity", "Low"),
+                source=item.get("source", "file"),
+                columns=item.get("columns", []),
+                extra=item.get("extra", {}),
+            ))
+        relations = build_graph(context.assets, context.data.get("data_assets", []), [item.to_dict() for item in result.findings])
+        for relation in relations:
+            session.add(GraphRelation(**relation))
+        if owned:
+            session.commit()
+    finally:
+        if owned:
+            session.close()
+    return None
 
 
 def update_task(task_id: int, **kwargs: Any) -> None:
@@ -57,6 +105,8 @@ def metadata_task(file_id: int, task_id: int) -> None:
         record.sha256 = result["sha256"]
         record.file_type = result["file_type"]
         record.risk_level = "Medium" if result["hidden_info"]["hidden"] else "Low"
+        context = DetectionContext(target_type="file", target_id=str(file_id), path=path, metadata=result, data={"file_type": result["file_type"], "metadata": result["metadata"]})
+        run_pipeline(context, task_id, db)
         db.add(AnalysisResult(task_id=task_id, module="metadata", content=result, risk_level=record.risk_level))
         db.commit()
     _finish(task_id, result={"file_id": file_id, "metadata": result})
@@ -88,6 +138,8 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
         update_task(task_id, progress=70, current_stage="流量与异常分析")
         anomalies = detect_anomalies(parsed["flows"], parsed["packets"])
         db.add_all([Anomaly(pcap_id=pcap_id, **item) for item in anomalies])
+        context = DetectionContext(target_type="pcap", target_id=str(pcap_id), path=path, flows=parsed["flows"], packets=parsed["packets"], data={"protocol_summary": parsed["protocol_summary"], "anomalies": anomalies})
+        run_pipeline(context, task_id, db)
         external = external_engine_analysis(path, settings.external_engine_dir)
         if external["engines"]:
             db.add(AnalysisResult(task_id=task_id, module="external_engine", content=external, risk_level="Low"))
@@ -113,6 +165,8 @@ def asset_task(probe_id: int, task_id: int) -> None:
         db.execute(delete(Asset).where(Asset.probe_id == probe_id))
         for item in assets:
             db.add(Asset(probe_id=probe_id, ip=item["ip"], hostname=item["hostname"], os=item["os"], port=item["port"], protocol=item["protocol"], service=item["service"], asset_type=item["asset_type"], risk_level=item["risk_level"], sensitive_categories=item["sensitive_categories"], extra=item["metadata"]))
+        context = DetectionContext(target_type="probe", target_id=str(probe_id), assets=assets, data={"public_exposed": payload.get("public_exposed", False), "services": payload.get("services", [])})
+        run_pipeline(context, task_id, db)
         db.add(AnalysisResult(task_id=task_id, module="assets", content={"count": len(assets)}, risk_level="High" if any(a["risk_level"] == "High" for a in assets) else "Low"))
         db.commit()
     _finish(task_id, result={"probe_id": probe_id, "assets": len(assets)})

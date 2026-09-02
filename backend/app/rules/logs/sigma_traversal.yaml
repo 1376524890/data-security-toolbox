@@ -1,0 +1,12 @@
+id: LOG_SIGMA_TRAVERSAL_001
+title: 路径穿越日志
+level: high
+confidence: 0.9
+condition: any of them
+recommendation: 检查 Web 应用输入校验，审计相关请求和文件读取记录。
+detection:
+  selector_traversal:
+    - "../"
+    - "..\\"
+    - "path traversal"
+

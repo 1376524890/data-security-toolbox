@@ -159,6 +159,57 @@ class AnalysisResult(TimestampMixin, Base):
     risk_level: Mapped[str] = mapped_column(String(16), default="Low")
 
 
+class DetectionFinding(TimestampMixin, Base):
+    __tablename__ = "detection_findings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+    target_type: Mapped[str] = mapped_column(String(64), index=True)
+    target_id: Mapped[str] = mapped_column(String(128), default="")
+    engine: Mapped[str] = mapped_column(String(128), index=True)
+    rule_id: Mapped[str] = mapped_column(String(128), index=True)
+    severity: Mapped[str] = mapped_column(String(16), index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    recommendation: Mapped[str] = mapped_column(Text, default="")
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_level: Mapped[str] = mapped_column(String(16), default="Low")
+    timestamp: Mapped[str] = mapped_column(String(64), default="")
+
+
+class Vulnerability(TimestampMixin, Base):
+    __tablename__ = "vulnerabilities"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    cve_id: Mapped[str] = mapped_column(String(64), index=True)
+    cwe_id: Mapped[str] = mapped_column(String(64), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="Medium")
+    cvss_score: Mapped[float] = mapped_column(Float, default=0.0)
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="open")
+
+
+class DataAsset(TimestampMixin, Base):
+    __tablename__ = "data_assets"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(512), index=True)
+    asset_type: Mapped[str] = mapped_column(String(128), index=True)
+    sensitivity: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(128), default="file")
+    columns: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class GraphRelation(Base):
+    __tablename__ = "graph_relations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_node: Mapped[str] = mapped_column(String(255), index=True)
+    source_type: Mapped[str] = mapped_column(String(64), index=True)
+    target_node: Mapped[str] = mapped_column(String(255), index=True)
+    target_type: Mapped[str] = mapped_column(String(64), index=True)
+    relation: Mapped[str] = mapped_column(String(64), index=True)
+    risk: Mapped[str] = mapped_column(String(16), default="Low")
+
+
 class Report(TimestampMixin, Base):
     __tablename__ = "reports"
     id: Mapped[int] = mapped_column(primary_key=True)

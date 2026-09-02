@@ -1,0 +1,7 @@
+rule_id: NET_SCAN_001
+title: 端口扫描
+severity: High
+confidence: 0.9
+condition: port_count > 20
+recommendation: 排查源 IP 是否为扫描器或横向移动行为，必要时封禁并采集会话证据。
+

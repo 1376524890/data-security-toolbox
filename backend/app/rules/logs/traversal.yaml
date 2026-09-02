@@ -1,0 +1,7 @@
+rule_id: LOG_TRAVERSAL_001
+title: 路径穿越
+severity: High
+confidence: 0.9
+condition: traversal_count > 0
+recommendation: 检查 Web 应用输入校验，审计相关请求和文件读取记录。
+
