@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import shutil
 import subprocess
+import threading
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -20,8 +24,37 @@ TSHARK_FIELDS = [
 ]
 
 
+class AnalysisTimeout(Exception):
+    """Raised when a tshark subprocess exceeds its configured timeout."""
+
+
+class _WatchdogState:
+    def __init__(self) -> None:
+        self.timed_out = False
+
+
+def _kill_process(process: subprocess.Popen, state: _WatchdogState) -> None:
+    state.timed_out = True
+    try:
+        process.terminate()
+    except Exception:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
 def stream_tshark(args: list[str], timeout: int = 300):
-    """Yield decoded lines from tshark without buffering the full output."""
+    """Yield decoded lines from tshark without buffering the full output.
+
+    A watchdog thread enforces the timeout even when tshark produces no output
+    (e.g. a hung reader on a huge pcap), terminating the process after a grace
+    period and then raising :class:`AnalysisTimeout`.
+    """
     if not shutil.which("tshark"):
         return
     process = subprocess.Popen(
@@ -31,12 +64,22 @@ def stream_tshark(args: list[str], timeout: int = 300):
         text=True,
         bufsize=1,
     )
+    state = _WatchdogState()
+    watchdog: threading.Timer | None = None
+    if timeout and timeout > 0:
+        watchdog = threading.Timer(timeout, _kill_process, args=(process, state))
+        watchdog.daemon = True
+        watchdog.start()
     try:
         if process.stdout is None:
             return
         for line in process.stdout:
             yield line.rstrip("\n")
+        if state.timed_out:
+            raise AnalysisTimeout(f"tshark exceeded {timeout}s timeout")
     finally:
+        if watchdog:
+            watchdog.cancel()
         try:
             process.stdout.close()
         except Exception:
@@ -69,11 +112,13 @@ def capinfos(path: Path, timeout: int = 30) -> dict[str, Any]:
     headers = lines[0].split("\t")
     values = lines[1].split("\t")
     data = dict(zip(headers, values))
+
     def _number(value: Any) -> float:
         try:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
     return {
         "file_type": data.get("File type", ""),
         "total_packets": int(_number(data.get("Number of packets"))),
@@ -90,28 +135,6 @@ def protocol_distribution(path: Path, timeout: int = 300) -> dict[str, int]:
             if proto:
                 counter[proto] += 1
     return dict(counter.most_common(50))
-
-
-def extract_app_fields(path: Path, max_rows: int | None = None, timeout: int = 300) -> list[dict[str, Any]]:
-    fields = ["http.request.method", "http.host", "http.response.code", "dns.qry.name", "dns.flags.response", "tls.handshake.type"]
-    field_args = [item for field in fields for item in ("-e", field)]
-    rows = []
-    args = ["-r", str(path), "-T", "fields", *field_args]
-    if max_rows:
-        args += ["-c", str(max_rows)]
-    for line in stream_tshark(args, timeout):
-        parts = line.split("\t")
-        rows.append({
-            "http_method": parts[0] if len(parts) > 0 else "",
-            "http_host": parts[1] if len(parts) > 1 else "",
-            "http_status": parts[2] if len(parts) > 2 else "",
-            "dns_query": parts[3] if len(parts) > 3 else "",
-            "dns_response": parts[4] if len(parts) > 4 else "",
-            "tls_handshake_type": parts[5] if len(parts) > 5 else "",
-        })
-        if max_rows and len(rows) >= max_rows:
-            break
-    return rows
 
 
 def _dpkt_parse(path: Path, max_packets: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
@@ -153,20 +176,25 @@ def _dpkt_parse(path: Path, max_packets: int) -> tuple[list[dict[str, Any]], lis
     return packets, list(flows.values()), len(packets)
 
 
-def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | None = None) -> dict[str, Any]:
+def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | None = None, timeout: int = 300) -> dict[str, Any]:
+    """Parse a pcap in a single main tshark pass.
+
+    One pass builds the packet UI index, flow aggregation, protocol
+    distribution and basic application metadata, avoiding the previous
+    multi-pass (protocol_distribution + extract_app_fields + fields) behaviour.
+    """
     if max_packets is not None:
         max_index_packets = max_packets
     info = capinfos(path)
-    protocol_summary = protocol_distribution(path)
-    app_fields = extract_app_fields(path)
     packets: list[dict[str, Any]] = []
     flows: list[dict[str, Any]] = []
     total_packet_count = int(info.get("total_packets") or 0)
     indexed_packet_count = 0
     flow_map: dict[tuple[str, int, str, int, str], dict[str, Any]] = {}
+    protocol_counter: Counter[str] = Counter()
     field_args = [item for field in TSHARK_FIELDS for item in ("-e", field)]
     seen_packets = 0
-    for line in stream_tshark(["-r", str(path), "-T", "fields", *field_args], timeout=300):
+    for line in stream_tshark(["-r", str(path), "-T", "fields", *field_args], timeout=timeout):
         seen_packets += 1
         parts = line.split("\t")
         if len(parts) < 12:
@@ -184,6 +212,9 @@ def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | No
         protocol = parts[10] or "other"
         length = int(parts[8] or 0)
         info_text = parts[11] or ""
+        for proto in parts[9].split(":"):
+            if proto:
+                protocol_counter[proto] += 1
         if indexed_packet_count < max_index_packets:
             packets.append({"number": number, "timestamp": timestamp, "src_ip": src_ip, "dst_ip": dst_ip, "src_port": src_port, "dst_port": dst_port, "protocol": protocol, "length": length, "info": info_text})
             indexed_packet_count += 1
@@ -193,6 +224,7 @@ def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | No
         flow["bytes"] += length
         flow["end_time"] = timestamp
     flows = list(flow_map.values())
+    protocol_summary = dict(protocol_counter.most_common(50))
     if seen_packets and not total_packet_count:
         total_packet_count = seen_packets
     if not packets:
@@ -201,6 +233,8 @@ def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | No
             total_packet_count = fallback_count
             indexed_packet_count = len(packets)
             flows = fallback_flows or flows
+            if not protocol_summary:
+                protocol_summary = dict(Counter(flow["protocol"] for flow in flows))
     return {
         "packet_count": total_packet_count,
         "total_packet_count": total_packet_count,
@@ -208,7 +242,7 @@ def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | No
         "packets": packets,
         "flows": flows,
         "protocol_summary": protocol_summary,
-        "app_fields": app_fields,
+        "app_fields": [],
         "file_type": info.get("file_type", ""),
         "capture_start": info.get("capture_start", ""),
         "capture_end": info.get("capture_end", ""),
