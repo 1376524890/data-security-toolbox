@@ -237,7 +237,13 @@ def detect_configured_services(ports: list[int], host: str = "") -> list[dict[st
                     service = socket.getservbyport(port, "tcp")
                 except OSError:
                     service = ""
-                services.append({"port": port, "service": service, "protocol": "tcp", "ip": target})
+                banner = ""
+                try:
+                    sock.settimeout(0.5)
+                    banner = sock.recv(1024).decode("utf-8", "replace").strip()[:512]
+                except Exception:
+                    banner = ""
+                services.append({"port": port, "service": service, "protocol": "tcp", "ip": target, "banner": banner})
         finally:
             sock.close()
     return services
@@ -252,11 +258,20 @@ def file_records(paths: list[Path], max_files: int = 50) -> list[dict[str, Any]]
         for item in candidates:
             if not item.is_file() or item.stat().st_size > 500 * 1024 * 1024:
                 continue
-            digest = hashlib.sha256()
+            digest_sha = hashlib.sha256()
+            digest_md5 = hashlib.md5()
             with item.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            records.append({"name": item.name, "path": str(item), "size": item.stat().st_size, "sha256": digest.hexdigest()})
+                    digest_sha.update(chunk)
+                    digest_md5.update(chunk)
+            records.append({
+                "name": item.name,
+                "path": str(item),
+                "size": item.stat().st_size,
+                "sha256": digest_sha.hexdigest(),
+                "md5": digest_md5.hexdigest(),
+                "file_type": item.suffix.lstrip("."),
+            })
             if len(records) >= max_files:
                 return records
     return records
@@ -456,7 +471,7 @@ def http_json(url: str, payload: dict[str, Any], headers: dict[str, str], config
         return json.loads(response.read().decode())
 
 
-def http_upload(path: Path, metadata: dict[str, Any], probe_id: int, token: str, config: Config, timeout: int = 120) -> dict[str, Any]:
+def http_upload(path: Path, metadata: dict[str, Any], probe_id: int, token: str, config: Config, timeout: int = 120, url_path: str = "/api/v1/pcaps/upload") -> dict[str, Any]:
     boundary = f"----dst{os.getpid()}{int(time.time() * 1000)}"
     fields = [("probe_id", str(probe_id)), ("metadata_json", json.dumps(metadata, ensure_ascii=False))]
     chunks = []
@@ -485,13 +500,19 @@ def http_upload(path: Path, metadata: dict[str, Any], probe_id: int, token: str,
         "X-Probe-ID": str(probe_id),
         "X-Probe-Token": token,
     }
-    connection.request("POST", "/api/v1/pcaps/upload", body=body_iter(), headers=headers, encode_chunked=True)
+    connection.request("POST", url_path, body=body_iter(), headers=headers, encode_chunked=True)
     response = connection.getresponse()
     payload = response.read().decode("utf-8", errors="replace")
     connection.close()
     if response.status < 200 or response.status >= 300:
         raise urllib.error.HTTPError(config.base_url(), response.status, response.reason, response.headers, None)
     return json.loads(payload)
+
+
+def http_upload_file(path: Path, metadata: dict[str, Any], probe_id: int, token: str, config: Config, timeout: int = 120) -> dict[str, Any]:
+    """Upload a target file's content to ``/api/v1/files/upload`` so the backend
+    can run metadata + sensitive-data analysis on the real bytes."""
+    return http_upload(path, metadata, probe_id, token, config, timeout=timeout, url_path="/api/v1/files/upload")
 
 
 def backoff_seconds(attempts: int, maximum: int) -> float:
@@ -517,6 +538,7 @@ class ProbeAgent:
         self.upload_status = "online"
         self.auth_error = False
         self.upload_failures = 0
+        self.uploaded_files: list[str] = []
         self.lock = threading.Lock()
 
     def _restore_sequence(self) -> int:
@@ -733,9 +755,29 @@ class ProbeAgent:
         interval = int(self.config.agent["file_interval_seconds"])
         if interval <= 0 or not self.config.agent["paths"]:
             return
+        uploaded: set[str] = set()
         while not self.stop_event.is_set():
             try:
                 files = file_records([Path(item) for item in self.config.agent["paths"]], int(self.config.agent["max_files"]))
+                for record in files:
+                    if record["sha256"] in uploaded or not self.probe_id:
+                        continue
+                    try:
+                        meta = {
+                            "name": record["name"],
+                            "path": record["path"],
+                            "size": record["size"],
+                            "sha256": record["sha256"],
+                            "md5": record["md5"],
+                            "file_type": record["file_type"],
+                            "agent_version": AGENT_VERSION,
+                        }
+                        result = http_upload_file(Path(record["path"]), meta, int(self.probe_id), self.token, self.config)
+                        uploaded.add(record["sha256"])
+                        if result.get("id"):
+                            self.uploaded_files.append(record["sha256"])
+                    except Exception:
+                        pass
                 if self.probe_id:
                     http_json(f"{self.config.base_url()}/api/v1/probes/{self.probe_id}/heartbeat", {"status": "online", "metadata": {"file_inventory": files, "capture_status": self.capture_status, "upload_status": self.upload_status}}, self.headers(), self.config)
             except Exception:

@@ -69,9 +69,11 @@ from app.models import (
     PacketRecord,
     PcapRecord,
     Probe,
+    OfflineResource,
     Report,
     Task,
     User,
+    Vulnerability,
 )
 from app.schemas import (
     GenerateReportRequest,
@@ -90,7 +92,7 @@ from app.services.alert_service import (
 )
 from app.services.asset_service import asset_relations
 from app.services.audit_service import audit_summary, log_analysis
-from app.services.protocol_service import protocol_tree
+from app.services.protocol_service import packet_detail, protocol_tree
 from app.services.report_service import build_summary, render_html, render_pdf
 from app.services.traffic_service import (
     detect_anomalies,
@@ -111,6 +113,27 @@ router = APIRouter(prefix="/api/v1")
 incident_engine = IncidentEngine()
 
 
+# Minimal ATT&CK mapping for common rule ids. Extend as rule set grows.
+ATTACK_MAP: dict[str, dict[str, str]] = {
+    "NETWORK_PORT_SCAN": {"tactic": "Reconnaissance", "technique": "Network Service Scanning", "technique_id": "T1046"},
+    "NET_C2_BEACON_001": {"tactic": "Command and Control", "technique": "Application Layer Protocol", "technique_id": "T1071"},
+    "PROTO_DNS_TUNNEL_001": {"tactic": "Exfiltration", "technique": "DNS", "technique_id": "T1048.003"},
+    "PROTO_DNS_TXT_001": {"tactic": "Exfiltration", "technique": "DNS", "technique_id": "T1048.003"},
+    "PROTO_HTTP_UA_001": {"tactic": "Initial Access", "technique": "User Agent Fingerprinting", "technique_id": "T1595.002"},
+    "PROTO_HTTP_UPLOAD_001": {"tactic": "Persistence", "technique": "Web Shell", "technique_id": "T1505.003"},
+    "DATA_PII_001": {"tactic": "Collection", "technique": "Data from Information Repositories", "technique_id": "T1213"},
+    "DATA_SECRET_001": {"tactic": "Credential Access", "technique": "Unsecured Credentials", "technique_id": "T1552"},
+    "DATA_YARA_001": {"tactic": "Defense Evasion", "technique": "Obfuscated Files or Information", "technique_id": "T1027"},
+    "ASSET_PUBLIC_DB_001": {"tactic": "Initial Access", "technique": "Exposed Database", "technique_id": "T1190"},
+    "ASSET_DB_WEAK_AUTH_001": {"tactic": "Credential Access", "technique": "Brute Force", "technique_id": "T1110"},
+    "ASSET_PUBLIC_WEB_001": {"tactic": "Initial Access", "technique": "Exploit Public-Facing Application", "technique_id": "T1190"},
+}
+
+
+def _attack(rule_id: str) -> dict[str, str]:
+    return ATTACK_MAP.get(rule_id, {"tactic": "", "technique": "", "technique_id": ""})
+
+
 def _serialize_task(task: Task) -> dict[str, Any]:
     return {
         "id": task.id,
@@ -121,6 +144,7 @@ def _serialize_task(task: Task) -> dict[str, Any]:
         "log": task.log,
         "payload": task.payload,
         "result": task.result,
+        "worker": (task.result or {}).get("worker", ""),
         "error": task.error,
         "created_at": task.created_at,
         "started_at": task.started_at,
@@ -148,6 +172,7 @@ def _serialize_asset(item: Asset) -> dict[str, Any]:
 
 
 def _serialize_detection(item: DetectionFinding) -> dict[str, Any]:
+    attack = _attack(item.rule_id)
     return {
         "id": item.id,
         "task_id": item.task_id,
@@ -162,6 +187,9 @@ def _serialize_detection(item: DetectionFinding) -> dict[str, Any]:
         "risk_score": item.risk_score,
         "risk_level": item.risk_level,
         "timestamp": item.timestamp,
+        "tactic": attack["tactic"],
+        "technique": attack["technique"],
+        "technique_id": attack["technique_id"],
         "created_at": item.created_at,
     }
 
@@ -450,6 +478,21 @@ def _merge_capability(capabilities: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
+def _engine_rule_counts() -> dict[str, int]:
+    base = Path(__file__).resolve().parents[1] / "rules"
+    counts: dict[str, int] = {}
+    for sub, engine in (("network", "traffic_engine"), ("data", "data_engine"), ("logs", "sigma_log_engine"), ("compliance", "compliance_engine")):
+        directory = base / sub
+        count = 0
+        if directory.exists():
+            for path in directory.rglob("*"):
+                if path.is_file() and path.suffix in {".yaml", ".yml", ".yar"}:
+                    count += 1
+        counts[engine] = count
+    counts["yara"] = sum(1 for _ in (base / "data").glob("*.yar")) if (base / "data").exists() else 0
+    return counts
+
+
 @router.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     redis_ok = False
@@ -498,6 +541,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "tshark": merged.get("tshark", {"available": False, "version": ""}),
         "zeek": merged.get("zeek", {"available": False, "version": ""}),
         "suricata": merged.get("suricata", {"available": False, "version": "", "rule_count": 0}),
+        "engine_rule_counts": _engine_rule_counts(),
         "storage_usage_bytes": storage_bytes,
         "storage_max_bytes": settings.pcap_storage_max_gb * 1024 * 1024 * 1024,
         "queue": {"pending": db.scalar(select(func.count(Task.id)).where(Task.status == "Pending")) or 0, "running": running, "oldest_pending_age": oldest_age},
@@ -615,12 +659,17 @@ def asset_detail(asset_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
     data_assets = db.scalars(select(DataAsset).where(DataAsset.source == item.hostname).limit(100)).all()
     iocs = db.scalars(select(IOC).where(IOC.value.in_([item.ip, item.hostname])).limit(100)).all()
     relations = db.scalars(select(GraphRelation).where(or_(GraphRelation.source_node == item.ip, GraphRelation.target_node == item.ip))).all()
+    vulnerabilities = db.scalars(select(Vulnerability).where(Vulnerability.asset_id == asset_id).order_by(Vulnerability.cvss_score.desc()).limit(100)).all()
     return {
         "asset": _serialize_asset(item),
         "findings": [_serialize_detection(item) for item in findings],
         "incidents": [_serialize_incident(item) for item in incidents],
         "data_assets": [_serialize_data_asset(item) for item in data_assets],
         "iocs": [_serialize_ioc(item) for item in iocs],
+        "vulnerabilities": [
+            {"id": item.id, "cve_id": item.cve_id, "cwe_id": item.cwe_id, "severity": item.severity, "cvss_score": item.cvss_score, "description": item.description, "status": item.status}
+            for item in vulnerabilities
+        ],
         "relations": [
             {"source_node": item.source_node, "source_type": item.source_type, "target_node": item.target_node, "target_type": item.target_type, "relation": item.relation, "risk": item.risk}
             for item in relations
@@ -1085,7 +1134,22 @@ def engine_registry() -> list[dict[str, Any]]:
 
 @router.get("/integrations")
 def list_integrations() -> list[dict[str, Any]]:
-    return integration_registry.metadata()
+    entries = list(integration_registry.metadata())
+    sigma_count = _engine_rule_counts().get("sigma_log_engine", 0)
+    entries.append({
+        "name": "sigma",
+        "version": "1.0.0",
+        "installed": True,
+        "enabled": True,
+        "healthy": True,
+        "runtime_version": "builtin",
+        "supported_types": ["log", "text"],
+        "capabilities": ["log_detection"],
+        "rule_count": sigma_count,
+        "status": "ready",
+        "message": "Sigma-style log rule interpreter (built-in)",
+    })
+    return entries
 
 
 @router.post("/integrations/{name}/analyze")
@@ -1272,12 +1336,43 @@ def alert_detail(alert_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
     if finding and finding.target_type == "pcap":
         pcap = db.get(PcapRecord, int(finding.target_id)) if str(finding.target_id).isdigit() else None
     deliveries = db.scalars(select(AlertDelivery).where(AlertDelivery.alert_id == alert.id).order_by(AlertDelivery.id.desc())).all()
+    # Derive associated assets / IOC / data assets from the finding evidence.
+    assets: list[dict[str, Any]] = []
+    iocs: list[dict[str, Any]] = []
+    data_assets: list[dict[str, Any]] = []
+    if finding:
+        evidence = finding.evidence or {}
+        candidate_ips: list[str] = []
+        candidate_iocs: list[str] = []
+        for key in ("asset", "src_ip", "dst_ip", "dest_ip", "ip", "host", "hostname"):
+            value = evidence.get(key)
+            if isinstance(value, str) and value not in candidate_ips:
+                candidate_ips.append(value)
+        for key in ("value", "query", "qname", "rrname", "domain", "url", "uri", "ioc"):
+            value = evidence.get(key)
+            if isinstance(value, str) and value not in candidate_iocs:
+                candidate_iocs.append(value)
+            elif isinstance(value, dict) and value.get("value"):
+                candidate_iocs.append(str(value["value"]))
+        if candidate_ips:
+            asset_rows = db.scalars(select(Asset).where(Asset.ip.in_(candidate_ips)).limit(50)).all()
+            assets = [_serialize_asset(item) for item in asset_rows]
+        if candidate_iocs:
+            ioc_rows = db.scalars(select(IOC).where(IOC.value.in_(candidate_iocs)).limit(50)).all()
+            iocs = [_serialize_ioc(item) for item in ioc_rows]
+        file_name = evidence.get("file") or (evidence.get("record", {}).get("filename") if isinstance(evidence.get("record"), dict) else "")
+        if file_name:
+            da_rows = db.scalars(select(DataAsset).where(DataAsset.name == file_name).limit(50)).all()
+            data_assets = [_serialize_data_asset(item) for item in da_rows]
     return {
         "alert": serialize_alert(alert),
         "finding": _serialize_detection(finding) if finding else None,
         "incident": _serialize_incident(incident) if incident else None,
         "probe": _serialize_probe(probe) if probe else None,
         "pcap": _serialize_pcap(pcap) if pcap else None,
+        "assets": assets,
+        "iocs": iocs,
+        "data_assets": data_assets,
         "deliveries": [
             {"id": item.id, "channel": item.channel, "target": item.target, "status": item.status, "attempts": item.attempts, "last_error": item.last_error, "sent_at": item.sent_at}
             for item in deliveries
@@ -1454,3 +1549,262 @@ def dashboard_high_risk_assets(limit: int = Query(10, le=100), db: Session = Dep
 def dashboard_sensitive_data(db: Session = Depends(get_db)) -> dict[str, Any]:
     rows = db.execute(select(DataAsset.sensitivity, func.count(DataAsset.id)).group_by(DataAsset.sensitivity)).all()
     return {"items": [{"category": category, "count": count} for category, count in rows]}
+
+
+# ---------------------------------------------------------------------------
+# Frontend-alignment additions
+# ---------------------------------------------------------------------------
+
+
+@router.get("/flows")
+def global_flows(search: str | None = None, ip: str | None = None, protocol: str | None = None, port: int | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Global flow explorer across all captured PCAPs."""
+    query = select(Flow)
+    if ip:
+        query = query.where(or_(Flow.src_ip == ip, Flow.dst_ip == ip))
+    if protocol:
+        query = query.where(Flow.protocol == protocol)
+    if port:
+        query = query.where(or_(Flow.src_port == port, Flow.dst_port == port))
+    if search:
+        query = query.where(or_(Flow.src_ip.ilike(f"%{search}%"), Flow.dst_ip.ilike(f"%{search}%")))
+    result = paginate(db, query.order_by(Flow.bytes.desc()), page, page_size)
+    return page_response([_serialize_flow(item) for item in result["items"]], page, page_size, result["total"])
+
+
+@router.get("/protocols")
+def global_protocols(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """Global protocol distribution across all captured PCAPs."""
+    rows = db.execute(select(Flow.protocol, func.count(Flow.id), func.sum(Flow.bytes)).group_by(Flow.protocol)).all()
+    items = [{"name": name, "count": count, "bytes": int(bytes or 0)} for name, count, bytes in rows]
+    items.sort(key=lambda item: item["count"], reverse=True)
+    return items
+
+
+@router.get("/network/live")
+def network_live(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Live traffic overview derived from recent PCAP flows + probe heartbeat."""
+    now = datetime.now(UTC)
+    window_seconds = 300
+    since = now - timedelta(seconds=window_seconds)
+    recent_pcaps = db.scalars(select(PcapRecord.id).where(PcapRecord.created_at >= since)).all()
+    pcap_ids = [item for item in recent_pcaps]
+    probes = db.scalars(select(Probe)).all()
+    online = 0
+    degraded = 0
+    cpu: list[float] = []
+    mem: list[float] = []
+    for probe in probes:
+        status = _serialize_probe(probe)["status"]
+        if status == "online":
+            online += 1
+        elif status == "degraded":
+            degraded += 1
+        extra = probe.extra or {}
+        system = extra.get("system") or {}
+        if isinstance(system.get("cpu_percent"), (int, float)):
+            cpu.append(float(system["cpu_percent"]))
+        if isinstance(system.get("memory_percent"), (int, float)):
+            mem.append(float(system["memory_percent"]))
+    flows: list[Flow] = []
+    packets: list[PacketRecord] = []
+    if pcap_ids:
+        flows = list(db.scalars(select(Flow).where(Flow.pcap_id.in_(pcap_ids))).all())
+        packets = list(db.scalars(select(PacketRecord).where(PacketRecord.pcap_id.in_(pcap_ids))).all())
+    total_bytes = sum(item.bytes for item in flows)
+    total_packets = sum(item.packets for item in flows)
+    src_counter: Counter[str] = Counter()
+    dst_counter: Counter[str] = Counter()
+    port_counter: Counter[int] = Counter()
+    for flow in flows:
+        src_counter[flow.src_ip] += flow.bytes
+        dst_counter[flow.dst_ip] += flow.bytes
+        port_counter[flow.dst_port] += flow.bytes
+    top_src = [{"ip": ip, "bytes": bytes} for ip, bytes in src_counter.most_common(10)]
+    top_dst = [{"ip": ip, "bytes": bytes} for ip, bytes in dst_counter.most_common(10)]
+    top_port = [{"port": port, "bytes": bytes} for port, bytes in port_counter.most_common(10)]
+    recent_alerts = db.scalar(select(func.count(Alert.id)).where(Alert.created_at >= since)) or 0
+    return {
+        "window_seconds": window_seconds,
+        "probes": {"online": online, "degraded": degraded, "total": len(probes)},
+        "connections": len(flows),
+        "packets": total_packets,
+        "bytes": total_bytes,
+        "pps": round(total_packets / window_seconds, 2),
+        "bps": round(total_bytes / window_seconds, 2),
+        "avg_cpu_percent": round(sum(cpu) / len(cpu), 2) if cpu else 0,
+        "avg_memory_percent": round(sum(mem) / len(mem), 2) if mem else 0,
+        "top_src": top_src,
+        "top_dst": top_dst,
+        "top_port": top_port,
+        "alerts_30m": recent_alerts,
+    }
+
+
+@router.get("/sensitive/findings")
+def sensitive_findings(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Aggregate sensitive-data findings by category plus hit details."""
+    findings = db.scalars(select(DetectionFinding).where(DetectionFinding.engine == "data_engine").order_by(DetectionFinding.risk_score.desc()).limit(500)).all()
+    categories: dict[str, dict[str, Any]] = {}
+    details: list[dict[str, Any]] = []
+    for item in findings:
+        rule_id = item.rule_id
+        cat = "secret" if rule_id == "DATA_SECRET_001" else "pii" if rule_id == "DATA_PII_001" else "yara"
+        entry = categories.setdefault(cat, {"category": cat, "count": 0, "severity": item.severity, "risk_score": 0})
+        entry["count"] += 1
+        entry["risk_score"] = max(entry["risk_score"], item.risk_score)
+        evidence = item.evidence or {}
+        detail = {
+            "id": item.id,
+            "rule_id": item.rule_id,
+            "severity": item.severity,
+            "risk_level": item.risk_level,
+            "file": evidence.get("file", ""),
+            "target_id": item.target_id,
+            "counts": evidence.get("regex", {}).get("counts", {}) if isinstance(evidence.get("regex"), dict) else {},
+            "secret_count": evidence.get("secret_count", 0) if isinstance(evidence.get("secret_count"), int) else (evidence.get("regex", {}).get("secret_count", 0) if isinstance(evidence.get("regex"), dict) else 0),
+        }
+        details.append(detail)
+    data_assets = db.scalars(select(DataAsset)).all()
+    by_sensitivity: dict[str, int] = {}
+    for asset in data_assets:
+        by_sensitivity[asset.sensitivity] = by_sensitivity.get(asset.sensitivity, 0) + 1
+    return {
+        "categories": list(categories.values()),
+        "details": details,
+        "data_assets": {"total": len(data_assets), "by_sensitivity": by_sensitivity},
+    }
+
+
+@router.get("/dashboard/incident-trend")
+def incident_trend(range: str = Query("7d"), db: Session = Depends(get_db)) -> dict[str, Any]:
+    days = 1 if range == "24h" else 7
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = db.scalars(select(Incident).where(Incident.created_at >= since).order_by(Incident.created_at)).all()
+    buckets: dict[str, dict[str, float | int]] = {}
+    for item in rows:
+        key = item.created_at.strftime("%Y-%m-%d") if days > 1 else item.created_at.strftime("%Y-%m-%d %H:00")
+        entry = buckets.setdefault(key, {"count": 0, "critical": 0, "high": 0, "medium": 0, "risk_score": 0})
+        entry["count"] = int(entry["count"]) + 1
+        entry["risk_score"] = max(float(entry["risk_score"]), item.risk_score)
+        if item.severity == "Critical":
+            entry["critical"] = int(entry["critical"]) + 1
+        elif item.severity == "High":
+            entry["high"] = int(entry["high"]) + 1
+        elif item.severity == "Medium":
+            entry["medium"] = int(entry["medium"]) + 1
+    return {"range": range, "items": [{"time": key, **value} for key, value in sorted(buckets.items())]}
+
+
+@router.get("/rules")
+def list_rules(rule_type: str | None = Query(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """List Sigma / Suricata / YARA rules with content."""
+    base = Path(__file__).resolve().parents[1] / "rules"
+    items: list[dict[str, Any]] = []
+
+    def _add(path: Path, rtype: str) -> None:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            content = ""
+        items.append({"type": rtype, "name": path.name, "path": str(path), "content": content, "size": path.stat().st_size})
+
+    for path in sorted((base / "logs").glob("*.yaml")):
+        _add(path, "sigma")
+    for path in sorted((base / "data").glob("*.yar")):
+        _add(path, "yara")
+    for path in sorted((base / "data").glob("*.yaml")):
+        _add(path, "sigma")
+    for path in sorted((base / "network").glob("*.yaml")):
+        _add(path, "sigma")
+    for path in sorted((base / "compliance").glob("*.yaml")):
+        _add(path, "sigma")
+    # Offline-imported Suricata rules
+    resources = db.scalars(select(OfflineResource).where(OfflineResource.resource_type == "suricata_rules")).all()
+    for resource in resources:
+        path = Path(resource.storage_path)
+        if path.exists() and path.is_file():
+            _add(path, "suricata")
+        elif path.exists() and path.is_dir():
+            for rule_file in sorted(path.glob("*.rules")):
+                _add(rule_file, "suricata")
+    if rule_type:
+        items = [item for item in items if item["type"] == rule_type]
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/probes/{probe_id}/metrics")
+def probe_metrics(probe_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    probe = db.get(Probe, probe_id)
+    if not probe:
+        raise HTTPException(404, "probe not found")
+    extra = probe.extra or {}
+    system = extra.get("system") or {}
+    spool = extra.get("spool_size_mb", 0)
+    pending = extra.get("pending_segments", 0)
+    quarantined = extra.get("quarantined_segments", 0)
+    return {
+        "probe": _serialize_probe(probe),
+        "system": system,
+        "cpu_percent": system.get("cpu_percent"),
+        "memory_percent": system.get("memory_percent"),
+        "memory_rss_mb": system.get("memory_rss_mb") or extra.get("memory_rss_mb"),
+        "capture_status": extra.get("capture_status", probe.status),
+        "upload_status": extra.get("upload_status", "online"),
+        "capture_tool": extra.get("capture_tool", ""),
+        "spool_size_mb": spool,
+        "pending_segments": pending,
+        "quarantined_segments": quarantined,
+        "drop_rate": extra.get("drop_rate"),
+        "last_capture": extra.get("last_capture", ""),
+        "last_upload": extra.get("last_upload", ""),
+        "last_seen": _aware(probe.last_seen),
+    }
+
+
+@router.get("/pcaps/{pcap_id}/packets/{packet_id}")
+def pcap_packet_detail(pcap_id: int, packet_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    record = db.get(PacketRecord, packet_id)
+    if not record or record.pcap_id != pcap_id:
+        raise HTTPException(404, "packet not found")
+    pcap = db.get(PcapRecord, pcap_id)
+    if not pcap:
+        raise HTTPException(404, "pcap not found")
+    detail = packet_detail(Path(pcap.storage_path), record.number)
+    if detail is None:
+        detail = {"raw": "", "layers": []}
+    return {"packet": _serialize_packet(record), "raw": detail.get("raw", ""), "layers": detail.get("layers", [])}
+
+
+@router.get("/pcaps/{pcap_id}/streams/{stream_id}")
+def pcap_tcp_stream(pcap_id: int, stream_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    pcap = db.get(PcapRecord, pcap_id)
+    if not pcap:
+        raise HTTPException(404, "pcap not found")
+    stream = tcp_stream_follow(Path(pcap.storage_path), stream_id)
+    if stream is None:
+        raise HTTPException(404, "stream not found")
+    return stream
+
+
+@router.get("/pcaps/{pcap_id}/files/{file_id}/download")
+def pcap_file_download(pcap_id: int, file_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    """Best-effort download for a network file extracted by Zeek/Suricata.
+
+    The per-analysis workspace is transient, so a stored extracted file is only
+    available when the integration retained it. Returns 404 otherwise.
+    """
+    pcap = db.get(PcapRecord, pcap_id)
+    if not pcap:
+        raise HTTPException(404, "pcap not found")
+    rows = db.scalars(select(AnalysisResult).where(AnalysisResult.module == "integrations", AnalysisResult.task_id.in_(select(Task.id).where(Task.payload["pcap_id"].as_integer() == pcap_id)))).all()
+    for row in rows:
+        for name, events in (row.content or {}).items():
+            if not isinstance(events, list):
+                continue
+            for item in events:
+                if str(item.get("id", item.get("fuid", ""))) == str(file_id) or item.get("fuid") == file_id:
+                    storage = item.get("storage_path") or item.get("extracted_path") or item.get("path") or item.get("filename")
+                    if storage and Path(storage).exists():
+                        return FileResponse(storage, filename=item.get("filename") or item.get("name") or Path(storage).name)
+    raise HTTPException(404, "file content not retained (transient workspace)")

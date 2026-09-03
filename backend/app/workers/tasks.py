@@ -268,7 +268,11 @@ def create_task(db, kind: str, payload: dict[str, Any]) -> Task:
 
 
 def _finish(task_id: int, error: str = "", result: dict[str, Any] | None = None) -> None:
-    update_task(task_id, status="Success" if not error else "Failed", progress=100, current_stage="done" if not error else "failed", error=error, finished_at=datetime.now(UTC), result=result or {})
+    import socket as _socket
+
+    payload = dict(result or {})
+    payload.setdefault("worker", _socket.gethostname())
+    update_task(task_id, status="Success" if not error else "Failed", progress=100, current_stage="done" if not error else "failed", error=error, finished_at=datetime.now(UTC), result=payload)
 
 
 def _mark_failed(task_id: int, exc: Exception, stage: str = "failed") -> None:
