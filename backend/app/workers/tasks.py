@@ -1,3 +1,4 @@
+import functools
 import json
 import smtplib
 from datetime import UTC, datetime, timedelta
@@ -269,6 +270,45 @@ def _finish(task_id: int, error: str = "", result: dict[str, Any] | None = None)
     update_task(task_id, status="Success" if not error else "Failed", progress=100, current_stage="done" if not error else "failed", error=error, finished_at=datetime.now(UTC), result=result or {})
 
 
+def _mark_failed(task_id: int, exc: Exception, stage: str = "failed") -> None:
+    """A task must never remain Running; any exception lands in Failed."""
+    import traceback
+
+    update_task(
+        task_id,
+        status="Failed",
+        progress=100,
+        current_stage=stage,
+        error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[:2000]}",
+        finished_at=datetime.now(UTC),
+    )
+
+
+def _mark_running(task_id: int, progress: int, stage: str) -> None:
+    update_task(task_id, status="Running", progress=progress, current_stage=stage)
+
+
+def task_guard(func):
+    """Wrap a Celery task so any exception lands the Task row in Failed.
+
+    A task must never remain ``Running``. The guard extracts ``task_id`` from
+    the final positional arg or the ``task_id`` kwarg, marks Failed with a full
+    stack trace, then re-raises so Celery logs the real failure.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        task_id = kwargs.get("task_id") or (args[-1] if args and isinstance(args[-1], int) else None)
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            if task_id is not None:
+                _mark_failed(int(task_id), exc)
+            raise
+
+    return wrapper
+
+
 @celery_app.task(name="security_toolbox.deliver_alert")
 def _delivery_backoff(attempts: int) -> int:
     sequence = [10, 60, 300, 900, 1800]
@@ -350,6 +390,7 @@ def deliver_alert_task(alert_id: int) -> None:
 
 
 @celery_app.task(name="security_toolbox.analyze_metadata")
+@task_guard
 def metadata_task(file_id: int, task_id: int) -> None:
     update_task(task_id, status="Running", progress=10, current_stage="读取文件")
     with SessionLocal() as db:
@@ -381,6 +422,7 @@ def metadata_task(file_id: int, task_id: int) -> None:
 
 
 @celery_app.task(name="security_toolbox.analyze_pcap")
+@task_guard
 def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
     update_task(task_id, status="Running", progress=10, current_stage="读取 PCAP")
     with SessionLocal() as db:
@@ -392,6 +434,20 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
         if not path.exists():
             _finish(task_id, "PCAP 路径不存在")
             return
+        # Re-analysis must not re-append derived rows. Wipe previous derived
+        # data (flows, packets, anomalies, findings and their alerts) so a
+        # manual re-analyze is idempotent and never duplicates records.
+        from sqlalchemy import delete
+
+        db.execute(delete(Anomaly).where(Anomaly.pcap_id == pcap_id))
+        db.execute(delete(Flow).where(Flow.pcap_id == pcap_id))
+        db.execute(delete(PacketRecord).where(PacketRecord.pcap_id == pcap_id))
+        old_findings = db.scalars(select(DetectionFinding.id).where(DetectionFinding.target_type == "pcap", DetectionFinding.target_id == str(pcap_id))).all()
+        if old_findings:
+            db.execute(delete(AlertDelivery).where(AlertDelivery.alert_id.in_(select(Alert.id).where(Alert.finding_id.in_(old_findings)))))
+            db.execute(delete(Alert).where(Alert.finding_id.in_(old_findings)))
+            db.execute(delete(DetectionFinding).where(DetectionFinding.id.in_(old_findings)))
+        db.commit()
         update_task(task_id, progress=30, current_stage="协议解析")
         parsed = parse_pcap(path, max_index_packets=settings.pcap_index_limit)
         record.packet_count = parsed["packet_count"]
@@ -452,6 +508,7 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
 
 
 @celery_app.task(name="security_toolbox.analyze_assets")
+@task_guard
 def asset_task(probe_id: int, task_id: int) -> None:
     update_task(task_id, status="Running", progress=20, current_stage="资产识别")
     with SessionLocal() as db:
@@ -482,6 +539,7 @@ def asset_task(probe_id: int, task_id: int) -> None:
 
 
 @celery_app.task(name="security_toolbox.cleanup_pcap_retention")
+@task_guard
 def cleanup_pcap_retention_task() -> dict[str, int]:
     removed = 0
     with SessionLocal() as db:
