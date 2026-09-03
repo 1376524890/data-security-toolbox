@@ -2,6 +2,7 @@
 import { onMounted, ref, computed } from 'vue'
 import { listDataAssets } from '../../api/dataAssets'
 import { listDetections } from '../../api/detections'
+import { getSensitiveFindings, type SensitiveFindings } from '../../api/dataAssets'
 import { getRiskSummary } from '../../api/risk'
 import type { DataAsset } from '../../types/dataAsset'
 import type { DetectionFinding } from '../../types/finding'
@@ -17,6 +18,7 @@ const error = ref('')
 const assets = ref<DataAsset[]>([])
 const findings = ref<DetectionFinding[]>([])
 const risk = ref<{ data_sensitivity: Record<string, number> } | null>(null)
+const sensitive = ref<SensitiveFindings | null>(null)
 
 const categoryLabels: Record<string, string> = {
   id_card: '身份证', phone: '手机号', bank_card: '银行卡', email: 'Email', medical: '医疗数据', secret: 'Secret',
@@ -24,29 +26,27 @@ const categoryLabels: Record<string, string> = {
 
 const categoryCounts = computed(() => {
   const counts: Record<string, number> = {}
-  assets.value.forEach((asset) => {
-    asset.columns?.forEach((col) => {
-      (col.categories || []).forEach((cat) => { counts[cat] = (counts[cat] || 0) + 1 })
-    })
-  })
+  sensitive.value?.categories.forEach((cat) => { counts[cat.category] = cat.count })
   return counts
 })
 
 const categoryData = computed(() => Object.entries(categoryCounts.value).map(([name, value]) => ({ name: categoryLabels[name] || name, value })))
-const sensitivityData = computed(() => Object.entries(risk.value?.data_sensitivity || {}).map(([name, value]) => ({ name, value })))
+const sensitivityData = computed(() => Object.entries(sensitive.value?.data_assets?.by_sensitivity || {}).map(([name, value]) => ({ name, value })))
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [assetResult, findingResult, riskResult] = await Promise.all([
+    const [assetResult, findingResult, riskResult, sensitiveResult] = await Promise.all([
       listDataAssets({ page: 1, page_size: 200 }),
       listDetections({ engine: 'data', page: 1, page_size: 100 }),
       getRiskSummary(),
+      getSensitiveFindings(),
     ])
     assets.value = assetResult.items
     findings.value = findingResult.items
     risk.value = riskResult
+    sensitive.value = sensitiveResult
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -86,7 +86,6 @@ onMounted(load)
           <el-table-column label="证据" min-width="200"><template #default="{ row }"><EvidenceViewer :evidence="row.evidence" /></template></el-table-column>
         </el-table>
       </div>
-      <div class="gap-note" style="margin-top: 12px">敏感发现当前基于数据资产列类目与 data 引擎检测聚合；独立敏感发现端点未提供（缺口已记录）</div>
     </StateBox>
   </div>
 </template>

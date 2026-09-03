@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listPcaps, getPcap, analyzePcap, uploadPcap, getPcapFlows, getPcapPackets, getPcapAlerts, getPcapDns, getPcapHttp, getPcapTls, getPcapFiles, getTraffic, getPcapProtocols, getPcapAnomalies } from '../../../api/pcaps'
+import { listPcaps, getPcap, analyzePcap, uploadPcap, getPcapFlows, getPcapPackets, getPcapAlerts, getPcapDns, getPcapHttp, getPcapTls, getPcapFiles, getTraffic, getPcapProtocols, getPcapAnomalies, getPcapPacketDetail, getPcapStream, type PacketDetail } from '../../../api/pcaps'
 import type { PcapRecord, Flow, Packet, AlertItem, TrafficOverview, NetworkFile, ProtocolLayer } from '../../../types/pcap'
 import StateBox from '../../../components/common/StateBox.vue'
 import PacketViewer from '../../../components/network/PacketViewer.vue'
@@ -31,36 +31,23 @@ const traffic = ref<TrafficOverview | null>(null)
 const protocolTree = ref<Array<Record<string, unknown>>>([])
 const anomalies = ref<Array<Record<string, unknown>>>([])
 const selectedPacket = ref<Packet | null>(null)
+const packetDetail = ref<PacketDetail | null>(null)
+const packetDetailLoading = ref(false)
 const filters = reactive({ search: '', status: '', page: 1, page_size: 50 })
 
 const packetLayers = computed<Layer[]>(() => {
-  const p = selectedPacket.value
-  if (!p) return []
-  const layers: Layer[] = []
-  layers.push({ name: 'Ethernet II', items: [
-    { label: 'Source MAC', value: '—' },
-    { label: 'Destination MAC', value: '—' },
-    { label: 'Type', value: 'IPv4 (0x0800)' },
-  ] })
-  layers.push({ name: 'Internet Protocol Version 4', items: [
-    { label: 'Version', value: '4' },
-    { label: 'Source', value: p.src_ip },
-    { label: 'Destination', value: p.dst_ip },
-    { label: 'Protocol', value: p.protocol },
-    { label: 'Length', value: String(p.length) },
-  ] })
-  if (p.src_port || p.dst_port) {
-    layers.push({ name: p.protocol.toUpperCase(), items: [
-      { label: 'Source Port', value: String(p.src_port) },
-      { label: 'Destination Port', value: String(p.dst_port) },
-      { label: 'Info', value: p.info || '—' },
-    ] })
-  }
-  layers.push({ name: 'Raw Payload', note: '原始字节与深层协议解析需要后端 packet-detail 接口（已记录为前端缺口）', items: [] })
-  return layers
+  return packetDetail.value?.layers || []
 })
 
-const packetHex = computed(() => selectedPacket.value ? '' : '')
+const packetHex = computed(() => packetDetail.value?.raw || '')
+
+const selectedTcpStream = computed<number | null>(() => {
+  const tcp = packetDetail.value?.layers.find((layer) => layer.name === 'TCP')
+  const item = tcp?.items.find((i) => i.label === 'stream')
+  if (!item) return null
+  const value = Number(item.value)
+  return Number.isFinite(value) ? value : null
+})
 
 const dnsColumns = ['query', 'qname', 'rrname', 'name', 'type', 'rcode', 'source']
 const httpColumns = ['method', 'uri', 'host', 'status', 'user_agent', 'source']
@@ -123,9 +110,36 @@ async function handleUpload(file: File): Promise<void> {
   }
 }
 
-function selectPacket(packet: Packet): void {
+async function selectPacket(packet: Packet): Promise<void> {
   selectedPacket.value = packet
   activeTab.value = 'packets'
+  packetDetail.value = null
+  if (!selected.value) return
+  packetDetailLoading.value = true
+  try {
+    packetDetail.value = await getPcapPacketDetail(selected.value.id, packet.id)
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    packetDetailLoading.value = false
+  }
+}
+
+const streamDialog = ref(false)
+const streamData = ref<{ stream: string; nodes: Array<{ node: number; ip: string; port: number }>; directions: Array<{ direction: string; ascii: string; hex: string }> } | null>(null)
+const streamLoading = ref(false)
+
+async function followStream(streamId: number): Promise<void> {
+  if (!selected.value) return
+  streamLoading.value = true
+  try {
+    streamData.value = await getPcapStream(selected.value.id, streamId)
+    streamDialog.value = true
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    streamLoading.value = false
+  }
 }
 
 function reset(): void { filters.page = 1; load() }
@@ -226,7 +240,14 @@ onMounted(load)
                   </el-tab-pane>
                   <el-tab-pane label="Hex">
                     <HexViewer :data="packetHex" />
-                    <div class="gap-note">原始字节需后端 packet-detail 接口（缺口已记录）</div>
+                    <div v-if="packetDetailLoading" class="gap-note">加载原始字节中…</div>
+                    <div v-else-if="!packetHex" class="gap-note">该数据包无可用原始字节</div>
+                  </el-tab-pane>
+                  <el-tab-pane label="流跟踪">
+                    <div class="pe-actions">
+                      <el-button size="small" type="primary" :loading="streamLoading" :disabled="selectedTcpStream === null" @click="followStream(selectedTcpStream!)">Follow TCP Stream</el-button>
+                      <span class="text-dim">{{ selectedTcpStream === null ? '非 TCP 数据包或无会话' : `TCP Stream ${selectedTcpStream}` }}</span>
+                    </div>
                   </el-tab-pane>
                 </el-tabs>
               </div>
@@ -307,6 +328,22 @@ onMounted(load)
         </el-tab-pane>
       </el-tabs>
     </div>
+
+    <el-dialog v-model="streamDialog" title="TCP Stream 跟踪" width="70%">
+      <div v-if="streamData" class="stream-dialog">
+        <div class="text-dim mono" style="margin-bottom: 8px">
+          {{ streamData.nodes[0]?.ip }}:{{ streamData.nodes[0]?.port }} ⇄ {{ streamData.nodes[1]?.ip }}:{{ streamData.nodes[1]?.port }}
+        </div>
+        <el-tabs>
+          <el-tab-pane label="ASCII">
+            <pre class="stream-pre">{{ streamData.directions.map((d) => d.ascii).join('\n\n---\n\n') || '（空）' }}</pre>
+          </el-tab-pane>
+          <el-tab-pane label="Hex">
+            <pre class="stream-pre">{{ streamData.directions.map((d) => d.hex).join('\n\n---\n\n') || '（空）' }}</pre>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -328,4 +365,7 @@ onMounted(load)
 .mini-label { color: var(--soc-text-muted); font-size: 12px; }
 .mini-value { font-size: 26px; font-weight: 700; color: var(--soc-text-strong); margin-top: 6px; }
 .gap-note { color: var(--soc-warning); font-size: 11px; margin-top: 8px; }
+.pe-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.stream-dialog { max-height: 60vh; overflow: auto; }
+.stream-pre { font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; background: var(--soc-bg); padding: 10px; border-radius: var(--soc-radius-sm); border: 1px solid var(--soc-border); }
 </style>

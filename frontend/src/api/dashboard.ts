@@ -30,3 +30,7 @@ export function getHighRiskAssets(): Promise<DashboardItems<Asset>> {
 export function getSensitiveData(): Promise<{ items: Array<{ category: string; count: number }> }> {
   return apiGet('/dashboard/sensitive-data')
 }
+
+export function getIncidentTrend(range: '24h' | '7d' = '7d'): Promise<{ range: string; items: Array<{ time: string; count: number; critical: number; high: number; medium: number; risk_score: number }> }> {
+  return apiGet('/dashboard/incident-trend', { range })
+}

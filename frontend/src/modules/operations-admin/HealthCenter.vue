@@ -59,6 +59,10 @@ onMounted(load)
             <div class="svc-row"><span>zeek</span><StatusBadge :value="health.zeek?.available ? 'ready' : 'disabled'" /></div>
             <div class="svc-row"><span>suricata</span><StatusBadge :value="health.suricata?.available ? 'ready' : 'disabled'" /></div>
             <div class="svc-row"><span>suricata 规则</span><span class="mono">{{ health.suricata?.rule_count ?? '-' }}</span></div>
+            <div class="svc-row"><span>流量引擎规则</span><span class="mono">{{ health.engine_rule_counts?.traffic_engine ?? '-' }}</span></div>
+            <div class="svc-row"><span>数据引擎规则</span><span class="mono">{{ health.engine_rule_counts?.data_engine ?? '-' }}</span></div>
+            <div class="svc-row"><span>日志引擎规则</span><span class="mono">{{ health.engine_rule_counts?.sigma_log_engine ?? '-' }}</span></div>
+            <div class="svc-row"><span>YARA 规则</span><span class="mono">{{ health.engine_rule_counts?.yara ?? '-' }}</span></div>
           </div>
         </div>
 

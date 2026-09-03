@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { getDashboardSummary, getRiskTrend, getDashboardSeverity, getDashboardEngines, getDashboardIncidents, getHighRiskAssets, getSensitiveData } from '../../api/dashboard'
+import { getDashboardSummary, getRiskTrend, getIncidentTrend, getDashboardSeverity, getDashboardEngines, getDashboardIncidents, getHighRiskAssets, getSensitiveData } from '../../api/dashboard'
 import { getRiskSummary, type RiskSummary } from '../../api/risk'
 import { getHealth, type HealthResponse } from '../../api/health'
 import type { DashboardSummary } from '../../types/dashboard'
@@ -27,6 +27,7 @@ const health = ref<HealthResponse | null>(null)
 const incidents = ref<Incident[]>([])
 const assets = ref<Asset[]>([])
 const trend = ref<{ time: string; count: number; risk_score: number }[]>([])
+const incidentTrend = ref<Array<{ time: string; count: number }>>([])
 
 const riskLevels = computed(() => {
   const levels = risk.value?.risk_levels || {}
@@ -41,11 +42,12 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [s, r, h, trendResult, sev, eng, inc, asset, sensitive] = await Promise.all([
+    const [s, r, h, trendResult, incidentTrendResult, sev, eng, inc, asset, sensitive] = await Promise.all([
       getDashboardSummary(),
       getRiskSummary(),
       getHealth(),
       getRiskTrend('7d'),
+      getIncidentTrend('7d'),
       getDashboardSeverity(),
       getDashboardEngines(),
       getDashboardIncidents(),
@@ -58,6 +60,7 @@ async function load(): Promise<void> {
     incidents.value = inc.items
     assets.value = asset.items
     trend.value = trendResult.items
+    incidentTrend.value = incidentTrendResult.items
     severityData.value = sev.items.map((i) => ({ name: i.severity, value: i.count }))
     engineData.value = { x: eng.items.map((i) => i.engine), y: eng.items.map((i) => i.count) }
     sensitiveData.value = sensitive.items.map((i) => ({ name: i.category, value: i.count }))
@@ -120,6 +123,7 @@ onMounted(load)
             <TrendChart :x-data="trend.map((t) => t.time)" :series="[
               { name: '风险评分', data: trend.map((t) => t.risk_score), color: '#38bdf8', area: true },
               { name: '检测数', data: trend.map((t) => t.count), color: '#f97316' },
+              { name: '安全事件', data: incidentTrend.map((t) => t.count), color: '#a855f7' },
             ]" :height="300" />
           </div>
           <div class="soc-card">

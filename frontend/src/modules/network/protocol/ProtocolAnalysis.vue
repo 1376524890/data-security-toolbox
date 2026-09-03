@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
-import { listPcaps, getPcapProtocols, getTraffic } from '../../../api/pcaps'
-import type { PcapRecord, TrafficOverview } from '../../../types/pcap'
+import { getGlobalProtocols } from '../../../api/network'
 import StateBox from '../../../components/common/StateBox.vue'
 import BarChart from '../../../components/charts/BarChart.vue'
 import DonutChart from '../../../components/charts/DonutChart.vue'
@@ -9,21 +8,15 @@ import JsonViewer from '../../../components/evidence/JsonViewer.vue'
 
 const loading = ref(true)
 const error = ref('')
-const pcaps = ref<PcapRecord[]>([])
-const selectedId = ref<number | null>(null)
 const protocols = ref<Array<Record<string, unknown>>>([])
-const traffic = ref<TrafficOverview | null>(null)
 
 const protocolDistribution = computed(() => {
-  const dist = traffic.value?.protocols || {}
-  return Object.entries(dist).map(([name, value]) => ({ name, value }))
+  return protocols.value.map((node: any) => ({ name: node.name, value: node.count }))
 })
 const protocolSummary = computed(() => {
   const out: Record<string, number> = {}
   protocols.value.forEach((node: any) => {
-    const name = node.name || node.protocol || 'unknown'
-    const count = node.count || node.packets || 0
-    out[name] = (out[name] || 0) + Number(count)
+    out[node.name] = Number(node.count || 0)
   })
   return out
 })
@@ -32,10 +25,7 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const result = await listPcaps({ page: 1, page_size: 100 })
-    pcaps.value = result.items
-    if (!selectedId.value && result.items.length) selectedId.value = result.items[0].id
-    if (selectedId.value) await loadProtocols()
+    await loadProtocols()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -44,11 +34,8 @@ async function load(): Promise<void> {
 }
 
 async function loadProtocols(): Promise<void> {
-  if (!selectedId.value) return
   try {
-    const [p, t] = await Promise.all([getPcapProtocols(selectedId.value), getTraffic(selectedId.value)])
-    protocols.value = p
-    traffic.value = t
+    protocols.value = await getGlobalProtocols()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   }
@@ -60,11 +47,8 @@ onMounted(load)
 <template>
   <div>
     <div class="toolbar">
-      <el-select v-model="selectedId" placeholder="选择 PCAP" style="width: 320px" @change="loadProtocols">
-        <el-option v-for="p in pcaps" :key="p.id" :label="p.filename" :value="p.id" />
-      </el-select>
+      <span class="text-dim">全局协议分布（跨全部捕获）</span>
       <div class="toolbar-spacer" />
-      <span class="gap-note">全局协议分析未提供，当前按 PCAP 维度展示</span>
     </div>
     <StateBox :loading="loading" :error="error" :empty="false" @retry="load">
       <div class="grid cols-2" style="margin-bottom: 12px">

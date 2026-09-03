@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiUpload } from './client'
+import { apiGet, apiPost, apiUpload, downloadUrl } from './client'
 import type { PageResult } from '../types/common'
 import type { AlertItem, Flow, NetworkFile, Packet, PcapRecord, TrafficOverview } from '../types/pcap'
 
@@ -63,4 +63,28 @@ export function getPcapProtocols(id: number): Promise<Array<Record<string, unkno
 
 export function getPcapAnomalies(id: number): Promise<Array<Record<string, unknown>>> {
   return apiGet(`/pcaps/${id}/anomalies`)
+}
+
+export interface PacketDetail {
+  packet: Packet
+  raw: string
+  layers: Array<{ name: string; items: Array<{ label: string; value: string }> }>
+}
+
+export function getPcapPacketDetail(pcapId: number, packetId: number): Promise<PacketDetail> {
+  return apiGet(`/pcaps/${pcapId}/packets/${packetId}`)
+}
+
+export interface TcpStreamFollow {
+  stream: string
+  nodes: Array<{ node: number; ip: string; port: number }>
+  directions: Array<{ direction: string; ascii: string; hex: string }>
+}
+
+export function getPcapStream(pcapId: number, streamId: number): Promise<TcpStreamFollow> {
+  return apiGet(`/pcaps/${pcapId}/streams/${streamId}`)
+}
+
+export function getPcapFileDownloadUrl(pcapId: number, fileId: number): string {
+  return downloadUrl(`/pcaps/${pcapId}/files/${fileId}/download`)
 }

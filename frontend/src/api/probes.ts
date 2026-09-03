@@ -35,3 +35,25 @@ export function analyzeProbe(id: number): Promise<Task> {
 export function getProbeTasks(id: number): Promise<Task[]> {
   return apiGet(`/probes/${id}/tasks`)
 }
+
+export interface ProbeMetrics {
+  probe: Probe
+  system: Record<string, unknown>
+  cpu_percent?: number
+  memory_percent?: number
+  memory_rss_mb?: number
+  capture_status: string
+  upload_status: string
+  capture_tool: string
+  spool_size_mb: number
+  pending_segments: number
+  quarantined_segments: number
+  drop_rate?: number | null
+  last_capture: string
+  last_upload: string
+  last_seen: string | null
+}
+
+export function getProbeMetrics(id: number): Promise<ProbeMetrics> {
+  return apiGet(`/probes/${id}/metrics`)
+}

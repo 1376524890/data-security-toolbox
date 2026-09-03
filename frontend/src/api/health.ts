@@ -15,6 +15,7 @@ export interface HealthResponse {
   tshark: { available: boolean; version: string }
   zeek: { available: boolean; version: string }
   suricata: { available: boolean; version: string; rule_count: number }
+  engine_rule_counts?: Record<string, number>
   storage_usage_bytes: number
   storage_max_bytes: number
   queue: { pending: number; running: number; oldest_pending_age: number }

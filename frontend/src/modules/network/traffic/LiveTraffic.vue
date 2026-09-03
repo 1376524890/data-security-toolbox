@@ -3,6 +3,7 @@ import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { getHealth, type HealthResponse } from '../../../api/health'
 import { listProbes, type Probe } from '../../../api/probes'
+import { getLiveNetwork, type LiveNetwork } from '../../../api/network'
 import { listPcaps } from '../../../api/pcaps'
 import type { PcapRecord } from '../../../types/pcap'
 import { getAlertSummary, alertStreamUrl } from '../../../api/alerts'
@@ -18,6 +19,7 @@ const error = ref('')
 const health = ref<HealthResponse | null>(null)
 const probes = ref<Probe[]>([])
 const recentPcaps = ref<PcapRecord[]>([])
+const live = ref<LiveNetwork | null>(null)
 const summary = ref<{ total: number; unhandled_critical_high: number } | null>(null)
 const liveAlerts = ref<Array<{ id: number; severity: string; title: string; time: string }>>([])
 let eventSource: EventSource | null = null
@@ -25,26 +27,26 @@ let eventSource: EventSource | null = null
 const onlineProbes = computed(() => probes.value.filter((p: Probe) => p.status === 'online'))
 // Derive a real capture rate from the most recently analyzed capture (no dedicated live endpoint).
 const captureRate = computed(() => {
-  const pcap = recentPcaps.value.find((p) => (p.total_packet_count ?? p.packet_count) > 0 && p.duration > 0)
-  if (!pcap) return { pps: null as number | null, bps: null as number | null, source: null as string | null }
-  const packets = pcap.total_packet_count ?? pcap.packet_count
-  return { pps: Math.round(packets / pcap.duration), bps: Math.round(pcap.size / pcap.duration), source: pcap.filename }
+  if (!live.value) return { pps: null as number | null, bps: null as number | null, source: null as string | null }
+  return { pps: Math.round(live.value.pps), bps: Math.round(live.value.bps), source: `实时窗口 ${live.value.window_seconds}s` }
 })
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [h, p, s, pcaps] = await Promise.all([
+    const [h, p, s, pcaps, lv] = await Promise.all([
       getHealth(),
       listProbes({ page: 1, page_size: 100 }),
       getAlertSummary(),
       listPcaps({ page: 1, page_size: 5 }),
+      getLiveNetwork(),
     ])
     health.value = h
     probes.value = p.items
     summary.value = s
     recentPcaps.value = pcaps.items
+    live.value = lv
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -93,7 +95,14 @@ onBeforeUnmount(() => { eventSource?.close() })
           <div class="soc-card-title"><span class="dot warn" />最近捕获</div>
           <div v-if="captureRate.source" class="text-dim mono" style="word-break: break-all">{{ captureRate.source }}</div>
           <div v-else class="text-dim">无已分析捕获</div>
-          <div class="gap-note">实时 Top 源 / 目的 / 端口需要后端实时流量接口（缺口已记录）</div>
+          <div class="top-list">
+            <div class="top-head">Top 源</div>
+            <div v-for="t in (live?.top_src || []).slice(0, 5)" :key="t.ip" class="top-item"><span class="mono">{{ t.ip }}</span><span class="text-dim">{{ formatBytes(t.bytes) }}</span></div>
+            <div class="top-head" style="margin-top: 8px">Top 目的</div>
+            <div v-for="t in (live?.top_dst || []).slice(0, 5)" :key="t.ip" class="top-item"><span class="mono">{{ t.ip }}</span><span class="text-dim">{{ formatBytes(t.bytes) }}</span></div>
+            <div class="top-head" style="margin-top: 8px">Top 端口</div>
+            <div v-for="t in (live?.top_port || []).slice(0, 5)" :key="t.port" class="top-item"><span class="mono">:{{ t.port }}</span><span class="text-dim">{{ formatBytes(t.bytes) }}</span></div>
+          </div>
         </div>
         <div class="soc-card">
           <div class="soc-card-title"><span class="dot danger" />实时告警</div>
@@ -128,4 +137,7 @@ onBeforeUnmount(() => { eventSource?.close() })
 .live-title { flex: 1; color: var(--soc-text); font-size: 12px; }
 .live-alerts { display: flex; flex-direction: column; }
 .gap-note { color: var(--soc-warning); font-size: 11px; margin-top: 10px; }
+.top-list { margin-top: 8px; }
+.top-head { font-size: 11px; font-weight: 700; color: var(--soc-text-muted); margin-bottom: 4px; }
+.top-item { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 2px 0; }
 </style>

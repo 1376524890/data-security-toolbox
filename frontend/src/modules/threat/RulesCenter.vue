@@ -1,26 +1,25 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
-import { listOfflineResources } from '../../api/offline'
-import type { OfflineResource } from '../../types/offline'
+import { listRules, type RuleItem } from '../../api/rules'
 import StateBox from '../../components/common/StateBox.vue'
 import StatusBadge from '../../components/security/StatusBadge.vue'
 import JsonViewer from '../../components/evidence/JsonViewer.vue'
 import RawViewer from '../../components/evidence/RawViewer.vue'
-import { formatDateTime } from '../../utils/format'
 
 const loading = ref(true)
 const error = ref('')
-const resources = ref<OfflineResource[]>([])
-const activeType = ref<'sigma_rules' | 'suricata_rules' | 'yara'>('sigma_rules')
+const rules = ref<RuleItem[]>([])
+const activeType = ref<'sigma' | 'suricata' | 'yara'>('sigma')
 
-const filtered = computed(() => resources.value.filter((r: OfflineResource) => r.resource_type === activeType.value))
-const types = computed(() => ['sigma_rules', 'suricata_rules', 'yara'].map((t) => ({ label: t.replace('_', ' '), value: t, count: resources.value.filter((r: OfflineResource) => r.resource_type === t).length })))
+const filtered = computed(() => rules.value.filter((r: RuleItem) => r.type === activeType.value))
+const types = computed(() => ['sigma', 'suricata', 'yara'].map((t) => ({ label: t, value: t, count: rules.value.filter((r: RuleItem) => r.type === t).length })))
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    resources.value = await listOfflineResources()
+    const result = await listRules()
+    rules.value = result.items
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -38,28 +37,21 @@ onMounted(load)
         <el-radio-button v-for="t in types" :key="t.value" :value="t.value">{{ t.label }} ({{ t.count }})</el-radio-button>
       </el-radio-group>
       <div class="toolbar-spacer" />
-      <span class="gap-note">YARA 规则端点未提供（缺口已记录）</span>
     </div>
     <StateBox :loading="loading" :error="error" :empty="!filtered.length" @retry="load">
-      <div class="grid cols-3">
-        <div v-for="r in filtered" :key="r.id" class="soc-card rule-card">
+      <div class="grid cols-2">
+        <div v-for="(r, idx) in filtered" :key="r.path" class="soc-card rule-card">
           <div class="rule-head">
             <div class="rule-name">{{ r.name }}</div>
-            <StatusBadge :value="r.status" />
+            <StatusBadge :value="r.type" />
           </div>
           <div class="rule-meta">
-            <span>版本 <span class="mono">{{ r.version }}</span></span>
-            <span>规则数 <span class="mono">{{ r.count }}</span></span>
+            <span>类型 <span class="mono">{{ r.type }}</span></span>
+            <span>大小 <span class="mono">{{ r.size }} B</span></span>
           </div>
-          <div class="rule-meta">
-            <span>导入时间 {{ formatDateTime(r.imported_at) }}</span>
-          </div>
-          <div class="rule-path mono">{{ r.storage_path }}</div>
-          <JsonViewer :value="r.resource_metadata" title="资源元数据" :height="140" />
+          <div class="rule-path mono">{{ r.path }}</div>
+          <RawViewer :value="r.content" language="yaml" :height="220" />
         </div>
-      </div>
-      <div v-if="activeType === 'yara' && !filtered.length" class="soc-card">
-        <div class="text-dim">暂无 YARA 规则资源；需要后端提供 YARA 规则列表接口</div>
       </div>
     </StateBox>
   </div>
