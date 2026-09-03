@@ -43,6 +43,10 @@ class PresidioAdapter(IntegrationAdapter):
     capabilities = ("regex-fallback", "cn-pii", "secret", "model-metadata")
 
     def supports(self, context: DetectionContext | None = None) -> bool:
+        from app.core.config import settings
+
+        if not settings.presidio_enabled:
+            return False
         if not context:
             return False
         return context.target_type in {"file", "text"} or bool(context.data.get("text"))

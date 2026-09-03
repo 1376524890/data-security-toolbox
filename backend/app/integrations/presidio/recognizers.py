@@ -50,6 +50,10 @@ def fallback_scan(text: str) -> list[dict[str, str]]:
 
 
 def presidio_scan(text: str, language: str = "zh") -> list[dict[str, str]]:
+    from app.core.config import settings
+
+    if not settings.presidio_enabled:
+        return fallback_scan(text)
     try:
         from presidio_analyzer import AnalyzerEngine
         from presidio_analyzer.nlp_engine import NlpEngineProvider

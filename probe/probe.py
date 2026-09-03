@@ -404,7 +404,7 @@ def capture_once(config: Config, sequence: int) -> dict[str, Any] | None:
         return None
     final = spool / f"{stamp}-{sequence:06d}{ext}"
     partial = final.with_suffix(final.suffix + ".partial")
-    command = capture_command(config, partial)
+    tool, ext, command = capture_command(config, partial)
     process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     deadline = time.time() + int(config.capture["segment_seconds"]) + 5
     max_bytes = int(config.capture["segment_max_mb"]) * 1024 * 1024

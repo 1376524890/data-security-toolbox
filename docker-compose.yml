@@ -47,6 +47,7 @@ services:
       EXTERNAL_ENGINE_DIR: /app/data/external
       INTEGRATION_DIR: /app/data/integrations
       OFFLINE_DIR: /app/app/integrations/offline_data
+      PRESIDIO_ENABLED: "false"
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
       PCAP_INDEX_LIMIT: ${PCAP_INDEX_LIMIT:-10000}
       PCAP_RETENTION_DAYS: ${PCAP_RETENTION_DAYS:-7}
@@ -106,6 +107,7 @@ services:
       EXTERNAL_ENGINE_DIR: /app/data/external
       INTEGRATION_DIR: /app/data/integrations
       OFFLINE_DIR: /app/app/integrations/offline_data
+      PRESIDIO_ENABLED: "false"
       MISP_URL: ${MISP_URL:-}
       MISP_API_KEY: ${MISP_API_KEY:-}
       WAZUH_URL: ${WAZUH_URL:-}
@@ -147,6 +149,7 @@ services:
       EXTERNAL_ENGINE_DIR: /app/data/external
       INTEGRATION_DIR: /app/data/integrations
       OFFLINE_DIR: /app/app/integrations/offline_data
+      PRESIDIO_ENABLED: "false"
       PCAP_RETENTION_DAYS: ${PCAP_RETENTION_DAYS:-7}
     volumes:
       - backend_data:/app/data

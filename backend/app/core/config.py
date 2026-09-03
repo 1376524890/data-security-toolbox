@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     pcap_index_limit: int = 10000
     pcap_retention_days: int = 7
     pcap_storage_max_gb: int = 100
+    presidio_enabled: bool = True
     alert_suppress_window_seconds: int = 300
     alert_delivery_max_attempts: int = 3
     alert_policy: dict[str, object] = {

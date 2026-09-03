@@ -105,6 +105,10 @@ def infer_columns(text: str, source: str) -> list[dict[str, Any]]:
 
 
 def presidio_scan(text: str) -> list[dict[str, str]]:
+    from app.core.config import settings
+
+    if not settings.presidio_enabled:
+        return []
     try:
         from presidio_analyzer import AnalyzerEngine
         analyzer = AnalyzerEngine()
