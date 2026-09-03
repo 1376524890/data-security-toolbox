@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import Alert, AlertDelivery, DetectionFinding, Incident
 
 ALERTS_CHANNEL = "security.alerts"
+
+# Event types emitted over Redis SSE. Frontend only actively notifies on
+# ``alert.created`` so ACK / resolve do not re-trigger "new alert" toasts.
+EVENT_CREATED = "alert.created"
+EVENT_UPDATED = "alert.updated"
+EVENT_ACKNOWLEDGED = "alert.acknowledged"
+EVENT_RESOLVED = "alert.resolved"
+EVENT_SUPPRESSED = "alert.suppressed"
 
 
 def _redis_client() -> redis.Redis | None:
@@ -71,25 +79,59 @@ def _policy_allows(severity: str, risk_score: float) -> bool:
     return False
 
 
-def create_finding_alert(db: Session, finding: DetectionFinding, probe_id: int | None = None) -> Alert | None:
+def _suppressible(db: Session, fingerprint: str, now: datetime, window_seconds: int) -> Alert | None:
+    """Return an existing live alert eligible for occurrence suppression.
+
+    A live alert is ``new`` or ``acknowledged`` and has been seen within the
+    suppress window. Resolved or expired alerts are never reused, so a
+    recurring attack after resolution produces a fresh Alert instance.
+    """
+    cutoff = now - timedelta(seconds=window_seconds)
+    return db.scalar(
+        select(Alert)
+        .where(
+            Alert.fingerprint == fingerprint,
+            Alert.status.in_(["new", "acknowledged"]),
+            Alert.last_seen >= cutoff,
+        )
+        .order_by(Alert.last_seen.desc())
+        .limit(1)
+    )
+
+
+def _next_instance(db: Session, fingerprint: str) -> int:
+    latest = db.scalar(select(func.max(Alert.alert_instance)).where(Alert.fingerprint == fingerprint))
+    return int(latest or 0) + 1
+
+
+def create_finding_alert(db: Session, finding: DetectionFinding, probe_id: int | None = None) -> tuple[Alert | None, bool]:
+    """Create or suppress-update an Alert for a finding.
+
+    Returns ``(alert, created)`` where ``created`` is True only when a brand
+    new Alert instance was persisted.
+    """
     if not _policy_allows(finding.severity, finding.risk_score):
-        return None
+        return None, False
     asset = _asset_from_finding(finding)
     ioc = _ioc_from_finding(finding)
     fp = alert_fingerprint(finding.rule_id, finding.engine, asset, ioc)
-    alert = db.scalar(select(Alert).where(Alert.fingerprint == fp))
     now = datetime.now(UTC)
-    if alert:
-        alert.occurrence_count += 1
-        alert.last_seen = now
-        alert.risk_score = max(alert.risk_score, finding.risk_score)
-        alert.severity = finding.severity if alert.severity != "Critical" else "Critical"
-        return alert
+    window = int(settings.alert_suppress_window_seconds)
+    existing = _suppressible(db, fp, now, window)
+    if existing:
+        existing.occurrence_count += 1
+        existing.last_seen = now
+        existing.risk_score = max(existing.risk_score, finding.risk_score)
+        existing.severity = finding.severity if existing.severity != "Critical" else "Critical"
+        existing.finding_id = existing.finding_id or finding.id
+        return existing, False
     title = finding.rule_id
     if asset:
         title = f"{finding.severity} {finding.rule_id} {asset}"
     alert = Alert(
         fingerprint=fp,
+        correlation_key=fp,
+        alert_instance=_next_instance(db, fp),
         finding_id=finding.id,
         probe_id=probe_id,
         severity=finding.severity,
@@ -104,10 +146,10 @@ def create_finding_alert(db: Session, finding: DetectionFinding, probe_id: int |
     )
     db.add(alert)
     db.flush()
-    return alert
+    return alert, True
 
 
-def create_incident_alert(db: Session, incident: Incident) -> Alert | None:
+def create_incident_alert(db: Session, incident: Incident) -> tuple[Alert | None, bool]:
     policy = settings.alert_policy or {}
     if incident.severity == "Critical":
         allowed = bool(policy.get("critical_incident_immediate", True))
@@ -116,20 +158,24 @@ def create_incident_alert(db: Session, incident: Incident) -> Alert | None:
     else:
         allowed = bool(policy.get("medium_notify", False))
     if not allowed:
-        return None
+        return None, False
     evidence = incident.evidence or {}
     asset = str(evidence.get("asset") or "")
     ioc = str(evidence.get("ioc") or "")
     fp = alert_fingerprint("INCIDENT", incident.source, asset, ioc)
-    alert = db.scalar(select(Alert).where(Alert.fingerprint == fp))
     now = datetime.now(UTC)
-    if alert:
-        alert.occurrence_count += 1
-        alert.last_seen = now
-        alert.risk_score = max(alert.risk_score, incident.risk_score)
-        return alert
+    window = int(settings.alert_suppress_window_seconds)
+    existing = _suppressible(db, fp, now, window)
+    if existing:
+        existing.occurrence_count += 1
+        existing.last_seen = now
+        existing.risk_score = max(existing.risk_score, incident.risk_score)
+        existing.incident_id = existing.incident_id or incident.id
+        return existing, False
     alert = Alert(
         fingerprint=fp,
+        correlation_key=fp,
+        alert_instance=_next_instance(db, fp),
         incident_id=incident.id,
         probe_id=incident.probe_id,
         severity=incident.severity,
@@ -144,10 +190,15 @@ def create_incident_alert(db: Session, incident: Incident) -> Alert | None:
     )
     db.add(alert)
     db.flush()
-    return alert
+    return alert, True
 
 
 def queue_deliveries(db: Session, alert_id: int) -> list[AlertDelivery]:
+    """Create pending deliveries, never duplicating an in-flight channel.
+
+    A new Alert instance creates fresh deliveries; an existing live alert that
+    is merely suppress-updated does not spawn duplicate webhook/SMTP rows.
+    """
     targets: list[tuple[str, str]] = []
     if settings.webhook_url:
         targets.append(("webhook", settings.webhook_url))
@@ -155,27 +206,55 @@ def queue_deliveries(db: Session, alert_id: int) -> list[AlertDelivery]:
         targets.append(("smtp", settings.smtp_to))
     rows: list[AlertDelivery] = []
     for channel, target in targets:
-        delivery = AlertDelivery(alert_id=alert_id, channel=channel, target=target, status="pending")
+        existing = db.scalar(
+            select(AlertDelivery).where(
+                AlertDelivery.alert_id == alert_id,
+                AlertDelivery.channel == channel,
+                AlertDelivery.target == target,
+                AlertDelivery.status.in_(["pending", "retrying"]),
+            )
+        )
+        if existing:
+            rows.append(existing)
+            continue
+        delivery = AlertDelivery(alert_id=alert_id, channel=channel, target=target, status="pending", max_attempts=settings.alert_delivery_max_attempts)
         db.add(delivery)
         rows.append(delivery)
     return rows
 
 
-def publish_alert(alert_id: int) -> bool:
+def publish_alert(alert_id: int, event_type: str | None = None) -> bool:
+    """Publish an alert lifecycle event over Redis.
+
+    If ``event_type`` is omitted it is derived from the alert's persisted
+    status so ACK / resolve emit the correct SSE event.
+    """
     client = _redis_client()
     if not client:
         return False
     try:
-        client.publish(ALERTS_CHANNEL, json.dumps({"alert_id": alert_id, "type": "alert.created", "ts": datetime.now(UTC).isoformat()}))
+        client.publish(ALERTS_CHANNEL, json.dumps({"alert_id": alert_id, "type": event_type or EVENT_UPDATED, "ts": datetime.now(UTC).isoformat()}))
         return True
     except Exception:
         return False
+
+
+def event_type_for_status(status: str) -> str:
+    mapping = {
+        "new": EVENT_CREATED,
+        "acknowledged": EVENT_ACKNOWLEDGED,
+        "resolved": EVENT_RESOLVED,
+        "suppressed": EVENT_SUPPRESSED,
+    }
+    return mapping.get(status, EVENT_UPDATED)
 
 
 def serialize_alert(alert: Alert, db: Session | None = None) -> dict[str, Any]:
     return {
         "id": alert.id,
         "fingerprint": alert.fingerprint,
+        "correlation_key": alert.correlation_key,
+        "alert_instance": alert.alert_instance,
         "finding_id": alert.finding_id,
         "incident_id": alert.incident_id,
         "probe_id": alert.probe_id,

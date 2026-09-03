@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -35,6 +35,8 @@ from app.models import (
     Task,
 )
 from app.services.alert_service import (
+    EVENT_CREATED,
+    EVENT_UPDATED,
     create_finding_alert,
     create_incident_alert,
     publish_alert,
@@ -50,9 +52,12 @@ pipeline = DetectionPipeline(registry, RiskEngine())
 incident_engine = IncidentEngine()
 
 
-def _recent_findings(db, probe_id: int | None, window_seconds: int = 3600) -> list[DetectionResult]:
+def _recent_findings(db, probe_id: int | None, window_seconds: int = 3600, exclude_task_id: int | None = None) -> list[DetectionResult]:
     since = datetime.now(UTC) - timedelta(seconds=window_seconds)
-    rows = db.scalars(select(DetectionFinding).where(DetectionFinding.created_at >= since).order_by(DetectionFinding.timestamp).limit(10000)).all()
+    query = select(DetectionFinding).where(DetectionFinding.created_at >= since)
+    if exclude_task_id is not None:
+        query = query.where(DetectionFinding.task_id != exclude_task_id)
+    rows = db.scalars(query.order_by(DetectionFinding.timestamp).limit(10000)).all()
     if probe_id is not None:
         rows = [item for item in rows if int((item.evidence or {}).get("probe_id") or 0) == int(probe_id)]
     return [
@@ -71,12 +76,27 @@ def _recent_findings(db, probe_id: int | None, window_seconds: int = 3600) -> li
     ]
 
 
+def _finding_signature(item: dict[str, Any]) -> str:
+    evidence = item.get("evidence") or {}
+    asset = evidence.get("src_ip") or evidence.get("dst_ip") or evidence.get("asset") or ""
+    return f"{item.get('engine')}|{item.get('rule_id')}|{item.get('timestamp')}|{asset}"
+
+
+def _merge_findings(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for item in [*existing, *incoming]:
+        if isinstance(item, dict):
+            merged.setdefault(_finding_signature(item), item)
+    return list(merged.values())
+
+
 def _upsert_incident(db, incident: Incident, probe_id: int | None) -> Incident:
     existing = db.scalar(select(Incident).where(Incident.fingerprint == incident.fingerprint))
     now = datetime.now(UTC)
     if existing:
-        existing.findings = {"items": incident.findings}
-        existing.evidence = incident.evidence
+        merged = _merge_findings((existing.findings or {}).get("items", []), incident.findings)
+        existing.findings = {"items": merged}
+        existing.evidence = {**(existing.evidence or {}), **incident.evidence}
         existing.risk_score = max(existing.risk_score, incident.risk_score)
         existing.risk_level = incident.risk_level
         existing.severity = incident.severity if existing.severity != "Critical" else "Critical"
@@ -105,7 +125,7 @@ def _upsert_incident(db, incident: Incident, probe_id: int | None) -> Incident:
     return row
 
 
-def _run_correlations_and_alerts(db, context: DetectionContext, task_id: int, result, probe_id: int | None) -> list[Alert]:
+def _run_correlations_and_alerts(db, context: DetectionContext, task_id: int, result, probe_id: int | None) -> list[tuple[Alert, bool]]:
     persisted: list[DetectionFinding] = []
     for finding in result.findings:
         row = DetectionFinding(
@@ -125,9 +145,11 @@ def _run_correlations_and_alerts(db, context: DetectionContext, task_id: int, re
         db.add(row)
         persisted.append(row)
     db.flush()
-    historical = _recent_findings(db, probe_id, 3600)
-    if persisted:
-        historical.extend(DetectionResult(
+    # Historical findings must NOT include the current task (avoids the current
+    # finding being counted twice). Current findings are appended exactly once.
+    historical = _recent_findings(db, probe_id, 3600, exclude_task_id=task_id)
+    historical.extend(
+        DetectionResult(
             engine=item.engine,
             rule_id=item.rule_id,
             severity=item.severity,
@@ -137,24 +159,32 @@ def _run_correlations_and_alerts(db, context: DetectionContext, task_id: int, re
             timestamp=item.timestamp,
             risk_score=item.risk_score,
             risk_level=item.risk_level,
-        ) for item in persisted)
+        )
+        for item in persisted
+    )
     incidents = incident_engine.correlate(historical, 3600)
-    alerts: list[Alert] = []
+    alerts: list[tuple[Alert, bool]] = []
     for incident in incidents:
         if context.target_type == "pcap":
             incident.evidence["pcap_id"] = str(context.target_id or "")
         row = _upsert_incident(db, incident, probe_id)
-        alert = create_incident_alert(db, row)
+        alert, created = create_incident_alert(db, row)
         if alert:
-            alerts.append(alert)
+            alerts.append((alert, created))
     for finding in persisted:
-        alert = create_finding_alert(db, finding, probe_id)
+        alert, created = create_finding_alert(db, finding, probe_id)
         if alert:
-            alerts.append(alert)
-    return list({item.id: item for item in alerts}.values())
+            alerts.append((alert, created))
+    # Deduplicate by alert id, preferring ``created=True`` when any path is new.
+    deduped: dict[int, tuple[Alert, bool]] = {}
+    for alert, created in alerts:
+        prev = deduped.get(alert.id)
+        if prev is None or created:
+            deduped[alert.id] = (alert, created)
+    return list(deduped.values())
 
 
-def run_pipeline(context: DetectionContext, task_id: int, db=None) -> list[Alert]:
+def run_pipeline(context: DetectionContext, task_id: int, db=None) -> list[tuple[int, bool]]:
     if db is not None:
         context.data["ioc_library"] = [
             {"value": item.value, "type": item.ioc_type, "source": item.source}
@@ -172,7 +202,7 @@ def run_pipeline(context: DetectionContext, task_id: int, db=None) -> list[Alert
     probe_id = context.data.get("probe_id")
     try:
         alerts = _run_correlations_and_alerts(session, context, task_id, result, probe_id)
-        for alert in alerts:
+        for alert, created in alerts:
             queue_deliveries(session, alert.id)
         for item in context.data.get("iocs", []):
             if not isinstance(item, dict):
@@ -200,14 +230,14 @@ def run_pipeline(context: DetectionContext, task_id: int, db=None) -> list[Alert
             session.add(GraphRelation(**relation))
         if owned:
             session.commit()
-            for alert in alerts:
-                publish_alert(alert.id)
+            for alert, created in alerts:
+                publish_alert(alert.id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
                 try:
                     deliver_alert_task.delay(alert.id)
                 except Exception:
                     deliver_alert_task(alert.id)
-            return alerts
-        return alerts
+            return [(alert.id, created) for alert, created in alerts]
+        return [(alert.id, created) for alert, created in alerts]
     finally:
         if owned:
             session.close()
@@ -238,12 +268,26 @@ def _finish(task_id: int, error: str = "", result: dict[str, Any] | None = None)
 
 
 @celery_app.task(name="security_toolbox.deliver_alert")
+def _delivery_backoff(attempts: int) -> int:
+    sequence = [10, 60, 300, 900, 1800]
+    if attempts <= 0:
+        return sequence[0]
+    return sequence[min(attempts - 1, len(sequence) - 1)]
+
+
 def deliver_alert_task(alert_id: int) -> None:
     with SessionLocal() as db:
         alert = db.get(Alert, alert_id)
         if not alert:
             return
-        rows = db.scalars(select(AlertDelivery).where(AlertDelivery.alert_id == alert_id, AlertDelivery.status == "pending")).all()
+        now = datetime.now(UTC)
+        rows = db.scalars(
+            select(AlertDelivery).where(
+                AlertDelivery.alert_id == alert_id,
+                AlertDelivery.status.in_(["pending", "retrying"]),
+                or_(AlertDelivery.next_attempt_at.is_(None), AlertDelivery.next_attempt_at <= now),
+            )
+        ).all()
         payload = {
             "alert_id": alert.id,
             "title": alert.title,
@@ -288,10 +332,18 @@ def deliver_alert_task(alert_id: int) -> None:
                     raise ValueError(f"unknown channel: {row.channel}")
                 row.status = "sent"
                 row.last_error = ""
-                row.sent_at = datetime.now(UTC)
+                row.sent_at = now
+                row.next_attempt_at = None
             except Exception as exc:  # noqa: BLE001
-                row.status = "failed"
+                max_attempts = row.max_attempts or settings.alert_delivery_max_attempts
                 row.last_error = str(exc)[:2000]
+                if row.attempts >= max_attempts:
+                    row.status = "failed_permanent"
+                    row.next_attempt_at = None
+                else:
+                    row.status = "retrying"
+                    row.next_attempt_at = now + timedelta(seconds=_delivery_backoff(row.attempts))
+                    deliver_alert_task.apply_async(args=[alert_id], countdown=_delivery_backoff(row.attempts))
         db.commit()
 
 
@@ -317,12 +369,12 @@ def metadata_task(file_id: int, task_id: int) -> None:
         alerts = run_pipeline(context, task_id, db)
         db.add(AnalysisResult(task_id=task_id, module="metadata", content=result, risk_level=record.risk_level))
         db.commit()
-        for alert in alerts:
-            publish_alert(alert.id)
+        for alert_id, created in alerts:
+            publish_alert(alert_id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
             try:
-                deliver_alert_task.delay(alert.id)
+                deliver_alert_task.delay(alert_id)
             except Exception:
-                deliver_alert_task(alert.id)
+                deliver_alert_task(alert_id)
     _finish(task_id, result={"file_id": file_id, "metadata": result})
 
 
@@ -388,12 +440,12 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
         db.add(AnalysisResult(task_id=task_id, module="protocol", content=parsed["protocol_summary"], risk_level="High" if anomalies else "Low"))
         db.add(AnalysisResult(task_id=task_id, module="traffic", content={"anomalies": len(anomalies)}, risk_level="High" if anomalies else "Low"))
         db.commit()
-        for alert in alerts:
-            publish_alert(alert.id)
+        for alert_id, created in alerts:
+            publish_alert(alert_id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
             try:
-                deliver_alert_task.delay(alert.id)
+                deliver_alert_task.delay(alert_id)
             except Exception:
-                deliver_alert_task(alert.id)
+                deliver_alert_task(alert_id)
     _finish(task_id, result={"pcap_id": pcap_id, "packet_count": parsed["packet_count"], "indexed_packet_count": parsed.get("indexed_packet_count", 0), "anomalies": len(anomalies)})
 
 
@@ -418,12 +470,12 @@ def asset_task(probe_id: int, task_id: int) -> None:
         alerts = run_pipeline(context, task_id, db)
         db.add(AnalysisResult(task_id=task_id, module="assets", content={"count": len(assets)}, risk_level="High" if any(a["risk_level"] == "High" for a in assets) else "Low"))
         db.commit()
-        for alert in alerts:
-            publish_alert(alert.id)
+        for alert_id, created in alerts:
+            publish_alert(alert_id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
             try:
-                deliver_alert_task.delay(alert.id)
+                deliver_alert_task.delay(alert_id)
             except Exception:
-                deliver_alert_task(alert.id)
+                deliver_alert_task(alert_id)
     _finish(task_id, result={"probe_id": probe_id, "assets": len(assets)})
 
 

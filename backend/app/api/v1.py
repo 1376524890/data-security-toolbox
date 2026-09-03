@@ -86,6 +86,7 @@ from app.schemas import (
 from app.services.alert_service import (
     create_finding_alert,
     create_incident_alert,
+    event_type_for_status,
     publish_alert,
     serialize_alert,
 )
@@ -1062,7 +1063,7 @@ def run_integration(name: str, payload: dict[str, Any], db: Session = Depends(ge
         raise HTTPException(404, "integration not found") from exc
     context = DetectionContext(target_type="integration", target_id=name, data=payload.get("context", {}))
     result = run_adapter(adapter, payload, context, RiskEngine())
-    alerts: list[Alert] = []
+    alerts: list[tuple[Alert, bool]] = []
     for item in result.findings:
         finding = DetectionFinding(
             target_type="integration",
@@ -1079,17 +1080,17 @@ def run_integration(name: str, payload: dict[str, Any], db: Session = Depends(ge
         )
         db.add(finding)
         db.flush()
-        alert = create_finding_alert(db, finding)
+        alert, created = create_finding_alert(db, finding)
         if alert:
-            alerts.append(alert)
+            alerts.append((alert, created))
     for incident in incident_engine.correlate(result.findings):
         row = _upsert_incident(db, incident, None)
-        alert = create_incident_alert(db, row)
+        alert, created = create_incident_alert(db, row)
         if alert:
-            alerts.append(alert)
+            alerts.append((alert, created))
     db.commit()
-    for alert in alerts:
-        publish_alert(alert.id)
+    for alert, created in alerts:
+        publish_alert(alert.id, event_type="alert.created" if created else "alert.updated")
     return result.to_dict()
 
 
@@ -1268,7 +1269,7 @@ def update_alert(alert_id: int, payload: dict[str, Any], db: Session = Depends(g
     alert.last_seen = datetime.now(UTC)
     db.commit()
     db.refresh(alert)
-    publish_alert(alert.id)
+    publish_alert(alert.id, event_type=event_type_for_status(alert.status))
     return serialize_alert(alert)
 
 

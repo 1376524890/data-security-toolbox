@@ -60,6 +60,15 @@ def _ioc_keys(finding: DetectionResult) -> list[str]:
     return sorted(set(keys))
 
 
+def _probe_key(finding: DetectionResult) -> str:
+    evidence = finding.evidence
+    if evidence.get("probe_id"):
+        return str(evidence["probe_id"]).lower()
+    if isinstance(evidence.get("record"), dict) and evidence["record"].get("probe_id"):
+        return str(evidence["record"]["probe_id"]).lower()
+    return ""
+
+
 def _stage(finding: DetectionResult) -> str:
     rule = finding.rule_id.lower()
     text = f"{rule} {finding.engine} {finding.evidence}".lower()
@@ -129,7 +138,10 @@ class IncidentEngine:
                     continue
                 seen.add(signature)
                 score = max(item.risk_score for item in cluster)
-                fingerprint = self._fingerprint(asset, ioc, stages)
+                probe = sorted({_probe_key(item) for item in cluster if _probe_key(item)})
+                probe_id = probe[0] if probe else ""
+                bucket = self._time_bucket(cluster, window_seconds)
+                fingerprint = self._fingerprint(probe_id, asset, ioc, bucket)
                 incidents.append(Incident(
                     id=f"INC-{asset or ioc or 'global'}-{len(incidents) + 1}",
                     title=self._title(cluster, asset, ioc),
@@ -140,6 +152,7 @@ class IncidentEngine:
                     evidence={
                         "asset": asset,
                         "ioc": ioc,
+                        "probe_id": probe_id,
                         "stages": stages,
                         "finding_ids": [item.rule_id for item in cluster],
                         "window_seconds": window_seconds,
@@ -150,8 +163,19 @@ class IncidentEngine:
         return incidents[:100]
 
     @staticmethod
-    def _fingerprint(asset: str, ioc: str, stages: list[str]) -> str:
-        payload = f"{asset}|{ioc}|{','.join(stages)}".encode("utf-8")
+    def _time_bucket(items: list[DetectionResult], window_seconds: int) -> int:
+        timestamps = [_parse_ts(item.timestamp) for item in items if _parse_ts(item.timestamp)]
+        if not timestamps:
+            return 0
+        window = max(1, int(window_seconds))
+        return int(min(timestamps) // window)
+
+    @staticmethod
+    def _fingerprint(probe: str, asset: str, ioc: str, time_bucket: int) -> str:
+        # Identity is the correlation subject (probe/asset/IOC) plus a coarse
+        # event-window bucket. Stages are incident STATE, never identity, so
+        # adding a stage updates the existing incident instead of forking it.
+        payload = f"{probe}|{asset}|{ioc}|{time_bucket}".encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
     @staticmethod

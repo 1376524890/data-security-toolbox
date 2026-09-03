@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     pcap_retention_days: int = 7
     pcap_storage_max_gb: int = 100
     alert_suppress_window_seconds: int = 300
+    alert_delivery_max_attempts: int = 3
     alert_policy: dict[str, object] = {
         "critical_finding_immediate": True,
         "high_finding_min_risk": 60,

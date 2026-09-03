@@ -222,7 +222,9 @@ class Incident(TimestampMixin, Base):
 class Alert(TimestampMixin, Base):
     __tablename__ = "alerts"
     id: Mapped[int] = mapped_column(primary_key=True)
-    fingerprint: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    correlation_key: Mapped[str] = mapped_column(String(64), default="", index=True)
+    alert_instance: Mapped[int] = mapped_column(Integer, default=1)
     finding_id: Mapped[int] = mapped_column(ForeignKey("detection_findings.id"), nullable=True, index=True)
     incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), nullable=True, index=True)
     probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), nullable=True, index=True)
@@ -245,6 +247,8 @@ class AlertDelivery(Base):
     target: Mapped[str] = mapped_column(String(512), default="")
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
