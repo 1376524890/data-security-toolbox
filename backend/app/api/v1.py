@@ -92,7 +92,7 @@ from app.services.alert_service import (
 )
 from app.services.asset_service import asset_relations
 from app.services.audit_service import audit_summary, log_analysis
-from app.services.protocol_service import packet_detail, protocol_tree
+from app.services.protocol_service import packet_detail, protocol_tree, tcp_stream_follow
 from app.services.report_service import build_summary, render_html, render_pdf
 from app.services.traffic_service import (
     detect_anomalies,

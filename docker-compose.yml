@@ -30,6 +30,8 @@ services:
     build:
       context: ./backend
       target: api
+    ports:
+      - "8000:8000"
     environment:
       APP_ENV: ${APP_ENV:-production}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
@@ -64,7 +66,7 @@ services:
       MISP_API_KEY: ${MISP_API_KEY:-}
       WAZUH_URL: ${WAZUH_URL:-}
       OSQUERY_SOCKET: ${OSQUERY_SOCKET:-}
-      COOKIE_SECURE: "true"
+      COOKIE_SECURE: "false"
     volumes:
       - backend_data:/app/data
     depends_on:

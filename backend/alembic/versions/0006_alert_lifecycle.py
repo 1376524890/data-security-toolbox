@@ -26,16 +26,17 @@ def upgrade() -> None:
     if "alert_instance" not in columns:
         op.add_column("alerts", sa.Column("alert_instance", sa.Integer(), nullable=False, server_default="1"))
 
-    # Drop the UNIQUE constraint / unique index on alerts.fingerprint and
-    # replace it with a plain (non-unique) index so resolved alerts never
-    # swallow a future recurrence.
-    with op.batch_alter_table("alerts") as batch:
-        batch.drop_index("ix_alerts_fingerprint", if_exists=True)
-        try:
-            batch.drop_constraint("uq_alerts_fingerprint", type_="unique")
-        except Exception:
-            pass
-        batch.create_index("ix_alerts_fingerprint", ["fingerprint"])
+    # Ensure alerts.fingerprint is a plain (non-unique) index so resolved alerts
+    # never swallow a future recurrence. The current ORM model already creates a
+    # non-unique index, so we only rebuild when a legacy unique index exists.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    indexes = {item["name"]: item for item in inspector.get_indexes("alerts")}
+    if "ix_alerts_fingerprint" in indexes and indexes["ix_alerts_fingerprint"].get("unique"):
+        op.drop_index("ix_alerts_fingerprint", table_name="alerts")
+        op.create_index("ix_alerts_fingerprint", "alerts", ["fingerprint"])
+    elif "ix_alerts_fingerprint" not in indexes:
+        op.create_index("ix_alerts_fingerprint", "alerts", ["fingerprint"])
 
     delivery_columns = _columns("alert_deliveries")
     if "max_attempts" not in delivery_columns:
@@ -45,9 +46,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("alerts") as batch:
-        batch.drop_index("ix_alerts_fingerprint", if_exists=True)
-        batch.create_index("ix_alerts_fingerprint", ["fingerprint"], unique=True)
+    op.drop_index("ix_alerts_fingerprint", table_name="alerts")
+    op.create_index("ix_alerts_fingerprint", "alerts", ["fingerprint"], unique=True)
     op.drop_column("alert_deliveries", "next_attempt_at")
     op.drop_column("alert_deliveries", "max_attempts")
     op.drop_column("alerts", "alert_instance")

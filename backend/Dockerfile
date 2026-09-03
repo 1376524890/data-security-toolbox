@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpcap0.8 libxml2-dev libxslt1-dev libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 fonts-noto-cjk && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libpcap0.8 libxml2-dev libxslt1-dev libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 fonts-noto-cjk tshark && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -22,11 +23,14 @@ USER appuser
 EXPOSE 8000
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
 
-FROM zeek/zeek:5.0.0 AS zeek-runtime
+FROM zeek/zeek:latest AS zeek-runtime
 
 FROM base AS analysis-worker
 USER root
 COPY --from=zeek-runtime /usr/local/zeek /usr/local/zeek
+# Zeek is built on Debian 13 (trixie) against Node 20; copy its shared library
+# tree (libnode, libuv, ICU, ...) so the binary can run on the same distro base.
+COPY --from=zeek-runtime /usr/lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu/
 ENV PATH="/usr/local/zeek/bin:${PATH}"
 RUN apt-get update && \
     apt-get install -y --no-install-recommends tshark suricata nmap ffmpeg && \

@@ -21,9 +21,29 @@ def _add(table: str, name: str, column: sa.Column) -> None:
         op.add_column(table, column)
 
 
+def _table_exists(name: str) -> bool:
+    bind = op.get_bind()
+    return name in sa.inspect(bind).get_table_names()
+
+
+def _index_exists(table: str, index: str) -> bool:
+    bind = op.get_bind()
+    return any(item["name"] == index for item in sa.inspect(bind).get_indexes(table))
+
+
+def _create_table_if_missing(name: str, *columns: sa.Column) -> None:
+    if not _table_exists(name):
+        op.create_table(name, *columns)
+
+
+def _create_index_if_missing(index: str, table: str, *columns: sa.Column, **kwargs) -> None:
+    if not _index_exists(table, index):
+        op.create_index(index, table, *columns, **kwargs)
+
+
 def upgrade() -> None:
     _add("users", "password_hash", sa.Column("password_hash", sa.String(512), nullable=False, server_default=""))
-    op.create_table(
+    _create_table_if_missing(
         "admin_sessions",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=False, index=True),
@@ -44,7 +64,7 @@ def upgrade() -> None:
     _add("pcaps", "indexed_packet_count", sa.Column("indexed_packet_count", sa.Integer(), nullable=False, server_default="0"))
     _add("pcaps", "file_type", sa.Column("file_type", sa.String(64), nullable=False, server_default=""))
     _add("pcaps", "retention_status", sa.Column("retention_status", sa.String(32), nullable=False, server_default="active"))
-    op.create_index("uq_pcap_probe_segment", "pcaps", ["probe_id", "segment_id"], unique=True)
+    _create_index_if_missing("uq_pcap_probe_segment", "pcaps", "probe_id", "segment_id", unique=True)
 
     _add("incidents", "fingerprint", sa.Column("fingerprint", sa.String(64), nullable=False, server_default="", index=True))
     _add("incidents", "probe_id", sa.Column("probe_id", sa.Integer(), sa.ForeignKey("probes.id"), nullable=True))
@@ -52,7 +72,7 @@ def upgrade() -> None:
     _add("incidents", "last_seen", sa.Column("last_seen", sa.DateTime(timezone=True), nullable=True))
     _add("incidents", "occurrence_count", sa.Column("occurrence_count", sa.Integer(), nullable=False, server_default="1"))
 
-    op.create_table(
+    _create_table_if_missing(
         "alerts",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("fingerprint", sa.String(64), nullable=False, unique=True, index=True),
@@ -71,7 +91,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_table(
+    _create_table_if_missing(
         "alert_deliveries",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("alert_id", sa.Integer(), sa.ForeignKey("alerts.id"), nullable=False, index=True),

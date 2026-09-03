@@ -73,7 +73,7 @@ def set_admin_cookie(response: Response, token: str) -> None:
         key=settings.cookie_name,
         value=token,
         httponly=True,
-        secure=settings.cookie_secure or settings.app_env == "production",
+        secure=settings.cookie_secure,
         samesite="strict",
         max_age=12 * 60 * 60,
         path="/",
