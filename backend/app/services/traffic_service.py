@@ -1,9 +1,4 @@
-import csv
-import json
-import shutil
-import subprocess
 from collections import Counter, defaultdict
-from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
@@ -53,7 +48,7 @@ def detect_anomalies(flows: list[dict[str, Any]], packets: list[dict[str, Any]])
         by_src[flow["src_ip"]]["packets"] += flow["packets"]
     for src, stats in by_src.items():
         if len(stats["dst_ports"]) >= 20:
-            anomalies.append({"rule": "port_scan", "severity": "High", "description": f"{src} 访问了 {len(stats['dst_ports'])} 个不同端口，疑似端口扫描", "evidence": {"src_ip": src, "ports": len(stats["dst_ports"])}})
+            anomalies.append({"rule": "NETWORK_PORT_SCAN", "severity": "High", "description": f"{src} 访问了 {len(stats['dst_ports'])} 个不同端口，疑似端口扫描", "evidence": {"src": src, "dst_ports": sorted(stats["dst_ports"]), "port_count": len(stats["dst_ports"]), "window": settings.port_scan_window_seconds, "packet_count": stats["packets"]}})
         if len(stats["dst_ips"]) >= 10 and stats["bytes"] > 10_000_000:
             anomalies.append({"rule": "broad_communication", "severity": "Medium", "description": f"{src} 与多个目标进行大流量通信", "evidence": {"src_ip": src, "destinations": len(stats["dst_ips"]), "bytes": stats["bytes"]}})
     if packets:
@@ -61,47 +56,3 @@ def detect_anomalies(flows: list[dict[str, Any]], packets: list[dict[str, Any]])
         if rate > 500:
             anomalies.append({"rule": "high_packet_rate", "severity": "Medium", "description": "短时间内包速率过高", "evidence": {"packet_rate": rate}})
     return anomalies
-
-
-def external_engine_analysis(pcap_path: Path, output_dir: Path) -> dict[str, Any]:
-    if not pcap_path.exists():
-        return {"engines": []}
-    output_dir.mkdir(parents=True, exist_ok=True)
-    result: dict[str, Any] = {"engines": []}
-    zeek = shutil.which("zeek")
-    if zeek:
-        zeek_dir = output_dir / "zeek"
-        zeek_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run([zeek, "-C", "-r", str(pcap_path), "local"], cwd=zeek_dir, check=False, timeout=300)
-        events = {}
-        for name in ("conn", "dns", "http", "weird"):
-            log = zeek_dir / f"{name}.log"
-            if log.exists():
-                rows = []
-                with log.open(newline="", encoding="utf-8", errors="replace") as handle:
-                    for row in csv.DictReader(handle, delimiter="\t"):
-                        rows.append(row)
-                events[name] = rows[:1000]
-        result["engines"].append({"name": "zeek", "events": events})
-    suricata = shutil.which("suricata")
-    if suricata:
-        suricata_dir = output_dir / "suricata"
-        suricata_dir.mkdir(parents=True, exist_ok=True)
-        command = [suricata, "-r", str(pcap_path), "-l", str(suricata_dir), "-q"]
-        rule_dir = settings.integration_dir / "suricata_rules"
-        if rule_dir.exists():
-            rule_files = sorted(rule_dir.glob("*.rules"))
-            if rule_files:
-                command = [suricata, "-r", str(pcap_path), "-l", str(suricata_dir), "-q", "-S", ",".join(str(path) for path in rule_files)]
-        subprocess.run(command, check=False, timeout=300)
-        eve = suricata_dir / "eve.json"
-        events = []
-        if eve.exists():
-            with eve.open(encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-        result["engines"].append({"name": "suricata", "events": events[:1000]})
-    return result

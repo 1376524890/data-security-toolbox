@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Any
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -21,8 +21,18 @@ class User(TimestampMixin, Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(512), default="")
     role: Mapped[str] = mapped_column(String(64), default="viewer")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class AdminSession(Base):
+    __tablename__ = "admin_sessions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Probe(TimestampMixin, Base):
@@ -33,6 +43,7 @@ class Probe(TimestampMixin, Base):
     ip_address: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(32), default="offline")
     token: Mapped[str] = mapped_column(String(255), default="")
+    token_hash: Mapped[str] = mapped_column(String(64), default="")
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     assets: Mapped[list["Asset"]] = relationship(back_populates="probe")
@@ -72,18 +83,31 @@ class FileRecord(TimestampMixin, Base):
 
 class PcapRecord(TimestampMixin, Base):
     __tablename__ = "pcaps"
+    __table_args__ = (UniqueConstraint("probe_id", "segment_id", name="uq_pcap_probe_segment"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), nullable=True)
+    segment_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    sequence: Mapped[int] = mapped_column(Integer, default=0)
+    capture_interface: Mapped[str] = mapped_column(String(128), default="")
+    capture_started_at: Mapped[str] = mapped_column(String(64), default="")
+    capture_finished_at: Mapped[str] = mapped_column(String(64), default="")
+    ingest_status: Mapped[str] = mapped_column(String(32), default="pending")
+    analysis_status: Mapped[str] = mapped_column(String(32), default="pending")
+    probe_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     filename: Mapped[str] = mapped_column(String(512), index=True)
     storage_path: Mapped[str] = mapped_column(String(1024), default="")
     size: Mapped[int] = mapped_column(Integer, default=0)
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     packet_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_packet_count: Mapped[int] = mapped_column(Integer, default=0)
+    indexed_packet_count: Mapped[int] = mapped_column(Integer, default=0)
     duration: Mapped[float] = mapped_column(Float, default=0.0)
     capture_start: Mapped[str] = mapped_column(String(64), default="")
     capture_end: Mapped[str] = mapped_column(String(64), default="")
+    file_type: Mapped[str] = mapped_column(String(64), default="")
     protocol_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(32), default="pending")
+    retention_status: Mapped[str] = mapped_column(String(32), default="active")
     flows: Mapped[list["Flow"]] = relationship(back_populates="pcap", cascade="all, delete-orphan")
     packets: Mapped[list["PacketRecord"]] = relationship(back_populates="pcap", cascade="all, delete-orphan")
     anomalies: Mapped[list["Anomaly"]] = relationship(back_populates="pcap", cascade="all, delete-orphan")
@@ -179,6 +203,9 @@ class DetectionFinding(TimestampMixin, Base):
 class Incident(TimestampMixin, Base):
     __tablename__ = "incidents"
     id: Mapped[int] = mapped_column(primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True, default="")
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), nullable=True)
+    source: Mapped[str] = mapped_column(String(128), default="pipeline")
     title: Mapped[str] = mapped_column(String(255), index=True)
     severity: Mapped[str] = mapped_column(String(16), index=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
@@ -188,6 +215,40 @@ class Incident(TimestampMixin, Base):
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
     risk_level: Mapped[str] = mapped_column(String(16), default="Low")
     timestamp: Mapped[str] = mapped_column(String(64), default="")
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class Alert(TimestampMixin, Base):
+    __tablename__ = "alerts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    finding_id: Mapped[int] = mapped_column(ForeignKey("detection_findings.id"), nullable=True, index=True)
+    incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), nullable=True, index=True)
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), nullable=True, index=True)
+    severity: Mapped[str] = mapped_column(String(16), index=True)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    title: Mapped[str] = mapped_column(String(255), index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="new", index=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+    source: Mapped[str] = mapped_column(String(128), default="pipeline", index=True)
+
+
+class AlertDelivery(Base):
+    __tablename__ = "alert_deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    alert_id: Mapped[int] = mapped_column(ForeignKey("alerts.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(32), index=True)
+    target: Mapped[str] = mapped_column(String(512), default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class IOC(TimestampMixin, Base):

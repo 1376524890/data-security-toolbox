@@ -1,15 +1,27 @@
 export interface PcapRecord {
   id: number
   probe_id?: number | null
+  segment_id?: string
+  sequence?: number
+  capture_interface?: string
+  capture_started_at?: string
+  capture_finished_at?: string
+  ingest_status?: string
+  analysis_status?: string
+  probe_metadata?: Record<string, unknown>
   filename: string
   size: number
   sha256: string
   packet_count: number
+  total_packet_count?: number
+  indexed_packet_count?: number
   duration: number
   capture_start: string
   capture_end: string
+  file_type?: string
   protocol_summary: Record<string, number>
   status: string
+  retention_status?: string
   created_at: string
 }
 

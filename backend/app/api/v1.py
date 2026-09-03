@@ -1,30 +1,62 @@
 from __future__ import annotations
 
+import json
+import secrets
+import shutil
 from collections import Counter
 from datetime import UTC, datetime, timedelta
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.pagination import page_response, paginate
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.storage import save_bytes, safe_path
+from app.core.security import (
+    clear_admin_cookie,
+    create_admin_session,
+    ensure_admin,
+    get_session_user,
+    hash_token,
+    require_probe_headers,
+    set_admin_cookie,
+    verify_password,
+    verify_token,
+)
+from app.core.storage import safe_path, stream_to_storage
 from app.engine import registry
 from app.engine.core.context import DetectionContext
 from app.engine.core.pipeline import DetectionPipeline
 from app.engine.risk_engine.engine import RiskEngine
 from app.incident_engine.engine import IncidentEngine
 from app.integrations import integration_registry
-from app.integrations.offline_manager import import_offline_path, import_uploaded_offline, list_local_cves, list_offline_resources
+from app.integrations.offline_manager import (
+    import_offline_path,
+    import_uploaded_offline,
+    list_local_cves,
+    list_offline_resources,
+)
 from app.integrations.runner import run_adapter
 from app.models import (
     IOC,
+    AdminSession,
+    Alert,
+    AlertDelivery,
     AnalysisResult,
     Anomaly,
     Asset,
@@ -39,6 +71,7 @@ from app.models import (
     Probe,
     Report,
     Task,
+    User,
 )
 from app.schemas import (
     AlgorithmRandomnessRequest,
@@ -46,8 +79,15 @@ from app.schemas import (
     GenerateReportRequest,
     Heartbeat,
     LogAnalysisRequest,
+    LoginRequest,
     ProbeRegister,
     TaskCreate,
+)
+from app.services.alert_service import (
+    create_finding_alert,
+    create_incident_alert,
+    publish_alert,
+    serialize_alert,
 )
 from app.services.algorithm_service import evaluate_model, performance_test, randomness_report
 from app.services.asset_service import asset_relations
@@ -61,8 +101,13 @@ from app.services.traffic_service import (
     top_n_communication,
     traffic_trend,
 )
-from app.workers.tasks import analyze_pcap_task, asset_task, create_task, metadata_task
-
+from app.workers.tasks import (
+    _upsert_incident,
+    analyze_pcap_task,
+    asset_task,
+    create_task,
+    metadata_task,
+)
 
 router = APIRouter(prefix="/api/v1")
 incident_engine = IncidentEngine()
@@ -126,6 +171,9 @@ def _serialize_detection(item: DetectionFinding) -> dict[str, Any]:
 def _serialize_incident(item: Incident) -> dict[str, Any]:
     return {
         "id": item.id,
+        "fingerprint": item.fingerprint,
+        "probe_id": item.probe_id,
+        "source": item.source,
         "title": item.title,
         "severity": item.severity,
         "confidence": item.confidence,
@@ -135,6 +183,8 @@ def _serialize_incident(item: Incident) -> dict[str, Any]:
         "risk_score": item.risk_score,
         "risk_level": item.risk_level,
         "timestamp": item.timestamp,
+        "last_seen": item.last_seen,
+        "occurrence_count": item.occurrence_count,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     }
@@ -158,15 +208,27 @@ def _serialize_pcap(item: PcapRecord) -> dict[str, Any]:
     return {
         "id": item.id,
         "probe_id": item.probe_id,
+        "segment_id": item.segment_id,
+        "sequence": item.sequence,
+        "capture_interface": item.capture_interface,
+        "capture_started_at": item.capture_started_at,
+        "capture_finished_at": item.capture_finished_at,
+        "ingest_status": item.ingest_status,
+        "analysis_status": item.analysis_status,
+        "probe_metadata": item.probe_metadata,
         "filename": item.filename,
         "size": item.size,
         "sha256": item.sha256,
         "packet_count": item.packet_count,
+        "total_packet_count": item.total_packet_count,
+        "indexed_packet_count": item.indexed_packet_count,
         "duration": item.duration,
         "capture_start": item.capture_start,
         "capture_end": item.capture_end,
+        "file_type": item.file_type,
         "protocol_summary": item.protocol_summary,
         "status": item.status,
+        "retention_status": item.retention_status,
         "created_at": item.created_at,
     }
 
@@ -235,12 +297,20 @@ def _serialize_file(item: FileRecord) -> dict[str, Any]:
 
 
 def _serialize_probe(item: Probe) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    status = item.status
+    if item.last_seen:
+        age = (now - item.last_seen).total_seconds()
+        if age > 90:
+            status = "offline"
+        elif status != "degraded" and age < 90:
+            status = "online"
     return {
         "id": item.id,
         "name": item.name,
         "hostname": item.hostname,
         "ip_address": item.ip_address,
-        "status": item.status,
+        "status": status,
         "last_seen": item.last_seen,
         "metadata": item.extra,
         "created_at": item.created_at,
@@ -271,6 +341,29 @@ def _dispatch(task_id: int, kind: str, func, *args: Any) -> None:
         func(*args, task_id)
 
 
+def _upload_probe_id(request: Request, db: Session, form_probe_id: int | None) -> int | None:
+    try:
+        probe = require_probe_headers(request, db)
+        return probe.id if probe else form_probe_id
+    except HTTPException:
+        if settings.app_env == "production":
+            user = get_session_user(db, request)
+            if user:
+                return form_probe_id
+        raise
+
+
+def _queue_backpressure(db: Session) -> None:
+    if settings.app_env == "development":
+        return
+    pending = db.scalar(select(func.count(Task.id)).where(Task.status == "Pending")) or 0
+    oldest = db.scalar(select(func.min(Task.created_at)).where(Task.status == "Pending"))
+    oldest_age = (datetime.now(UTC) - oldest).total_seconds() if oldest else 0
+    if pending >= settings.queue_pending_max or oldest_age >= settings.queue_oldest_pending_seconds:
+        retry = max(5, min(120, int(oldest_age or 5)))
+        raise HTTPException(429, "analysis queue is congested; retry later", headers={"Retry-After": str(retry)})
+
+
 def _string_time_filter(query, column, start_time: str | None, end_time: str | None):
     if start_time:
         query = query.where(column >= start_time)
@@ -279,14 +372,97 @@ def _string_time_filter(query, column, start_time: str | None, end_time: str | N
     return query
 
 
+@router.post("/auth/login")
+def admin_login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> dict[str, Any]:
+    ensure_admin(db)
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(401, "invalid username or password")
+    token = create_admin_session(db, user)
+    set_admin_cookie(response, token)
+    return {"id": user.id, "username": user.username, "role": user.role}
+
+
+@router.post("/auth/logout")
+def admin_logout(response: Response, request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
+    token = request.cookies.get(settings.cookie_name)
+    if token:
+        row = db.scalar(select(AdminSession).where(AdminSession.token_hash == hash_token(token)))
+        if row:
+            db.delete(row)
+            db.commit()
+    clear_admin_cookie(response)
+    return {"status": "ok"}
+
+
+@router.get("/auth/me")
+def admin_me(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    if settings.app_env != "production":
+        user = ensure_admin(db)
+        return {"id": user.id, "username": user.username, "role": user.role}
+    token = request.cookies.get(settings.cookie_name)
+    if not token:
+        raise HTTPException(401, "not authenticated")
+    row = db.scalar(select(AdminSession).where(AdminSession.token_hash == hash_token(token)))
+    if not row:
+        raise HTTPException(401, "not authenticated")
+    user = db.get(User, row.user_id)
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    return {"id": user.id, "username": user.username, "role": user.role}
+
+
 @router.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": settings.app_name}
+def health(db: Session = Depends(get_db)) -> dict[str, Any]:
+    redis_ok = False
+    try:
+        import redis as redis_lib
+        redis_ok = bool(redis_lib.Redis.from_url(settings.redis_url, socket_connect_timeout=1, socket_timeout=1).ping())
+    except Exception:
+        redis_ok = False
+    try:
+        from app.workers.celery_app import celery_app
+        inspect = celery_app.control.inspect(timeout=1)
+        active = inspect.active() or {}
+        pending = inspect.reserved() or {}
+        running = sum(len(items) for items in active.values() if items)
+        queued = sum(len(items) for items in pending.values() if items)
+    except Exception:
+        running = 0
+        queued = 0
+    oldest = db.scalar(select(func.min(Task.created_at)).where(Task.status.in_(["Pending", "Running"])))
+    oldest_age = max(0.0, (datetime.now(UTC) - oldest).total_seconds()) if oldest else 0.0
+    storage_bytes = sum(path.stat().st_size for path in settings.storage_dir.rglob("*") if path.is_file())
+    probes = db.scalars(select(Probe)).all()
+    offline = sum(1 for item in probes if _serialize_probe(item)["status"] == "offline")
+    return {
+        "status": "ok" if redis_ok else "degraded",
+        "service": settings.app_name,
+        "database": "ok",
+        "redis": "ok" if redis_ok else "unavailable",
+        "celery": {"running": running, "queued": queued},
+        "analysis_worker": "ready" if shutil.which("tshark") else "unavailable",
+        "tshark": bool(shutil.which("tshark")),
+        "zeek": bool(shutil.which("zeek")),
+        "suricata": bool(shutil.which("suricata")),
+        "storage_usage_bytes": storage_bytes,
+        "storage_max_bytes": settings.pcap_storage_max_gb * 1024 * 1024 * 1024,
+        "queue": {"pending": db.scalar(select(func.count(Task.id)).where(Task.status == "Pending")) or 0, "running": running, "oldest_pending_age": oldest_age},
+        "probe_count": len(probes),
+        "offline_probe_count": offline,
+    }
 
 
 @router.post("/probes/register")
-def register_probe(payload: ProbeRegister, db: Session = Depends(get_db)) -> dict[str, Any]:
+def register_probe(payload: ProbeRegister, x_probe_bootstrap_token: str | None = Header(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+    if settings.app_env == "production":
+        if not settings.probe_bootstrap_token or not x_probe_bootstrap_token:
+            raise HTTPException(401, "probe bootstrap token required")
+        if not verify_token(x_probe_bootstrap_token, hash_token(settings.probe_bootstrap_token)):
+            raise HTTPException(401, "invalid probe bootstrap token")
     probe = db.scalar(select(Probe).where(Probe.name == payload.name))
+    token = ""
+    rotate = not probe or not probe.token_hash or bool(x_probe_bootstrap_token)
     if not probe:
         probe = Probe(name=payload.name, hostname=payload.hostname, ip_address=payload.ip_address, extra=payload.metadata, status="online")
         db.add(probe)
@@ -295,18 +471,27 @@ def register_probe(payload: ProbeRegister, db: Session = Depends(get_db)) -> dic
         probe.ip_address = payload.ip_address
         probe.extra = payload.metadata
         probe.status = "online"
+    if rotate:
+        token = secrets.token_urlsafe(32)
+        probe.token = ""
+        probe.token_hash = hash_token(token)
     probe.last_seen = datetime.now(UTC)
     db.commit()
     db.refresh(probe)
-    return {"id": probe.id, "name": probe.name}
+    return {"id": probe.id, "name": probe.name, "token": token}
 
 
 @router.post("/probes/{probe_id}/heartbeat")
-def heartbeat(probe_id: int, payload: Heartbeat, db: Session = Depends(get_db)) -> dict[str, str]:
+def heartbeat(probe_id: int, payload: Heartbeat, request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
+    authenticated = require_probe_headers(request, db)
+    if authenticated and authenticated.id != probe_id:
+        raise HTTPException(403, "probe id mismatch")
     probe = db.get(Probe, probe_id)
     if not probe:
         raise HTTPException(404, "probe not found")
-    probe.status = payload.status
+    metadata = payload.metadata or {}
+    capture_status = str(metadata.get("capture_status") or payload.status)
+    probe.status = "degraded" if capture_status == "degraded" else payload.status
     probe.extra = payload.metadata or probe.extra
     probe.last_seen = datetime.now(UTC)
     db.commit()
@@ -392,12 +577,16 @@ def asset_detail(asset_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
 
 
 @router.post("/files/upload")
-async def upload_file(file: UploadFile = File(...), probe_id: int | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
-    data = await file.read()
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
-        raise HTTPException(413, "file too large")
-    path = save_bytes(data, file.filename or "upload.bin")
-    record = FileRecord(probe_id=probe_id, name=path.name, path=str(path), size=len(data), sha256=sha256(data).hexdigest(), file_type="")
+async def upload_file(request: Request, file: UploadFile = File(...), probe_id: int | None = Form(None), metadata_json: str | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+    probe_id = _upload_probe_id(request, db, probe_id)
+    try:
+        stored = await stream_to_storage(file, file.filename or "upload.bin", subdir="uploads", max_bytes=settings.max_upload_mb * 1024 * 1024)
+    except ValueError as exc:
+        if "too_large" in str(exc):
+            raise HTTPException(413, "file too large") from exc
+        raise
+    path = Path(stored["path"])
+    record = FileRecord(probe_id=probe_id, name=path.name, path=str(path), size=int(stored["size"]), sha256=str(stored["sha256"]), file_type="", metadata_json=json.loads(metadata_json) if metadata_json else {})
     db.add(record)
     db.commit()
     db.refresh(record)
@@ -437,18 +626,46 @@ def analyze_file(file_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.post("/pcaps/upload")
-async def upload_pcap(file: UploadFile = File(...), probe_id: int | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
-    data = await file.read()
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
-        raise HTTPException(413, "pcap too large")
-    path = save_bytes(data, file.filename or "capture.pcap", subdir="pcaps")
-    record = PcapRecord(probe_id=probe_id, filename=path.name, storage_path=str(path), size=len(data), sha256=sha256(data).hexdigest())
+async def upload_pcap(request: Request, file: UploadFile = File(...), probe_id: int | None = Form(None), metadata_json: str | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+    probe_id = _upload_probe_id(request, db, probe_id)
+    _queue_backpressure(db)
+    meta: dict[str, Any] = json.loads(metadata_json) if metadata_json else {}
+    try:
+        stored = await stream_to_storage(file, file.filename or "capture.pcap", subdir="pcaps", max_bytes=settings.max_upload_mb * 1024 * 1024)
+    except ValueError as exc:
+        if "too_large" in str(exc):
+            raise HTTPException(413, "pcap too large") from exc
+        raise
+    path = Path(stored["path"])
+    digest = str(stored["sha256"])
+    segment_id = str(meta.get("segment_id") or digest)
+    existing = db.scalar(select(PcapRecord).where(PcapRecord.probe_id == probe_id, PcapRecord.segment_id == segment_id))
+    if not existing and not meta.get("segment_id"):
+        existing = db.scalar(select(PcapRecord).where(PcapRecord.probe_id == probe_id, PcapRecord.sha256 == digest))
+    if existing:
+        path.unlink(missing_ok=True)
+        return {"id": existing.id, "task_id": None, "filename": existing.filename, "size": existing.size, "duplicate": True}
+    record = PcapRecord(
+        probe_id=probe_id,
+        segment_id=segment_id,
+        sequence=int(meta.get("sequence") or 0),
+        capture_interface=str(meta.get("interface") or ""),
+        capture_started_at=str(meta.get("capture_started_at") or ""),
+        capture_finished_at=str(meta.get("capture_finished_at") or ""),
+        probe_metadata=meta,
+        filename=path.name,
+        storage_path=str(path),
+        size=int(stored["size"]),
+        sha256=digest,
+        ingest_status="ingested",
+        analysis_status="pending",
+    )
     db.add(record)
     db.commit()
     db.refresh(record)
     task = create_task(db, "pcap", {"pcap_id": record.id})
     _dispatch(task.id, "pcap", analyze_pcap_task, record.id)
-    return {"id": record.id, "task_id": task.id, "filename": record.filename, "size": record.size}
+    return {"id": record.id, "task_id": task.id, "filename": record.filename, "size": record.size, "duplicate": False}
 
 
 @router.get("/pcaps")
@@ -556,6 +773,29 @@ def _external_details(pcap_id: int, db: Session) -> dict[str, Any]:
                         result["files"].append({**item, "source": "suricata"})
                     elif event_type == "alert":
                         result["alerts"].append({**item, "source": "suricata"})
+    integration_rows = db.scalars(select(AnalysisResult).where(AnalysisResult.module == "integrations", AnalysisResult.task_id.in_(select(Task.id).where(Task.payload["pcap_id"].as_integer() == pcap_id)))).all()
+    for row in integration_rows:
+        for name, events in (row.content or {}).items():
+            if not isinstance(events, list):
+                continue
+            for item in events:
+                event_type = str(item.get("event_type") or item.get("_path") or "").lower()
+                if name == "zeek":
+                    if event_type == "dns":
+                        result["dns"].append({**item, "source": "zeek"})
+                    elif event_type == "http":
+                        result["http"].append({**item, "source": "zeek"})
+                    elif event_type in {"ssl", "tls"}:
+                        result["tls"].append({**item, "source": "zeek"})
+                    elif event_type == "files":
+                        result["files"].append({**item, "source": "zeek"})
+                elif name == "suricata":
+                    if event_type in {"dns", "http"}:
+                        result[event_type].append({**item, "source": "suricata"})
+                    elif event_type == "fileinfo":
+                        result["files"].append({**item, "source": "suricata"})
+                    elif event_type == "alert":
+                        result["alerts"].append({**item, "source": "suricata"})
     return result
 
 
@@ -583,8 +823,12 @@ def pcap_files(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 def pcap_alerts(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     anomalies = [_serialize_anomaly(item) for item in db.scalars(select(Anomaly).where(Anomaly.pcap_id == pcap_id)).all()]
     findings = [_serialize_detection(item) for item in db.scalars(select(DetectionFinding).where(DetectionFinding.target_type == "pcap", DetectionFinding.target_id == str(pcap_id)).order_by(DetectionFinding.risk_score.desc())).all()]
+    alerts = db.scalars(select(Alert).where(Alert.finding_id.in_([item["id"] for item in findings])).order_by(Alert.risk_score.desc())).all() if findings else []
     external = _external_details(pcap_id, db)["alerts"]
     merged: dict[str, Any] = {}
+    for item in alerts:
+        key = f"alert:{item.fingerprint}"
+        merged.setdefault(key, {"kind": "alert", "severity": item.severity, "title": item.title, "description": item.summary, "evidence": serialize_alert(item), "source": item.source, "id": item.id})
     for item in anomalies:
         key = f"anomaly:{item['rule']}:{item['severity']}:{item['description']}"
         merged.setdefault(key, {"kind": "anomaly", "severity": item["severity"], "title": item["rule"], "description": item["description"], "evidence": item["evidence"], "source": "builtin"})
@@ -818,8 +1062,9 @@ def run_integration(name: str, payload: dict[str, Any], db: Session = Depends(ge
         raise HTTPException(404, "integration not found") from exc
     context = DetectionContext(target_type="integration", target_id=name, data=payload.get("context", {}))
     result = run_adapter(adapter, payload, context, RiskEngine())
+    alerts: list[Alert] = []
     for item in result.findings:
-        db.add(DetectionFinding(
+        finding = DetectionFinding(
             target_type="integration",
             target_id=name,
             engine=item.engine,
@@ -831,20 +1076,20 @@ def run_integration(name: str, payload: dict[str, Any], db: Session = Depends(ge
             risk_score=item.risk_score,
             risk_level=item.risk_level,
             timestamp=item.timestamp,
-        ))
+        )
+        db.add(finding)
+        db.flush()
+        alert = create_finding_alert(db, finding)
+        if alert:
+            alerts.append(alert)
     for incident in incident_engine.correlate(result.findings):
-        db.add(Incident(
-            title=incident.title,
-            severity=incident.severity,
-            confidence=incident.confidence,
-            status=incident.status,
-            findings={"items": incident.findings},
-            evidence=incident.evidence,
-            risk_score=incident.risk_score,
-            risk_level=incident.risk_level,
-            timestamp=incident.timestamp,
-        ))
+        row = _upsert_incident(db, incident, None)
+        alert = create_incident_alert(db, row)
+        if alert:
+            alerts.append(alert)
     db.commit()
+    for alert in alerts:
+        publish_alert(alert.id)
     return result.to_dict()
 
 
@@ -921,7 +1166,110 @@ def detection_detail(detection_id: int, db: Session = Depends(get_db)) -> dict[s
     if not item:
         raise HTTPException(404, "detection not found")
     incidents = db.scalars(select(Incident).where(Incident.findings["items"].as_string().ilike(f"%{item.rule_id}%"))).all()
-    return {"detection": _serialize_detection(item), "related_incidents": [_serialize_incident(item) for item in incidents]}
+    pcap = db.get(PcapRecord, int(item.target_id)) if item.target_type == "pcap" and str(item.target_id).isdigit() else None
+    alert = db.scalar(select(Alert).where(Alert.finding_id == item.id))
+    return {"detection": _serialize_detection(item), "related_incidents": [_serialize_incident(item) for item in incidents], "pcap": _serialize_pcap(pcap) if pcap else None, "alert": serialize_alert(alert) if alert else None}
+
+
+@router.get("/alerts")
+def list_alerts(status: str | None = None, severity: str | None = None, source: str | None = None, probe_id: int | None = None, start: str | None = None, end: str | None = None, search: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
+    query = select(Alert)
+    if status:
+        query = query.where(Alert.status == status)
+    if severity:
+        query = query.where(Alert.severity == severity)
+    if source:
+        query = query.where(Alert.source == source)
+    if probe_id:
+        query = query.where(Alert.probe_id == probe_id)
+    if start:
+        query = query.where(Alert.created_at >= start)
+    if end:
+        query = query.where(Alert.created_at <= end)
+    if search:
+        query = query.where(or_(Alert.title.ilike(f"%{search}%"), Alert.summary.ilike(f"%{search}%")))
+    result = paginate(db, query.order_by(Alert.risk_score.desc(), Alert.last_seen.desc()), page, page_size)
+    return page_response([serialize_alert(item) for item in result["items"]], page, page_size, result["total"])
+
+
+@router.get("/alerts/summary")
+def alert_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
+    status_rows = db.execute(select(Alert.status, func.count(Alert.id)).group_by(Alert.status)).all()
+    severity_rows = db.execute(select(Alert.severity, func.count(Alert.id)).group_by(Alert.severity)).all()
+    unhandled = db.scalar(select(func.count(Alert.id)).where(Alert.status == "new", Alert.severity.in_(["Critical", "High"]))) or 0
+    return {
+        "total": db.scalar(select(func.count(Alert.id))) or 0,
+        "status": {status: count for status, count in status_rows},
+        "severity": {severity: count for severity, count in severity_rows},
+        "unhandled_critical_high": unhandled,
+    }
+
+
+@router.get("/alerts/stream")
+def alert_stream(request: Request) -> StreamingResponse:
+    import redis as redis_lib
+
+    def event_source():
+        client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+        pubsub = client.pubsub()
+        pubsub.subscribe("security.alerts")
+        try:
+            yield "event: ping\ndata: connected\n\n"
+            for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                yield f"event: alert\ndata: {message['data']}\n\n"
+        finally:
+            pubsub.close()
+            client.close()
+
+    return StreamingResponse(event_source(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.get("/alerts/{alert_id}")
+def alert_detail(alert_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    alert = db.get(Alert, alert_id)
+    if not alert:
+        raise HTTPException(404, "alert not found")
+    finding = db.get(DetectionFinding, alert.finding_id) if alert.finding_id else None
+    incident = db.get(Incident, alert.incident_id) if alert.incident_id else None
+    probe = db.get(Probe, alert.probe_id) if alert.probe_id else None
+    pcap = None
+    if finding and finding.target_type == "pcap":
+        pcap = db.get(PcapRecord, int(finding.target_id)) if str(finding.target_id).isdigit() else None
+    deliveries = db.scalars(select(AlertDelivery).where(AlertDelivery.alert_id == alert.id).order_by(AlertDelivery.id.desc())).all()
+    return {
+        "alert": serialize_alert(alert),
+        "finding": _serialize_detection(finding) if finding else None,
+        "incident": _serialize_incident(incident) if incident else None,
+        "probe": _serialize_probe(probe) if probe else None,
+        "pcap": _serialize_pcap(pcap) if pcap else None,
+        "deliveries": [
+            {"id": item.id, "channel": item.channel, "target": item.target, "status": item.status, "attempts": item.attempts, "last_error": item.last_error, "sent_at": item.sent_at}
+            for item in deliveries
+        ],
+    }
+
+
+@router.patch("/alerts/{alert_id}")
+def update_alert(alert_id: int, payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
+    alert = db.get(Alert, alert_id)
+    if not alert:
+        raise HTTPException(404, "alert not found")
+    status = payload.get("status")
+    if status:
+        if status not in {"new", "acknowledged", "resolved", "suppressed"}:
+            raise HTTPException(400, "invalid alert status")
+        alert.status = status
+    if "severity" in payload:
+        alert.severity = str(payload["severity"])
+    if "summary" in payload:
+        alert.summary = str(payload["summary"])
+    alert.last_seen = datetime.now(UTC)
+    db.commit()
+    db.refresh(alert)
+    publish_alert(alert.id)
+    return serialize_alert(alert)
 
 
 @router.get("/risk/summary")
@@ -1015,6 +1363,8 @@ def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
         "probes": db.scalar(select(func.count(Probe.id))) or 0,
         "incidents": db.scalar(select(func.count(Incident.id))) or 0,
         "iocs": db.scalar(select(func.count(IOC.id))) or 0,
+        "alerts": db.scalar(select(func.count(Alert.id))) or 0,
+        "open_alerts": db.scalar(select(func.count(Alert.id)).where(Alert.status == "new")) or 0,
         "high_risk_findings": db.scalar(select(func.count(DetectionFinding.id)).where(DetectionFinding.risk_level.in_(["Critical", "High"]))) or 0,
         "open_incidents": db.scalar(select(func.count(Incident.id)).where(Incident.status == "open")) or 0,
         "high_risk_assets": db.scalar(select(func.count(Asset.id)).where(Asset.risk_level.in_(["Critical", "High"]))) or 0,

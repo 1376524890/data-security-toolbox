@@ -38,6 +38,9 @@ class ZeekAdapter(IntegrationAdapter):
     supported_types = ("conn", "dns", "http", "ssl", "files", "weird")
     capabilities = ("pcap", "dns", "tls", "http", "files", "weird")
 
+    def supports(self, context: DetectionContext | None = None) -> bool:
+        return bool(context and context.target_type == "pcap" and context.path and context.path.exists())
+
     def health(self) -> dict[str, Any]:
         runtime = self._binary_available("zeek")
         return {

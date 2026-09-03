@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
 from app.engine.core.context import DetectionContext
 from app.integrations.base import AdapterResult, IntegrationAdapter, finding
 from app.integrations.misp.client import MISPClient, extract_iocs
 from app.integrations.misp.store import MISPStore
-from app.core.config import settings
 
 
 def _collect_observations(context: DetectionContext | None) -> dict[str, set[str]]:
@@ -42,6 +43,11 @@ class MISPAdapter(IntegrationAdapter):
     supported_types = ("ip", "domain", "hash", "url")
     capabilities = ("offline-store", "api-sync", "ioc-match")
 
+    def supports(self, context: DetectionContext | None = None) -> bool:
+        if not context:
+            return False
+        return bool(context.data.get("ioc_library") or context.data.get("iocs"))
+
     def health(self) -> dict[str, Any]:
         configured = bool(settings.misp_url and settings.misp_api_key)
         return {
@@ -65,7 +71,9 @@ class MISPAdapter(IntegrationAdapter):
             if payload.get("iocs"):
                 return payload["iocs"]
             if payload.get("path") or payload.get("file"):
-                return MISPStore(payload.get("path") or payload.get("file")).load()
+                path = Path(payload.get("path") or payload.get("file"))
+                if path.suffix not in {".pcap", ".pcapng", ".pcap.gz", ".pcapng.gz"}:
+                    return MISPStore(path).load()
             if payload.get("events"):
                 return extract_iocs(payload["events"])
             if payload.get("ioc"):

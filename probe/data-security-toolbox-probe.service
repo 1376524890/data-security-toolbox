@@ -1,0 +1,22 @@
+[Unit]
+Description=Data Security Toolbox Probe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dstprobe
+Group=dstprobe
+ExecStart=/usr/bin/python3 /opt/data-security-toolbox/probe/probe.py --config /etc/data-security-toolbox/probe.toml
+Restart=always
+RestartSec=5
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/data-security-toolbox/spool /etc/data-security-toolbox
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

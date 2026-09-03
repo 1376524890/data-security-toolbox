@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.config import settings
 from app.engine.core.context import DetectionContext
 from app.integrations.base import AdapterResult, IntegrationAdapter, finding, severity_map
 from app.integrations.host_audit.parsers import parse_payload
-from app.core.config import settings
 
 
 class WazuhAdapter(IntegrationAdapter):
@@ -14,6 +14,9 @@ class WazuhAdapter(IntegrationAdapter):
     version = "2.1.0"
     supported_types = ("alert", "asset", "process", "user", "config", "log")
     capabilities = ("alert", "asset", "process", "user", "config", "log")
+
+    def supports(self, context: DetectionContext | None = None) -> bool:
+        return bool(context and context.target_type in {"host", "audit", "asset", "log"} or (context and context.data.get("wazuh")))
 
     def health(self) -> dict[str, Any]:
         configured = bool(settings.wazuh_url)

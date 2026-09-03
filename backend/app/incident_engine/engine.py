@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+import hashlib
 from typing import Any
 
 from app.engine.core.result import DetectionResult
@@ -87,6 +88,8 @@ class Incident:
     title: str
     severity: str
     confidence: float
+    fingerprint: str = ""
+    source: str = "pipeline"
     findings: list[dict[str, Any]] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
     risk_score: float = 0.0
@@ -126,11 +129,13 @@ class IncidentEngine:
                     continue
                 seen.add(signature)
                 score = max(item.risk_score for item in cluster)
+                fingerprint = self._fingerprint(asset, ioc, stages)
                 incidents.append(Incident(
                     id=f"INC-{asset or ioc or 'global'}-{len(incidents) + 1}",
                     title=self._title(cluster, asset, ioc),
                     severity=_severity(cluster),
                     confidence=round(sum(item.confidence for item in cluster) / len(cluster), 3),
+                    fingerprint=fingerprint,
                     findings=[item.to_dict() for item in cluster],
                     evidence={
                         "asset": asset,
@@ -143,6 +148,11 @@ class IncidentEngine:
                     risk_level=self._level(score),
                 ))
         return incidents[:100]
+
+    @staticmethod
+    def _fingerprint(asset: str, ioc: str, stages: list[str]) -> str:
+        payload = f"{asset}|{ioc}|{','.join(stages)}".encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
 
     @staticmethod
     def _correlation_keys(finding: DetectionResult) -> list[str]:

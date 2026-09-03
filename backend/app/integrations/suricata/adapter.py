@@ -15,6 +15,9 @@ class SuricataAdapter(IntegrationAdapter):
     supported_types = ("alert", "flow", "dns", "http", "fileinfo")
     capabilities = ("pcap", "alert", "flow", "dns", "http", "fileinfo")
 
+    def supports(self, context: DetectionContext | None = None) -> bool:
+        return bool(context and context.target_type == "pcap" and context.path and context.path.exists())
+
     def health(self) -> dict[str, Any]:
         runtime = self._binary_available("suricata")
         return {

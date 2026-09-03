@@ -14,6 +14,9 @@ class OpenSCAPAdapter(IntegrationAdapter):
     supported_types = ("cis", "dengbao", "xccdf", "arf")
     capabilities = ("xccdf", "arf", "cis", "dengbao")
 
+    def supports(self, context: DetectionContext | None = None) -> bool:
+        return bool(context and context.target_type in {"host", "compliance"} or (context and context.data.get("openscap")))
+
     def health(self) -> dict[str, Any]:
         runtime = self._binary_available("oscap")
         return {

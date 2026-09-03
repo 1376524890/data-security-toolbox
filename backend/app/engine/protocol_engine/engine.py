@@ -6,18 +6,15 @@ from typing import Any
 from app.engine.core.base import DetectionEngine
 from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
-from app.services.protocol_service import extract_app_fields, protocol_distribution, run_tshark
+from app.services.protocol_service import extract_app_fields, protocol_distribution, stream_tshark
 from app.engine.data_engine.engine import shannon_entropy
 
 
 def tcp_streams(path: Path, timeout: int = 300) -> list[dict[str, Any]]:
     fields = ["tcp.stream", "tcp.seq", "tcp.len", "tcp.payload", "frame.time_epoch", "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport"]
     field_args = [item for field in fields for item in ("-e", field)]
-    stdout, _, code = run_tshark(["-r", str(path), "-T", "fields", *field_args, "-c", "5000"], timeout)
-    if code != 0:
-        return []
     streams: dict[str, dict[str, Any]] = defaultdict(lambda: {"stream": "", "packets": 0, "bytes": 0, "payload": bytearray(), "src_ip": "", "dst_ip": "", "src_port": 0, "dst_port": 0, "start": 0.0, "end": 0.0})
-    for line in stdout.splitlines():
+    for line in stream_tshark(["-r", str(path), "-T", "fields", *field_args], timeout):
         parts = line.split("\t")
         if len(parts) < 9:
             continue
@@ -47,11 +44,8 @@ def tcp_streams(path: Path, timeout: int = 300) -> list[dict[str, Any]]:
 def tls_analysis(path: Path, timeout: int = 300) -> dict[str, Any]:
     fields = ["tls.handshake.type", "tls.handshake.extensions_server_name", "tls.handshake.ciphersuite", "tls.handshake.ja3", "tls.handshake.ja3_full"]
     field_args = [item for field in fields for item in ("-e", field)]
-    stdout, _, code = run_tshark(["-r", str(path), "-T", "fields", *field_args, "-c", "5000"], timeout)
-    if code != 0:
-        return {"handshakes": [], "ja3": {}, "sni": {}}
     rows = []
-    for line in stdout.splitlines():
+    for line in stream_tshark(["-r", str(path), "-T", "fields", *field_args], timeout):
         parts = line.split("\t")
         rows.append({"type": parts[0] if len(parts) > 0 else "", "sni": parts[1] if len(parts) > 1 else "", "cipher": parts[2] if len(parts) > 2 else "", "ja3": parts[3] if len(parts) > 3 else "", "ja3_full": parts[4] if len(parts) > 4 else ""})
     return {"handshakes": rows[:1000], "ja3": dict(Counter(row["ja3"] for row in rows if row["ja3"]).most_common(20)), "sni": dict(Counter(row["sni"] for row in rows if row["sni"]).most_common(50))}
@@ -60,11 +54,8 @@ def tls_analysis(path: Path, timeout: int = 300) -> dict[str, Any]:
 def dns_analysis(path: Path, timeout: int = 300) -> dict[str, Any]:
     fields = ["dns.qry.name", "dns.qry.type", "dns.resp.len", "dns.txt"]
     field_args = [item for field in fields for item in ("-e", field)]
-    stdout, _, code = run_tshark(["-r", str(path), "-T", "fields", *field_args, "-c", "5000"], timeout)
-    if code != 0:
-        return {"queries": [], "high_entropy": [], "long_queries": [], "txt_large": []}
     rows = []
-    for line in stdout.splitlines():
+    for line in stream_tshark(["-r", str(path), "-T", "fields", *field_args], timeout):
         parts = line.split("\t")
         rows.append({"name": parts[0] if len(parts) > 0 else "", "type": parts[1] if len(parts) > 1 else "", "resp_len": int(parts[2] or 0), "txt": parts[3] if len(parts) > 3 else ""})
     high = [row for row in rows if shannon_entropy(row["name"]) >= 3.5 or len(row["name"]) >= 40]
@@ -75,11 +66,8 @@ def dns_analysis(path: Path, timeout: int = 300) -> dict[str, Any]:
 def http_analysis(path: Path, timeout: int = 300) -> dict[str, Any]:
     fields = ["http.user_agent", "http.request.method", "http.request.uri", "http.response.code", "http.file_data"]
     field_args = [item for field in fields for item in ("-e", field)]
-    stdout, _, code = run_tshark(["-r", str(path), "-T", "fields", *field_args, "-c", "5000"], timeout)
-    if code != 0:
-        return {"requests": []}
     rows = []
-    for line in stdout.splitlines():
+    for line in stream_tshark(["-r", str(path), "-T", "fields", *field_args], timeout):
         parts = line.split("\t")
         rows.append({"user_agent": parts[0] if len(parts) > 0 else "", "method": parts[1] if len(parts) > 1 else "", "uri": parts[2] if len(parts) > 2 else "", "status": parts[3] if len(parts) > 3 else "", "file_data": parts[4] if len(parts) > 4 else ""})
     return {"requests": rows[:1000]}
@@ -141,4 +129,3 @@ class ProtocolEngine(DetectionEngine):
                 recommendation="对动态脚本上传请求进行审计，结合文件内容判断是否存在 WebShell 上传。",
             ).normalize())
         return findings
-

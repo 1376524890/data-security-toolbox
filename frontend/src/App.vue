@@ -1,33 +1,75 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { ElNotification } from 'element-plus'
 import { apiGet } from './api/client'
+import { getAlert, getAlertSummary, alertStreamUrl } from './api/alerts'
 import type { HealthResponse } from './types/common'
 import type { IntegrationStatus } from './types/integration'
+import type { AlertSummary } from './types/alert'
 
 const route = useRoute()
+const router = useRouter()
 const health = ref<HealthResponse | null>(null)
 const integrations = ref<IntegrationStatus[]>([])
+const alertSummary = ref<AlertSummary | null>(null)
 const now = ref(new Date())
 let timer = 0
+let refreshTimer = 0
+let eventSource: EventSource | null = null
 
 const currentTitle = computed(() => String(route.meta.title || '安全平台'))
 const healthyIntegrations = computed(() => integrations.value.filter((item) => item.healthy).length)
+const unhandledAlerts = computed(() => alertSummary.value?.unhandled_critical_high || 0)
 
 async function refresh(): Promise<void> {
-  const [healthResult, integrationResult] = await Promise.allSettled([
+  const [healthResult, integrationResult, alertResult] = await Promise.allSettled([
     apiGet<HealthResponse>('/health'),
     apiGet<IntegrationStatus[]>('/integrations'),
+    getAlertSummary(),
   ])
   if (healthResult.status === 'fulfilled') health.value = healthResult.value
   if (integrationResult.status === 'fulfilled') integrations.value = integrationResult.value
+  if (alertResult.status === 'fulfilled') alertSummary.value = alertResult.value
+}
+
+function openAlerts(): void {
+  router.push('/alerts')
+}
+
+function connectAlertStream(): void {
+  if (eventSource) eventSource.close()
+  eventSource = new EventSource(alertStreamUrl())
+  eventSource.addEventListener('alert', async (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      const detail = await getAlert(data.alert_id)
+      const alert = detail.alert
+      ElNotification({
+        title: `${alert.severity} ${alert.title}`,
+        message: `${detail.probe?.ip_address || alert.probe_id || ''} Risk ${alert.risk_score}`,
+        type: alert.severity === 'Critical' ? 'error' : alert.severity === 'High' ? 'warning' : 'info',
+        duration: 8000,
+        onClick: openAlerts,
+      })
+      alertSummary.value = await getAlertSummary()
+    } catch {
+      // SSE payload may arrive before a database read is visible; next summary refresh fixes the badge.
+    }
+  })
 }
 
 onMounted(() => {
   refresh()
+  connectAlertStream()
   timer = window.setInterval(() => { now.value = new Date() }, 1000)
+  refreshTimer = window.setInterval(refresh, 30000)
 })
-onBeforeUnmount(() => window.clearInterval(timer))
+onBeforeUnmount(() => {
+  window.clearInterval(timer)
+  window.clearInterval(refreshTimer)
+  eventSource?.close()
+})
 </script>
 
 <template>
@@ -39,6 +81,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
           <el-menu-item index="/">总览</el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="安全调查">
+          <el-menu-item index="/alerts">告警中心</el-menu-item>
           <el-menu-item index="/incidents">安全事件</el-menu-item>
           <el-menu-item index="/detections">检测结果</el-menu-item>
           <el-menu-item index="/risk">风险分析</el-menu-item>
@@ -74,6 +117,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <div class="header-meta">
           <el-tag :type="health?.status === 'ok' ? 'success' : 'danger'">{{ health?.status || 'checking' }}</el-tag>
           <el-tag type="info">Integrations {{ healthyIntegrations }}/{{ integrations.length }}</el-tag>
+          <el-badge :value="unhandledAlerts" :hidden="!unhandledAlerts" class="bell"><el-button size="small" @click="openAlerts">告警</el-button></el-badge>
           <span class="clock">{{ now.toLocaleString('zh-CN', { hour12: false }) }}</span>
           <el-button size="small" @click="refresh">刷新</el-button>
         </div>

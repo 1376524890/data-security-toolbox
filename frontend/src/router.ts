@@ -16,11 +16,16 @@ import TasksView from './views/TasksView.vue'
 import ProbesView from './views/ProbesView.vue'
 import ReportsView from './views/ReportsView.vue'
 import OfflineResourcesView from './views/OfflineResourcesView.vue'
+import AlertsView from './views/AlertsView.vue'
+import LoginView from './views/LoginView.vue'
+import { me } from './api/auth'
 
-export default createRouter({
+const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/login', component: LoginView, meta: { title: '登录' } },
     { path: '/', component: DashboardView, meta: { title: '安全态势 / 总览' } },
+    { path: '/alerts', component: AlertsView, meta: { title: '安全调查 / 告警中心' } },
     { path: '/incidents', component: IncidentsView, meta: { title: '安全调查 / 安全事件' } },
     { path: '/detections', component: DetectionsView, meta: { title: '安全调查 / 检测结果' } },
     { path: '/risk', component: RiskView, meta: { title: '安全调查 / 风险分析' } },
@@ -39,3 +44,15 @@ export default createRouter({
     { path: '/offline-resources', component: OfflineResourcesView, meta: { title: '系统 / 离线资源' } },
   ],
 })
+
+router.beforeEach(async (to) => {
+  if (to.path === '/login') return true
+  try {
+    await me()
+    return true
+  } catch {
+    return '/login'
+  }
+})
+
+export default router

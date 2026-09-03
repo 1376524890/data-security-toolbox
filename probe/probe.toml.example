@@ -1,0 +1,25 @@
+[server]
+url = "https://security-platform.local"
+verify_tls = true
+ca_file = "/etc/data-security-toolbox/ca.pem"
+
+[capture]
+interface = "eth0"
+segment_seconds = 30
+segment_max_mb = 64
+
+[spool]
+path = "/var/lib/data-security-toolbox/spool"
+max_mb = 2048
+retention_seconds = 86400
+
+[agent]
+heartbeat_seconds = 30
+asset_interval_seconds = 900
+file_interval_seconds = 0
+bootstrap_token = "CHANGE_ME"
+token_path = "/etc/data-security-toolbox/probe.token"
+ports = [22, 80, 443, 445, 3306, 5432, 6379, 8080]
+paths = []
+max_files = 50
+demo = false

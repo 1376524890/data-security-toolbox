@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.config import settings
 from app.engine.core.context import DetectionContext
 from app.integrations.base import AdapterResult, IntegrationAdapter, finding
 from app.integrations.host_audit.parsers import parse_payload
-from app.core.config import settings
 
 SUSPICIOUS_PROCESSES = ("mimikatz", "procdump", "wce", "lsass.exe", "rundll32.exe", "powershell.exe", "cmd.exe", "bash", "nc", "ncat", "socat")
 SUSPICIOUS_CONFIG = ("permitrootlogin yes", "passwordauthentication yes", "nopasswd", "disable=yes", "selinux=disabled")
@@ -17,6 +17,9 @@ class OsqueryAdapter(IntegrationAdapter):
     version = "2.1.0"
     supported_types = ("asset", "process", "user", "config", "log")
     capabilities = ("asset", "process", "user", "config", "log")
+
+    def supports(self, context: DetectionContext | None = None) -> bool:
+        return bool(context and context.target_type in {"host", "audit", "asset", "log"} or (context and context.data.get("osquery")))
 
     def health(self) -> dict[str, Any]:
         runtime = self._binary_available("osqueryi") or ("socket" if settings.osquery_socket else "")

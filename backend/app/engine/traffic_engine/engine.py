@@ -7,6 +7,7 @@ from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
 from app.rules.interpreter import interpret_rules
 from app.services.traffic_service import detect_anomalies
+from app.services.traffic_state import rolling_traffic_state
 
 
 class TrafficEngine(DetectionEngine):
@@ -16,14 +17,19 @@ class TrafficEngine(DetectionEngine):
     def analyze(self, context: DetectionContext) -> list[DetectionResult]:
         rule_dir = Path(__file__).resolve().parents[2] / "rules" / "network"
         findings = interpret_rules(context, rule_dir)
+        probe = str(context.data.get("probe_id") or context.data.get("probe_name") or "global")
+        rolling_traffic_state.observe(probe, context.flows)
         builtin_anomalies = detect_anomalies(context.flows, context.packets)
         for item in builtin_anomalies:
+            src = str(item.get("evidence", {}).get("src") or item.get("evidence", {}).get("src_ip") or "")
+            if item["rule"] == "NETWORK_PORT_SCAN" and src and rolling_traffic_state.seen(probe, src, item["rule"], context.data.get("port_scan_window_seconds")):
+                continue
             findings.append(DetectionResult(
                 engine=self.name,
                 rule_id=item["rule"],
                 severity=item["severity"],
                 confidence=0.85,
-                evidence={"description": item["description"], **item.get("evidence", {})},
+                evidence={"description": item["description"], "window": context.data.get("port_scan_window_seconds"), **item.get("evidence", {})},
                 recommendation="结合会话证据排查异常行为来源和目标。",
             ).normalize())
         for beacon in self._beacon_flows(context):

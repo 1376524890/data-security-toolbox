@@ -104,7 +104,7 @@ onMounted(load)
     <div class="toolbar">
       <el-upload :auto-upload="false" :show-file-list="false" :on-change="(file: any) => handleFile(file.raw as File)"><el-button>上传 PCAP/PCAPNG</el-button></el-upload>
       <el-input v-model="filters.search" placeholder="搜索文件名" clearable @keyup.enter="reset" />
-      <el-select v-model="filters.status" placeholder="状态" clearable><el-option v-for="item in ['pending', 'analyzed', 'failed']" :key="item" :label="item" :value="item" /></el-select>
+      <el-select v-model="filters.status" placeholder="状态" clearable><el-option v-for="item in ['pending', 'analyzed', 'failed', 'retained_analysis']" :key="item" :label="item" :value="item" /></el-select>
       <el-button type="primary" @click="reset">查询</el-button>
     </div>
     <LoadingState v-if="loading" />
@@ -113,7 +113,7 @@ onMounted(load)
     <el-table v-else :data="items" stripe>
       <el-table-column prop="filename" label="文件" />
       <el-table-column label="大小" width="100"><template #default="{ row }">{{ formatBytes(row.size) }}</template></el-table-column>
-      <el-table-column prop="packet_count" label="包数" width="90" />
+      <el-table-column label="总包数/索引包数" width="130"><template #default="{ row }">{{ row.total_packet_count ?? row.packet_count }}/{{ row.indexed_packet_count ?? '-' }}</template></el-table-column>
       <el-table-column label="时长" width="90"><template #default="{ row }">{{ formatDuration(row.duration) }}</template></el-table-column>
       <el-table-column label="捕获时间" width="160"><template #default="{ row }">{{ formatDateTime(row.capture_start) }}</template></el-table-column>
       <el-table-column prop="status" label="状态" width="100" />
@@ -122,10 +122,10 @@ onMounted(load)
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="filters.page_size" :current-page="filters.page" @current-change="(page: number) => { filters.page = page; load() }" />
     <el-drawer v-model="drawer" title="PCAP Workbench" size="75%">
       <template v-if="selected">
-        <el-descriptions :column="4" border><el-descriptions-item label="文件">{{ selected.filename }}</el-descriptions-item><el-descriptions-item label="包数">{{ selected.packet_count }}</el-descriptions-item><el-descriptions-item label="时长">{{ formatDuration(selected.duration) }}</el-descriptions-item><el-descriptions-item label="状态">{{ selected.status }}</el-descriptions-item></el-descriptions>
+        <el-descriptions :column="4" border><el-descriptions-item label="文件">{{ selected.filename }}</el-descriptions-item><el-descriptions-item label="总包数">{{ selected.total_packet_count ?? selected.packet_count }}</el-descriptions-item><el-descriptions-item label="索引包数">{{ selected.indexed_packet_count ?? '-' }}</el-descriptions-item><el-descriptions-item label="时长">{{ formatDuration(selected.duration) }}</el-descriptions-item><el-descriptions-item label="状态">{{ selected.status }}</el-descriptions-item><el-descriptions-item label="Segment">{{ selected.segment_id || '-' }}</el-descriptions-item></el-descriptions>
         <el-tabs v-model="active" class="tabs">
           <el-tab-pane label="Overview" name="overview">
-            <el-descriptions :column="4" border><el-descriptions-item label="Flows">{{ flows.length }}</el-descriptions-item><el-descriptions-item label="Packets">{{ packets.length }}</el-descriptions-item><el-descriptions-item label="Alerts">{{ alerts.length }}</el-descriptions-item><el-descriptions-item label="Protocols">{{ Object.keys(selected.protocol_summary || {}).length }}</el-descriptions-item></el-descriptions>
+            <el-descriptions :column="4" border><el-descriptions-item label="Flows">{{ flows.length }}</el-descriptions-item><el-descriptions-item label="Indexed Packets">{{ packets.length }}</el-descriptions-item><el-descriptions-item label="Alerts">{{ alerts.length }}</el-descriptions-item><el-descriptions-item label="Protocols">{{ Object.keys(selected.protocol_summary || {}).length }}</el-descriptions-item></el-descriptions>
             <div ref="trafficEl" class="chart" />
             <el-divider content-position="left">Top Talkers</el-divider>
             <el-table :data="traffic?.top_n || []" size="small"><el-table-column label="src → dst"><template #default="{ row }">{{ row.src_ip }}:{{ row.src_port }} → {{ row.dst_ip }}:{{ row.dst_port }}</template></el-table-column><el-table-column prop="bytes" label="字节" /><el-table-column prop="packets" label="包数" /></el-table>

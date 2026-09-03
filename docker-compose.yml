@@ -1,10 +1,10 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.6-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-security_toolbox}
       POSTGRES_USER: ${POSTGRES_USER:-security}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-security}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -12,9 +12,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
@@ -23,13 +24,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   backend:
     build:
       context: ./backend
+      target: api
     environment:
-      APP_ENV: production
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD:-security}@postgres:5432/${POSTGRES_DB:-security_toolbox}
+      APP_ENV: ${APP_ENV:-production}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      PROBE_BOOTSTRAP_TOKEN: ${PROBE_BOOTSTRAP_TOKEN:?PROBE_BOOTSTRAP_TOKEN is required}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -38,13 +45,26 @@ services:
       EXTERNAL_ENGINE_DIR: /app/data/external
       INTEGRATION_DIR: /app/data/integrations
       OFFLINE_DIR: /app/app/integrations/offline_data
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
+      PCAP_INDEX_LIMIT: ${PCAP_INDEX_LIMIT:-10000}
+      PCAP_RETENTION_DAYS: ${PCAP_RETENTION_DAYS:-7}
+      PCAP_STORAGE_MAX_GB: ${PCAP_STORAGE_MAX_GB:-100}
+      QUEUE_PENDING_MAX: ${QUEUE_PENDING_MAX:-200}
+      QUEUE_OLDEST_PENDING_SECONDS: ${QUEUE_OLDEST_PENDING_SECONDS:-900}
+      ALERT_SUPPRESS_WINDOW_SECONDS: ${ALERT_SUPPRESS_WINDOW_SECONDS:-300}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TO: ${SMTP_TO:-}
       MISP_URL: ${MISP_URL:-}
       MISP_API_KEY: ${MISP_API_KEY:-}
       WAZUH_URL: ${WAZUH_URL:-}
       OSQUERY_SOCKET: ${OSQUERY_SOCKET:-}
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
-      PROBE_TOKEN: ${PROBE_TOKEN:-}
-      SECRET_KEY: ${SECRET_KEY:-}
+      COOKIE_SECURE: "true"
     volumes:
       - backend_data:/app/data
     depends_on:
@@ -62,6 +82,7 @@ services:
   worker:
     build:
       context: ./backend
+      target: analysis-worker
     command: ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
     healthcheck:
       test: ["CMD", "python", "-c", "import celery; print('ok')"]
@@ -69,8 +90,12 @@ services:
       timeout: 5s
       retries: 10
     environment:
-      APP_ENV: production
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD:-security}@postgres:5432/${POSTGRES_DB:-security_toolbox}
+      APP_ENV: ${APP_ENV:-production}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      PROBE_BOOTSTRAP_TOKEN: ${PROBE_BOOTSTRAP_TOKEN:?PROBE_BOOTSTRAP_TOKEN is required}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -83,6 +108,44 @@ services:
       MISP_API_KEY: ${MISP_API_KEY:-}
       WAZUH_URL: ${WAZUH_URL:-}
       OSQUERY_SOCKET: ${OSQUERY_SOCKET:-}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TO: ${SMTP_TO:-}
+    volumes:
+      - backend_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: ./backend
+      target: analysis-worker
+    command: ["celery", "-A", "app.workers.celery_app.celery_app", "beat", "--loglevel=info"]
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      PROBE_BOOTSTRAP_TOKEN: ${PROBE_BOOTSTRAP_TOKEN:?PROBE_BOOTSTRAP_TOKEN is required}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      STORAGE_DIR: /app/data/storage
+      REPORT_DIR: /app/data/reports
+      EXTERNAL_ENGINE_DIR: /app/data/external
+      INTEGRATION_DIR: /app/data/integrations
+      OFFLINE_DIR: /app/app/integrations/offline_data
+      PCAP_RETENTION_DAYS: ${PCAP_RETENTION_DAYS:-7}
     volumes:
       - backend_data:/app/data
     depends_on:
@@ -96,16 +159,16 @@ services:
     build:
       context: ./frontend
     ports:
-      - "8080:80"
+      - "${HTTP_PORT:-8080}:80"
     depends_on:
       - backend
     restart: unless-stopped
 
   flower:
-    image: mher/flower:2.0
+    image: mher/flower:2.0.1
     command: ["celery", "flower", "--broker=redis://redis:6379/1", "--port=5555"]
-    ports:
-      - "5555:5555"
+    expose:
+      - "5555"
     depends_on:
       - redis
     restart: unless-stopped

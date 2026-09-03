@@ -42,6 +42,11 @@ class PresidioAdapter(IntegrationAdapter):
     supported_types = ("text", "file")
     capabilities = ("regex-fallback", "cn-pii", "secret", "model-metadata")
 
+    def supports(self, context: DetectionContext | None = None) -> bool:
+        if not context:
+            return False
+        return context.target_type in {"file", "text"} or bool(context.data.get("text"))
+
     def health(self) -> dict[str, Any]:
         try:
             import presidio_analyzer  # noqa: F401

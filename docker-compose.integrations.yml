@@ -1,33 +1,4 @@
 services:
-  zeek:
-    image: zeek/zeek:latest
-    profiles: ["integrations"]
-    volumes:
-      - ./data/integrations:/data
-    command: ["sleep", "infinity"]
-    restart: unless-stopped
-
-  suricata:
-    image: jasonish/suricata:latest
-    profiles: ["integrations"]
-    volumes:
-      - ./data/integrations:/data
-    command: ["sleep", "infinity"]
-    restart: unless-stopped
-
-  openscap:
-    image: fedora:latest
-    profiles: ["integrations"]
-    command: ["bash", "-c", "dnf install -y openscap-scanner && sleep infinity"]
-    restart: unless-stopped
-
-  osquery:
-    image: kolide/osquery:latest
-    platform: linux/amd64
-    profiles: ["integrations"]
-    command: ["sleep", "infinity"]
-    restart: unless-stopped
-
   wazuh:
     image: wazuh/wazuh-manager:4.9.2
     platform: linux/amd64
@@ -35,20 +6,14 @@ services:
     restart: unless-stopped
 
   misp:
-    image: harvarditsecurity/misp:latest
+    image: harvarditsecurity/misp:2.4.198
     platform: linux/amd64
     profiles: ["integrations"]
     environment:
       MISP_ADMIN_EMAIL: admin@localhost
-      MISP_ADMIN_PASSWD: ChangeMe123!
+      MISP_ADMIN_PASSWD: ${MISP_ADMIN_PASSWD:?MISP_ADMIN_PASSWD is required}
     volumes:
       - misp_data:/var/www/MISP
-    restart: unless-stopped
-
-  presidio:
-    image: 0901--backend
-    profiles: ["integrations"]
-    command: ["sh", "-c", "python -m pip install --user --no-cache-dir -q presidio-analyzer && python -c \"from presidio_analyzer import AnalyzerEngine; print('presidio-analyzer ready'); import time; time.sleep(86400)\""]
     restart: unless-stopped
 
 volumes:

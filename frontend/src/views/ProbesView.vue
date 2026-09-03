@@ -72,7 +72,7 @@ onMounted(load)
       <el-input v-model="form.ip_address" placeholder="IP" />
       <el-button type="primary" @click="register">注册</el-button>
       <el-input v-model="filters.search" placeholder="搜索" clearable @keyup.enter="reset" />
-      <el-select v-model="filters.status" placeholder="状态" clearable><el-option v-for="item in ['online', 'offline']" :key="item" :label="item" :value="item" /></el-select>
+      <el-select v-model="filters.status" placeholder="状态" clearable><el-option v-for="item in ['online', 'degraded', 'offline']" :key="item" :label="item" :value="item" /></el-select>
       <el-button @click="reset">查询</el-button>
     </div>
     <LoadingState v-if="loading" />
@@ -84,6 +84,7 @@ onMounted(load)
       <el-table-column prop="ip_address" label="IP" />
       <el-table-column label="状态" width="100"><template #default="{ row }"><StatusBadge :value="row.status" /></template></el-table-column>
       <el-table-column label="Last Seen" width="160"><template #default="{ row }">{{ formatDateTime(row.last_seen) }}</template></el-table-column>
+      <el-table-column label="Spool" width="100"><template #default="{ row }">{{ (row.metadata as Record<string, unknown>)?.spool_size_mb ?? '-' }}</template></el-table-column>
       <el-table-column label="操作" width="180"><template #default="{ row }"><el-button link type="primary" @click="analyze(row)">分析资产</el-button><el-button link @click="open(row)">历史任务</el-button></template></el-table-column>
     </el-table>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="filters.page_size" :current-page="filters.page" @current-change="(page: number) => { filters.page = page; load() }" />

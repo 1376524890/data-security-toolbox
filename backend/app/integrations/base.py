@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-import shutil
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -36,6 +36,13 @@ class IntegrationAdapter(ABC):
     @abstractmethod
     def adapt(self, payload: Any, context: Any | None = None) -> AdapterResult:
         """Convert third-party input into unified DetectionResult findings."""
+
+    def supports(self, context: Any | None = None) -> bool:
+        """Return whether this adapter should run for a detection context."""
+        if context is None:
+            return False
+        target_type = str(getattr(context, "target_type", "")).lower()
+        return target_type in {str(item).lower() for item in self.capabilities}
 
     def parse(self, payload: Any) -> list[dict[str, Any]]:
         """Parse raw third-party output into normalized records."""
