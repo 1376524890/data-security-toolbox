@@ -1,3 +1,7 @@
+import type { DetectionFinding } from './finding'
+import type { Incident } from './incident'
+import type { Asset } from './asset'
+
 export interface Ioc {
   id: number
   type: string
@@ -12,7 +16,7 @@ export interface Ioc {
 
 export interface IocAssociation {
   ioc: Ioc
-  findings: unknown[]
-  incidents: unknown[]
-  assets: unknown[]
+  findings: DetectionFinding[]
+  incidents: Incident[]
+  assets: Asset[]
 }

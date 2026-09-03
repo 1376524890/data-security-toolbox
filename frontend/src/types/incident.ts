@@ -1,6 +1,9 @@
 import type { Severity } from './common'
 import type { DetectionFinding } from './finding'
 
+export type IncidentStatus = 'open' | 'investigating' | 'contained' | 'resolved' | 'closed'
+export type AttackStage = 'recon' | 'exploit' | 'credential' | 'c2' | 'exfil' | 'impact' | 'unknown'
+
 export interface Incident {
   id: number
   fingerprint?: string
@@ -29,4 +32,10 @@ export interface IncidentFilters {
   end_time?: string
   page: number
   page_size: number
+}
+
+export function incidentStages(incident: Incident): AttackStage[] {
+  const stages = incident.evidence?.stages
+  if (Array.isArray(stages)) return stages.map(String) as AttackStage[]
+  return []
 }

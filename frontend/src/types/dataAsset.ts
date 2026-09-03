@@ -1,3 +1,5 @@
+import type { DetectionFinding } from './finding'
+
 export interface DataColumn {
   name: string
   sensitivity?: string
@@ -20,6 +22,6 @@ export interface DataAsset {
 
 export interface DataAssetDetail {
   data_asset: DataAsset
-  findings: unknown[]
+  findings: DetectionFinding[]
   pii_summary: Record<string, number>
 }

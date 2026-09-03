@@ -52,8 +52,15 @@ export interface Packet {
   info: string
 }
 
+export interface PacketDetail extends Packet {
+  raw?: string | null
+  layers?: Array<{ name: string; items: Array<{ label: string; value: string }> }>
+}
+
+export interface ProtocolLayer { name: string; items: Array<{ label: string; value: string }>; note?: string }
+
 export interface AlertItem {
-  kind: 'anomaly' | 'finding' | 'external'
+  kind: 'anomaly' | 'finding' | 'external' | 'alert'
   severity: string
   title: string
   description: string
@@ -68,4 +75,15 @@ export interface TrafficOverview {
   protocols: Record<string, number>
   hosts: Array<Record<string, unknown>>
   anomalies: Array<Record<string, unknown>>
+}
+
+export interface NetworkFile {
+  filename?: string
+  name?: string
+  mime_type?: string
+  magic?: string
+  size?: number
+  sha256?: string
+  source?: string
+  [key: string]: unknown
 }

@@ -1,5 +1,7 @@
 import type { Severity } from './common'
 import type { Incident } from './incident'
+import type { PcapRecord } from './pcap'
+import type { Alert } from './alert'
 
 export interface DetectionFinding {
   id: number
@@ -21,4 +23,6 @@ export interface DetectionFinding {
 export interface FindingDetail {
   detection: DetectionFinding
   related_incidents: Incident[]
+  pcap?: PcapRecord | null
+  alert?: Alert | null
 }

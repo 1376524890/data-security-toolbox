@@ -74,8 +74,6 @@ from app.models import (
     User,
 )
 from app.schemas import (
-    AlgorithmRandomnessRequest,
-    EvaluateRequest,
     GenerateReportRequest,
     Heartbeat,
     LogAnalysisRequest,
@@ -90,7 +88,6 @@ from app.services.alert_service import (
     publish_alert,
     serialize_alert,
 )
-from app.services.algorithm_service import evaluate_model, performance_test, randomness_report
 from app.services.asset_service import asset_relations
 from app.services.audit_service import audit_summary, log_analysis
 from app.services.protocol_service import protocol_tree
@@ -897,24 +894,6 @@ def pcap_alerts(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     items = list(merged.values())
     severity_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
     return {"items": sorted(items, key=lambda item: severity_order.get(item.get("severity", "Low"), 9))}
-
-
-@router.post("/algorithms/randomness")
-def randomness(payload: AlgorithmRandomnessRequest) -> dict[str, Any]:
-    return randomness_report(payload.data.encode("utf-8"))
-
-
-@router.post("/algorithms/evaluate")
-def evaluate(payload: EvaluateRequest) -> dict[str, Any]:
-    try:
-        return evaluate_model(payload.X, payload.y)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-
-@router.post("/algorithms/performance")
-def performance(payload: AlgorithmRandomnessRequest) -> dict[str, Any]:
-    return performance_test(payload.data.encode("utf-8"))
 
 
 @router.get("/tasks")

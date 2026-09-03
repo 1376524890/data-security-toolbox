@@ -1,4 +1,5 @@
 export type Severity = 'Critical' | 'High' | 'Medium' | 'Low'
+export type RiskLevel = 'Critical' | 'High' | 'Medium' | 'Low'
 export type TaskStatus = 'Pending' | 'Running' | 'Success' | 'Failed'
 export type IntegrationStatus = 'ready' | 'disabled' | 'unavailable' | 'error'
 

@@ -8,20 +8,30 @@
     "build": "vite build",
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:demo": "vite --mode demo --port 5174",
+    "build:demo": "vite build --mode demo"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
+    "@vue-flow/background": "^1.3.2",
+    "@vue-flow/controls": "^1.1.3",
+    "@vue-flow/core": "^1.48.2",
+    "@vue-flow/minimap": "^1.5.4",
+    "@vue-flow/node-resizer": "^1.5.1",
+    "acorn": "^8.18.0",
     "axios": "^1.7.9",
     "echarts": "^5.6.0",
     "element-plus": "^2.9.3",
+    "monaco-editor": "^0.56.0",
     "pinia": "^2.3.1",
+    "sm-crypto": "^0.5.7",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.1",
     "@types/node": "^22.10.5",
+    "@vitejs/plugin-vue": "^5.2.1",
     "jsdom": "^25.0.1",
     "typescript": "^5.7.3",
     "vite": "^6.0.7",

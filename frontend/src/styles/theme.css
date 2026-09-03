@@ -1,0 +1,110 @@
+/* ============================================================
+ * Data Security Toolbox — Enterprise SOC Design Tokens
+ * Dark security operations console
+ * ============================================================ */
+
+:root {
+  /* Core surfaces */
+  --soc-bg: #0b1220;
+  --soc-bg-2: #0e1626;
+  --soc-panel: #111827;
+  --soc-panel-2: #0f172a;
+  --soc-panel-hover: #1a2438;
+  --soc-border: #1f2937;
+  --soc-border-2: #273449;
+
+  /* Text */
+  --soc-text: #e5e7eb;
+  --soc-text-strong: #f9fafb;
+  --soc-text-muted: #9ca3af;
+  --soc-text-dim: #6b7280;
+
+  /* Accent */
+  --soc-primary: #38bdf8;
+  --soc-primary-2: #0ea5e9;
+  --soc-primary-dim: rgba(56, 189, 248, 0.12);
+  --soc-success: #22c55e;
+  --soc-warning: #f59e0b;
+  --soc-danger: #ef4444;
+  --soc-info: #6366f1;
+
+  /* Severity */
+  --sev-critical: #ef4444;
+  --sev-high: #f97316;
+  --sev-medium: #eab308;
+  --sev-low: #3b82f6;
+
+  /* Risk scale */
+  --risk-critical: #ef4444;
+  --risk-high: #f97316;
+  --risk-medium: #eab308;
+  --risk-low: #3b82f6;
+
+  /* Metrics */
+  --soc-radius: 8px;
+  --soc-radius-sm: 6px;
+  --soc-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --soc-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --soc-font-mono: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+  --soc-header-h: 52px;
+  --soc-aside-w: 240px;
+  --soc-aside-w-collapsed: 64px;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+/* Element Plus dark theme variable overrides */
+html.dark {
+  --el-bg-color: var(--soc-panel);
+  --el-bg-color-page: var(--soc-bg);
+  --el-bg-color-overlay: #151e2f;
+  --el-text-color-primary: var(--soc-text);
+  --el-text-color-regular: var(--soc-text);
+  --el-text-color-secondary: var(--soc-text-muted);
+  --el-text-color-placeholder: var(--soc-text-dim);
+  --el-border-color: var(--soc-border);
+  --el-border-color-light: var(--soc-border);
+  --el-border-color-lighter: var(--soc-border-2);
+  --el-border-color-extra-light: var(--soc-border-2);
+  --el-fill-color: #16203200;
+  --el-fill-color-light: #1a2438;
+  --el-fill-color-lighter: #162032;
+  --el-fill-color-blank: transparent;
+  --el-color-primary: var(--soc-primary);
+  --el-color-success: var(--soc-success);
+  --el-color-warning: var(--soc-warning);
+  --el-color-danger: var(--soc-danger);
+  --el-color-info: var(--soc-info);
+  --el-border-radius-base: var(--soc-radius-sm);
+}
+
+/* Global reset & base */
+* { box-sizing: border-box; }
+
+html, body, #app {
+  margin: 0;
+  height: 100%;
+  background: var(--soc-bg);
+  color: var(--soc-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--soc-primary-dim); color: var(--soc-text-strong); }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--soc-border-2); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--soc-border); }
+
+/* Utility classes */
+.mono { font-family: var(--soc-font-mono); }
+.text-muted { color: var(--soc-text-muted); }
+.text-dim { color: var(--soc-text-dim); }
+.text-strong { color: var(--soc-text-strong); font-weight: 600; }
+
+.soc-scroll { overflow: auto; }
+.soc-scroll::-webkit-scrollbar { width: 6px; height: 6px; }

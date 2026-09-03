@@ -1,6 +1,6 @@
 import { apiGet, apiPost, apiUpload } from './client'
 import type { PageResult } from '../types/common'
-import type { AlertItem, Flow, Packet, PcapRecord, TrafficOverview } from '../types/pcap'
+import type { AlertItem, Flow, NetworkFile, Packet, PcapRecord, TrafficOverview } from '../types/pcap'
 
 export interface PcapQuery {
   search?: string
@@ -53,6 +53,14 @@ export function getPcapTls(id: number): Promise<{ items: Array<Record<string, un
   return apiGet(`/pcaps/${id}/tls`)
 }
 
-export function getPcapFiles(id: number): Promise<{ items: Array<Record<string, unknown>> }> {
+export function getPcapFiles(id: number): Promise<{ items: NetworkFile[] }> {
   return apiGet(`/pcaps/${id}/files`)
+}
+
+export function getPcapProtocols(id: number): Promise<Array<Record<string, unknown>>> {
+  return apiGet(`/pcaps/${id}/protocols`)
+}
+
+export function getPcapAnomalies(id: number): Promise<Array<Record<string, unknown>>> {
+  return apiGet(`/pcaps/${id}/anomalies`)
 }

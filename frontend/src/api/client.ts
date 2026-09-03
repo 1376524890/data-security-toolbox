@@ -1,6 +1,8 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig } from 'axios'
+import { mockAdapter } from '../mocks/adapter'
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true'
 
 const client: AxiosInstance = axios.create({
   baseURL: API_BASE,
@@ -8,6 +10,12 @@ const client: AxiosInstance = axios.create({
   withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 })
+
+// Demo mode (5174): serve realistic mock data. Rollup tree-shakes the mock
+// out of the real 5173 bundle because DEMO_MODE is a build-time constant.
+if (DEMO_MODE) {
+  client.defaults.adapter = mockAdapter as any
+}
 
 client.interceptors.response.use(
   (response) => response,

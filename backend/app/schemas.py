@@ -87,15 +87,6 @@ class TaskOut(BaseModel):
     finished_at: datetime | None
 
 
-class AlgorithmRandomnessRequest(BaseModel):
-    data: str
-
-
-class EvaluateRequest(BaseModel):
-    X: list[list[float]]
-    y: list[int]
-
-
 class LogAnalysisRequest(BaseModel):
     content: str
 

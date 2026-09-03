@@ -19,9 +19,4 @@ def test_register_probe() -> None:
         assert analyze.status_code == 200
 
 
-def test_algorithm_endpoint() -> None:
-    with TestClient(app) as client:
-        response = client.post("/api/v1/algorithms/randomness", json={"data": "hello"})
-        assert response.status_code == 200
-        assert response.json()["tests"]["entropy"] > 0
 

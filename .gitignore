@@ -20,3 +20,6 @@ reports/
 *.db
 *.sqlite3
 .DS_Store
+
+# local refactor backup (not committed)
+.refactor-trash/

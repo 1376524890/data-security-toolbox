@@ -8,6 +8,8 @@ export interface DashboardSummary {
   probes: number
   incidents: number
   iocs: number
+  alerts: number
+  open_alerts: number
   high_risk_findings: number
   open_incidents: number
   high_risk_assets: number
