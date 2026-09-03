@@ -225,6 +225,9 @@ def _import_rules(db: Session, path: Path, name: str, version: str) -> tuple[int
     from app.integrations.suricata.parser import parse_rule_file
 
     rules = parse_rule_file(path)
+    valid, errors = validate_suricata_rules(path)
+    if not valid:
+        raise ValueError(f"invalid suricata rules: {'; '.join(errors)}")
     target = _save_imported_file(path, "suricata_rules", name, version)
     existing = db.scalar(select(OfflineResource).where(OfflineResource.resource_type == "suricata_rules", OfflineResource.name == name, OfflineResource.version == version))
     if existing:
@@ -253,6 +256,59 @@ def _import_sigma(db: Session, path: Path, name: str, version: str) -> tuple[int
         return 0, count
     db.add(OfflineResource(resource_type="sigma_rules", name=name, version=version, count=count, status="imported", storage_path=str(target), resource_metadata={"rule_count": count, "source": "offline"}))
     return count, 0
+
+
+def validate_suricata_rules(path: Path) -> tuple[bool, list[str]]:
+    """Validate a Suricata rules file.
+
+    Uses ``suricata -T`` when the binary is available (authoritative), otherwise
+    falls back to a structural parse (each rule must carry a numeric ``sid``).
+    Invalid rules must never reach the active rule set.
+    """
+    from app.integrations.suricata.parser import parse_rule_file
+
+    rules = parse_rule_file(path)
+    errors: list[str] = []
+    if not rules:
+        return False, ["no valid rules parsed"]
+    if not any(str(rule.get("sid") or "").isdigit() for rule in rules):
+        return False, ["rules missing numeric sid"]
+    import shutil
+    import subprocess
+
+    suricata = shutil.which("suricata")
+    if suricata:
+        try:
+            result = subprocess.run([suricata, "-T", "-S", str(path)], capture_output=True, text=True, timeout=60, check=False)
+        except Exception as exc:
+            return False, [f"suricata validation error: {exc}"]
+        if result.returncode != 0:
+            tail = [line for line in result.stderr.splitlines() if line.strip()][-5:]
+            return False, tail or ["suricata -T failed"]
+    return True, errors
+
+
+def resolve_active_suricata_rules_dir(db: Session) -> str | None:
+    """Resolve the active Suricata rules directory for a worker.
+
+    Returns the managed ``suricata_rules`` directory when at least one imported
+    rule set is validated and active. The worker passes this dir to
+    ``run_suricata(...)`` so offline rules are really loaded at runtime.
+    """
+    rows = db.scalars(
+        select(OfflineResource)
+        .where(OfflineResource.resource_type == "suricata_rules", OfflineResource.status == "imported")
+        .order_by(OfflineResource.imported_at.desc())
+    ).all()
+    if not rows:
+        return None
+    target = settings.integration_dir / "suricata_rules"
+    if target.is_dir() and any(target.glob("*.rules")):
+        return str(target)
+    for row in rows:
+        if row.storage_path and Path(row.storage_path).exists():
+            return str(Path(row.storage_path).parent)
+    return None
 
 
 def _resource_manifest(resources: list[dict[str, Any]], version: str) -> dict[str, Any]:

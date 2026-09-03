@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from app.engine.core.context import DetectionContext
@@ -42,7 +43,8 @@ class SuricataAdapter(IntegrationAdapter):
         if isinstance(payload, dict) and payload.get("pcap"):
             output_dir = payload.get("output_dir") or (context.path.parent / "suricata" if context and context.path else None)
             if output_dir:
-                records = run_suricata(payload["pcap"], output_dir, str(payload.get("binary", "")))
+                rules_dir = Path(payload["rules_dir"]) if payload.get("rules_dir") else None
+                records = run_suricata(payload["pcap"], output_dir, str(payload.get("binary", "")), rules_dir=rules_dir)
         else:
             records = self.parse(payload)
         records = event_records(records)

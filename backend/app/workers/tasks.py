@@ -196,6 +196,8 @@ def run_pipeline(context: DetectionContext, task_id: int, db=None) -> list[tuple
         ]
         if context.data.get("local_cves"):
             context.data["cve_lookup_enabled"] = True
+        from app.integrations.offline_manager import resolve_active_suricata_rules_dir
+        context.data["suricata_rules_dir"] = resolve_active_suricata_rules_dir(db)
     result = pipeline.run(context)
     owned = db is None
     session = db or SessionLocal()
