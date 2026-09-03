@@ -1,0 +1,1 @@
+alert http any any -> any any (msg:"DST E2E harmless HTTP marker"; flow:to_server,established; http.user_agent; content:"DST-E2E-TEST-2026"; nocase; sid:990001; rev:1;)

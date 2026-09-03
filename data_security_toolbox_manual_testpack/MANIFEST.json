@@ -1,0 +1,83 @@
+{
+  "notes": [
+    "All addresses are RFC1918/private or .test domains.",
+    "No executable malware is included.",
+    "All credentials/PII are synthetic test values.",
+    "The EICAR file is the standard harmless antivirus test signature."
+  ],
+  "files": {
+    "pcap/port_scan_40_ports.pcap": [
+      "TrafficEngine / NETWORK_PORT_SCAN expected if threshold <= 40 unique ports.",
+      "Should create Finding -> Risk -> possibly Incident/Alert depending policy."
+    ],
+    "pcap/http_suspicious_ua.pcap": [
+      "Zeek/Protocol HTTP analysis should extract Host/URI/User-Agent.",
+      "UA contains 'sqlmap-test' and 'DST-E2E-TEST-2026'.",
+      "After importing rules/dst_e2e_suricata.rules, Suricata should emit SID 990001 if HTTP stream parsing succeeds."
+    ],
+    "pcap/dns_high_entropy_query.pcap": [
+      "DNS query extraction expected.",
+      "High-entropy / long subdomain should exercise DNS tunnel heuristics."
+    ],
+    "pcap/ioc_ip_hit.pcap": [
+      "Import threat_intel/iocs.csv first.",
+      "Traffic includes IOC IP 10.66.0.30 and should exercise local IOC matching."
+    ],
+    "files/harmless_disguised_image.jpg": [
+      "Valid-ish JPEG plus harmless bytes appended after JPEG EOI.",
+      "Metadata/hidden-info analyzer should flag trailing data.",
+      "Also contains fake api_key text in trailing bytes."
+    ],
+    "files/harmless_malware_like.txt": [
+      "Harmless text file containing suspicious process/tool names.",
+      "Useful for metadata/content/host-rule smoke tests, but should never be executed."
+    ],
+    "files/eicar.com.txt": [
+      "Harmless EICAR AV test signature.",
+      "Only YARA/AV-style rules that explicitly include EICAR will match."
+    ],
+    "sensitive_data/synthetic_customers.csv": [
+      "PII/data-asset detection: phone, ID-card-like, bank-card-like, email, medical text.",
+      "Values are synthetic."
+    ],
+    "sensitive_data/fake_secrets.txt": [
+      "Secret/token/password detection.",
+      "All values are intentionally fake."
+    ],
+    "logs/abnormal_security.log": [
+      "Auth failure, SQL error, traversal, sudo/root privilege, scan/nmap indicators."
+    ],
+    "host_audit/osquery_sample.json": [
+      "osquery adapter: suspicious process / encoded command / privileged account / insecure config / asset inventory."
+    ],
+    "host_audit/wazuh_alerts.json": [
+      "Wazuh adapter: level 12 -> Critical-style finding, level 7 -> Medium-style finding."
+    ],
+    "host_audit/openscap_results.json": [
+      "OpenSCAP adapter: fail item should become finding; pass item should not."
+    ],
+    "threat_intel/iocs.csv": [
+      "Offline IOC import test: IP/domain/URL/hash."
+    ],
+    "threat_intel/local_cve.json": [
+      "Offline CVE import/list/search test; synthetic CVE-2099-0001."
+    ],
+    "rules/dst_e2e_suricata.rules": [
+      "Harmless custom Suricata rule matching User-Agent DST-E2E-TEST-2026."
+    ],
+    "rules/dst_e2e_sigma.yml": [
+      "Sigma-style offline rule matching 'Failed password for root'."
+    ],
+    "files/suspicious_metadata.docx": [
+      "Valid minimal DOCX with custom properties named api_key and password_hint.",
+      "Metadata analyzer should expose custom properties and hidden/sensitive metadata logic should flag them.",
+      "All values are harmless synthetic markers."
+    ],
+    "sensitive_data/synthetic_records.json": [
+      "JSON sensitive-data / data-asset / secret detection test."
+    ],
+    "sensitive_data/synthetic_dump.sql": [
+      "SQL sensitive-data / data-asset / secret detection test."
+    ]
+  }
+}

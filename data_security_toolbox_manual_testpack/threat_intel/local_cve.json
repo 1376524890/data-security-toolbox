@@ -1,0 +1,11 @@
+[
+  {
+    "cve_id": "CVE-2099-0001",
+    "source": "dst-e2e",
+    "severity": "High",
+    "cvss_score": 8.1,
+    "published": "2099-01-01T00:00:00Z",
+    "modified": "2099-01-02T00:00:00Z",
+    "description": "Synthetic CVE for Data Security Toolbox offline-import testing only."
+  }
+]

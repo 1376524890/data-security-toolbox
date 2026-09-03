@@ -1,6 +1,7 @@
 import functools
 import json
 import smtplib
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -309,7 +310,55 @@ def task_guard(func):
     return wrapper
 
 
-@celery_app.task(name="security_toolbox.deliver_alert")
+WORKER_CAPABILITY_TTL = 60
+
+
+def _worker_capability() -> dict[str, Any]:
+    import shutil as _shutil
+    import socket as _socket
+
+    def _ver(binary: str) -> dict[str, Any]:
+        path = _shutil.which(binary)
+        if not path:
+            return {"available": False, "version": ""}
+        try:
+            proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10, check=False)
+            version = (proc.stdout or proc.stderr).splitlines()[0].strip() if (proc.stdout or proc.stderr) else ""
+        except Exception:
+            version = ""
+        return {"available": True, "version": version}
+
+    rule_count = 0
+    rules_dir = _shutil.which("suricata") and settings.integration_dir / "suricata_rules"
+    if rules_dir and rules_dir.is_dir():
+        for rule_file in rules_dir.glob("*.rules"):
+            try:
+                rule_count += rule_file.read_text(encoding="utf-8", errors="replace").count("sid:")
+            except Exception:
+                pass
+    return {
+        "worker_id": f"analysis-{_socket.gethostname()}",
+        "heartbeat": datetime.now(UTC).isoformat(),
+        "tshark": _ver("tshark"),
+        "zeek": _ver("zeek"),
+        "suricata": {**_ver("suricata"), "rule_count": rule_count},
+    }
+
+
+@celery_app.task(name="security_toolbox.worker_capability_heartbeat")
+def worker_capability_heartbeat() -> dict[str, Any]:
+    import redis as redis_lib
+
+    capability = _worker_capability()
+    try:
+        client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
+        key = f"worker:capability:{capability['worker_id']}"
+        client.set(key, json.dumps(capability), ex=WORKER_CAPABILITY_TTL)
+    except Exception:
+        pass
+    return capability
+
+
 def _delivery_backoff(attempts: int) -> int:
     sequence = [10, 60, 300, 900, 1800]
     if attempts <= 0:
@@ -317,6 +366,7 @@ def _delivery_backoff(attempts: int) -> int:
     return sequence[min(attempts - 1, len(sequence) - 1)]
 
 
+@celery_app.task(name="security_toolbox.deliver_alert")
 def deliver_alert_task(alert_id: int) -> None:
     with SessionLocal() as db:
         alert = db.get(Alert, alert_id)

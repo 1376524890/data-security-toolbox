@@ -1,0 +1,24 @@
+[
+  {
+    "name": "powershell.exe",
+    "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "cmdline": "powershell.exe -EncodedCommand TEST_ONLY_BASE64_MARKER",
+    "table": "processes"
+  },
+  {
+    "name": "root",
+    "username": "root",
+    "sudoers": "ALL=(ALL) NOPASSWD: ALL",
+    "table": "users"
+  },
+  {
+    "name": "sshd_config",
+    "content": "PermitRootLogin yes\nPasswordAuthentication yes",
+    "table": "config"
+  },
+  {
+    "hostname": "dst-test-host",
+    "platform": "ubuntu",
+    "table": "system_info"
+  }
+]

@@ -1,0 +1,5 @@
+type,value,source,tags
+ip,10.66.0.30,dst-e2e,test;scanner
+domain,dst-e2e-malicious.test,dst-e2e,test;dns
+url,http://dst-e2e-malicious.test/DST-E2E-2026,dst-e2e,test;http
+hash,d41d8cd98f00b204e9800998ecf8427e,dst-e2e,test;hash

@@ -1,0 +1,3 @@
+﻿name,phone,id_card,bank_card,email,medical_record,note
+测试用户甲,13812345678,11010119900307451X,6222020200001234567,tester.a@example.test,诊断: 测试病例A；过敏史: 无,全部为合成测试数据
+测试用户乙,13987654321,320311198807010031,6217000012345678901,tester.b@example.test,病历号: MED-TEST-0002；诊断: 测试病例B,全部为合成测试数据

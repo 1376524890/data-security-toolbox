@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Data Security Toolbox Probe daemon."""
+"""Data Security Toolbox Probe daemon (V3.1).
+
+Implements persistent probe identity, a strict upload state machine, atomic
+spool manifests, sequence restoration, capture-format metadata and real (or
+explicitly unavailable) packet-drop metrics.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ import http.client
 import json
 import os
 import platform
+import re
 import shutil
 import socket
 import stat
@@ -16,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,7 +38,7 @@ except ImportError:
     psutil = None
 
 
-AGENT_VERSION = "3.0.0"
+AGENT_VERSION = "3.1.0"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
     "capture": {"interface": "eth0", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},
@@ -43,13 +50,28 @@ DEFAULT_CONFIG = {
         "upload_interval_seconds": 2,
         "upload_max_interval_seconds": 60,
         "bootstrap_token": "",
+        "identity_path": "/etc/data-security-toolbox/probe.identity.json",
         "token_path": "/etc/data-security-toolbox/probe.token",
+        "allow_auto_reenroll": False,
         "ports": [22, 80, 443, 445, 3306, 5432, 6379, 8080],
         "paths": [],
         "max_files": 50,
         "demo": False,
     },
 }
+
+# Upload state machine states.
+STATE_PENDING = "pending"
+STATE_UPLOADING = "uploading"
+STATE_UPLOADED = "uploaded"
+STATE_RETRY_WAIT = "retry_wait"
+STATE_AUTH_ERROR = "auth_error"
+STATE_QUARANTINED = "quarantined"
+
+# Transient HTTP statuses that trigger exponential-backoff retry.
+TRANSIENT_HTTP = {429, 500, 502, 503, 504}
+# Permanent data errors the server rejects outright -> quarantine.
+PERMANENT_HTTP = {400, 413, 422}
 
 
 def now_iso() -> str:
@@ -100,30 +122,74 @@ class Config:
     def base_url(self) -> str:
         return str(self.server["url"]).rstrip("/")
 
+    def identity_path(self) -> Path:
+        return Path(self.agent["identity_path"]).expanduser()
+
     def spool_path(self) -> Path:
         return Path(self.spool["path"]).expanduser()
 
     def ensure(self) -> None:
         self.spool_path().mkdir(parents=True, exist_ok=True)
-        token_path = Path(self.agent["token_path"])
-        token_path.parent.mkdir(parents=True, exist_ok=True)
+        identity_path = self.identity_path()
+        identity_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(token_path.parent, 0o700)
+            os.chmod(identity_path.parent, 0o700)
         except OSError:
             pass
 
 
-def load_token(config: Config) -> str:
-    token_path = Path(config.agent["token_path"])
-    if token_path.exists():
-        return token_path.read_text(encoding="utf-8").strip()
-    return ""
+class ProbeIdentity:
+    """Persistent probe identity stored atomically with 0600 permissions."""
 
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.data: dict[str, Any] = {}
+        self.load()
 
-def save_token(config: Config, token: str) -> None:
-    token_path = Path(config.agent["token_path"])
-    token_path.write_text(token, encoding="utf-8")
-    os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)
+    def load(self) -> None:
+        if self.path.exists():
+            try:
+                self.data = json.loads(self.path.read_text(encoding="utf-8"))
+            except Exception:
+                self.data = {}
+        else:
+            self.data = {}
+
+    @property
+    def probe_id(self) -> int | None:
+        value = self.data.get("probe_id")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def token(self) -> str:
+        return str(self.data.get("token") or "")
+
+    @property
+    def registered_at(self) -> str:
+        return str(self.data.get("registered_at") or "")
+
+    def exists(self) -> bool:
+        return self.probe_id is not None and bool(self.token)
+
+    def save(self, probe_id: int, token: str, registered_at: str, server: str) -> None:
+        payload = {"probe_id": int(probe_id), "token": token, "registered_at": registered_at, "server": server}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp.replace(self.path)
+        os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+        self.data = payload
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
+        self.data = {}
 
 
 def local_ip(interface: str = "") -> str:
@@ -211,8 +277,22 @@ def spool_metadata(path: Path) -> dict[str, Any]:
         return {}
 
 
-def write_spool_metadata(path: Path, metadata: dict[str, Any]) -> None:
-    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+def write_spool_metadata_atomic(path: Path, metadata: dict[str, Any]) -> None:
+    """Atomically write a spool manifest via tmp + fsync + rename."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, ensure_ascii=False, indent=2)
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp.replace(path)
+
+
+def resolve_pcap(meta_path: Path) -> Path | None:
+    for suffix in (".pcapng", ".pcap"):
+        candidate = meta_path.with_suffix(suffix)
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def sha256_file(path: Path) -> str:
@@ -235,29 +315,82 @@ def ssl_context(config: Config):
     return None
 
 
-def capture_command(config: Config, partial: Path) -> list[str]:
+def tool_version(binary: str) -> str:
+    try:
+        proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10, check=False)
+        text = (proc.stdout or proc.stderr).strip().splitlines()
+        return text[0].strip() if text else ""
+    except Exception:
+        return ""
+
+
+def detect_capture_tool(config: Config) -> tuple[str, str]:
+    if shutil.which("dumpcap"):
+        return "dumpcap", ".pcapng"
+    if shutil.which("tcpdump"):
+        return "tcpdump", ".pcap"
+    return "", ""
+
+
+def capture_command(config: Config, partial: Path) -> tuple[str, str, list[str]]:
+    """Return (tool, extension, command). dumpcap -> pcapng, tcpdump -> pcap."""
     interface = config.capture["interface"]
     duration = int(config.capture["segment_seconds"])
     max_mb = int(config.capture["segment_max_mb"])
     dumpcap = shutil.which("dumpcap")
     if dumpcap:
-        return [dumpcap, "-i", interface, "-a", f"duration:{duration}", "-a", f"filesize:{max_mb * 1024}", "-w", str(partial), "-q"]
+        return "dumpcap", ".pcapng", [dumpcap, "-i", interface, "-a", f"duration:{duration}", "-a", f"filesize:{max_mb * 1024}", "-w", str(partial), "-q"]
     tcpdump = shutil.which("tcpdump")
     if tcpdump:
-        return [tcpdump, "-i", interface, "-w", str(partial), "-U"]
-    return []
+        return "tcpdump", ".pcap", [tcpdump, "-i", interface, "-w", str(partial), "-U"]
+    return "", "", []
+
+
+def parse_capture_drop_metrics(stderr: str, tool: str) -> dict[str, Any]:
+    """Best-effort packet-drop extraction from capture stderr.
+
+    If the tool does not expose reliable drop counters we return
+    ``drop_metric_available=False`` rather than pretending zero drops.
+    """
+    text = stderr or ""
+    received = None
+    dropped = None
+    # dumpcap prints "N packets captured, M packets dropped by interface".
+    if tool == "dumpcap":
+        for line in text.splitlines():
+            match = re.search(r"(\d+)\s+packets? captured,.*?(\d+)\s+packets? dropped", line)
+            if match:
+                received = int(match.group(1))
+                dropped = int(match.group(2))
+                break
+    # tcpdump prints "N packets captured / M packets received by filter".
+    elif tool == "tcpdump":
+        for line in text.splitlines():
+            match = re.search(r"(\d+)\s+packets? captured", line)
+            if match:
+                received = int(match.group(1))
+            drop_match = re.search(r"(\d+)\s+packets? dropped", line)
+            if drop_match:
+                dropped = int(drop_match.group(1))
+    if received is None and dropped is None:
+        return {"packets_received": None, "packets_dropped": None, "drop_rate": None, "drop_metric_available": False}
+    received = received or 0
+    dropped = dropped or 0
+    rate = round(dropped / received, 4) if received else None
+    return {"packets_received": received, "packets_dropped": dropped, "drop_rate": rate, "drop_metric_available": True}
 
 
 def capture_once(config: Config, sequence: int) -> dict[str, Any] | None:
     spool = config.spool_path()
     started = datetime.now(UTC)
     stamp = started.strftime("%Y%m%dT%H%M%S%fZ")
-    final = spool / f"{stamp}-{sequence:06d}.pcapng"
+    tool, ext = detect_capture_tool(config)
+    if not tool:
+        return None
+    final = spool / f"{stamp}-{sequence:06d}{ext}"
     partial = final.with_suffix(final.suffix + ".partial")
     command = capture_command(config, partial)
-    if not command:
-        return None
-    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     deadline = time.time() + int(config.capture["segment_seconds"]) + 5
     max_bytes = int(config.capture["segment_max_mb"]) * 1024 * 1024
     try:
@@ -272,27 +405,48 @@ def capture_once(config: Config, sequence: int) -> dict[str, Any] | None:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+        stderr_text = ""
+        if process.stderr:
+            try:
+                stderr_text = process.stderr.read() or ""
+            except Exception:
+                pass
         if not partial.exists() or partial.stat().st_size == 0:
             return None
         partial.replace(final)
         finished = datetime.now(UTC)
+        drop = parse_capture_drop_metrics(stderr_text, tool)
         metadata = {
             "segment_id": final.name,
+            "segment_uuid": uuid.uuid4().hex,
             "sequence": sequence,
             "interface": config.capture["interface"],
+            "capture_format": ext.lstrip("."),
+            "capture_tool": tool,
+            "capture_tool_version": tool_version(tool),
             "capture_started_at": started.isoformat(),
             "capture_finished_at": finished.isoformat(),
             "size": final.stat().st_size,
             "sha256": sha256_file(final),
-            "packet_drop": 0,
-            "state": "pending",
+            "packet_drop": drop["packets_dropped"],
+            "packets_received": drop["packets_received"],
+            "drop_rate": drop["drop_rate"],
+            "drop_metric_available": drop["drop_metric_available"],
+            "state": STATE_PENDING,
             "attempts": 0,
+            "last_attempt_at": "",
+            "next_attempt_at": "",
         }
-        write_spool_metadata(final.with_suffix(".json"), metadata)
+        write_spool_metadata_atomic(final.with_suffix(".json"), metadata)
         return metadata
     finally:
         if partial.exists():
             partial.unlink(missing_ok=True)
+        if process.stderr:
+            try:
+                process.stderr.close()
+            except Exception:
+                pass
 
 
 def http_json(url: str, payload: dict[str, Any], headers: dict[str, str], config: Config, timeout: int = 30) -> dict[str, Any]:
@@ -342,6 +496,8 @@ def http_upload(path: Path, metadata: dict[str, Any], probe_id: int, token: str,
 
 def backoff_seconds(attempts: int, maximum: int) -> float:
     sequence = [2, 5, 10, 30, 60, 120]
+    if attempts <= 0:
+        return min(sequence[0], maximum)
     if attempts <= len(sequence):
         return min(sequence[max(0, attempts - 1)], maximum)
     return min(sequence[-1] * 2 ** (attempts - len(sequence)), maximum)
@@ -351,14 +507,28 @@ class ProbeAgent:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.stop_event = threading.Event()
-        self.probe_id: int | None = None
-        self.token = load_token(config)
-        self.sequence = 0
+        self.identity = ProbeIdentity(config.identity_path())
+        self.probe_id = self.identity.probe_id
+        self.token = self.identity.token
+        self.sequence = self._restore_sequence()
         self.last_capture = ""
         self.last_upload = ""
         self.capture_status = "online"
+        self.upload_status = "online"
+        self.auth_error = False
         self.upload_failures = 0
         self.lock = threading.Lock()
+
+    def _restore_sequence(self) -> int:
+        """Best-effort monotonic sequence restored from existing spool manifests."""
+        maximum = 0
+        for meta_path in spool_pending(self.config.spool_path()):
+            meta = spool_metadata(meta_path)
+            try:
+                maximum = max(maximum, int(meta.get("sequence") or 0))
+            except (TypeError, ValueError):
+                continue
+        return maximum
 
     def headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -369,9 +539,15 @@ class ProbeAgent:
         return headers
 
     def register(self) -> None:
-        if self.token and self.probe_id:
+        if self.identity.exists():
+            # Existing identity wins; never re-enroll/rotate on restart.
+            self.probe_id = self.identity.probe_id
+            self.token = self.identity.token
             return
         bootstrap = str(self.config.agent.get("bootstrap_token") or "")
+        if not bootstrap:
+            self.auth_error = True
+            raise RuntimeError("probe has no identity and no bootstrap token")
         headers = {"X-Probe-Bootstrap-Token": bootstrap} if bootstrap else {}
         info = {
             "name": socket.gethostname(),
@@ -380,26 +556,45 @@ class ProbeAgent:
             "metadata": {"system": system_metrics(), "agent_version": AGENT_VERSION, "interface": self.config.capture["interface"]},
         }
         result = http_json(f"{self.config.base_url()}/api/v1/probes/register", info, headers, self.config)
-        self.probe_id = int(result["id"])
-        if result.get("token"):
-            self.token = result["token"]
-            save_token(self.config, self.token)
+        probe_id = int(result["id"])
+        token = result.get("token") or self.token
+        if not token:
+            raise RuntimeError("registration did not return a probe token")
+        self.identity.save(probe_id, token, now_iso(), self.config.base_url())
+        self.probe_id = probe_id
+        self.token = token
+        self.auth_error = False
 
     def heartbeat_once(self) -> None:
         if not self.probe_id:
             return
+        spool = self.config.spool_path()
+        quarantined = sum(1 for meta_path in spool_pending(spool) if spool_metadata(meta_path).get("state") == STATE_QUARANTINED)
+        metrics = system_metrics()
         metadata = {
-            "system": system_metrics(),
+            "system": metrics,
             "agent_version": AGENT_VERSION,
             "interface": self.config.capture["interface"],
-            "spool_size_mb": round(spool_size_mb(self.config.spool_path()), 2),
-            "pending_segments": len(spool_pending(self.config.spool_path())),
+            "spool_size_mb": round(spool_size_mb(spool), 2),
+            "pending_segments": len([m for m in (spool_metadata(p) for p in spool_pending(spool)) if m.get("state") in (STATE_PENDING, STATE_UPLOADING, STATE_RETRY_WAIT)]),
+            "quarantined_segments": quarantined,
             "last_capture": self.last_capture,
             "last_upload": self.last_upload,
             "capture_status": self.capture_status,
+            "upload_status": self.upload_status,
+            "memory_rss_mb": metrics.get("memory_rss_mb"),
+            "cpu_percent": metrics.get("cpu_percent"),
+            "drop_rate": None,
+            "capture_tool": "dumpcap" if shutil.which("dumpcap") else ("tcpdump" if shutil.which("tcpdump") else ""),
+            "agent_version": AGENT_VERSION,
         }
         try:
             http_json(f"{self.config.base_url()}/api/v1/probes/{self.probe_id}/heartbeat", {"status": "online", "metadata": metadata}, self.headers(), self.config)
+            self.auth_error = False
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                self.auth_error = True
+                self.upload_status = STATE_AUTH_ERROR
         except Exception:
             pass
 
@@ -421,43 +616,84 @@ class ProbeAgent:
                 self.capture_status = "degraded"
             self.stop_event.wait(1)
 
+    def _retry(self, meta_path: Path, metadata: dict[str, Any], error: str) -> None:
+        attempts = int(metadata.get("attempts") or 0)
+        delay = backoff_seconds(attempts, int(self.config.agent["upload_max_interval_seconds"]))
+        metadata["state"] = STATE_RETRY_WAIT
+        metadata["next_attempt_at"] = (datetime.now(UTC).timestamp() + delay)
+        metadata["error"] = error[:500]
+        write_spool_metadata_atomic(meta_path, metadata)
+        self.upload_failures += 1
+        self.upload_status = STATE_RETRY_WAIT
+
+    def _process_upload(self, meta_path: Path, metadata: dict[str, Any]) -> bool:
+        """Run the upload FSM for a single spool manifest. Returns True if the
+        segment reached ``uploaded``."""
+        pcap_path = resolve_pcap(meta_path)
+        if metadata.get("state") == STATE_UPLOADED or not pcap_path:
+            return False
+        if metadata.get("state") in (STATE_AUTH_ERROR, STATE_QUARANTINED):
+            return False
+        if metadata.get("state") == STATE_RETRY_WAIT:
+            try:
+                next_at = float(metadata.get("next_attempt_at") or 0)
+            except (TypeError, ValueError):
+                next_at = 0
+            if datetime.now(UTC).timestamp() < next_at:
+                return False
+        metadata["state"] = STATE_UPLOADING
+        metadata["attempts"] = int(metadata.get("attempts") or 0) + 1
+        metadata["last_attempt_at"] = now_iso()
+        write_spool_metadata_atomic(meta_path, metadata)
+        try:
+            result = http_upload(pcap_path, metadata, int(self.probe_id), self.token, self.config)
+            metadata["state"] = STATE_UPLOADED
+            metadata["backend_id"] = result.get("id")
+            metadata["task_id"] = result.get("task_id")
+            metadata["uploaded_at"] = now_iso()
+            metadata["error"] = ""
+            write_spool_metadata_atomic(meta_path, metadata)
+            self.last_upload = now_iso()
+            self.upload_failures = 0
+            self.upload_status = STATE_UPLOADED
+            self.auth_error = False
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                metadata["state"] = STATE_AUTH_ERROR
+                metadata["error"] = f"auth_error: HTTP {exc.code}"
+                write_spool_metadata_atomic(meta_path, metadata)
+                self.auth_error = True
+                self.upload_status = STATE_AUTH_ERROR
+            elif exc.code in PERMANENT_HTTP:
+                metadata["state"] = STATE_QUARANTINED
+                metadata["error"] = f"permanent: HTTP {exc.code}"
+                write_spool_metadata_atomic(meta_path, metadata)
+                self.upload_status = STATE_QUARANTINED
+            elif exc.code in TRANSIENT_HTTP:
+                self._retry(meta_path, metadata, f"HTTP {exc.code}")
+            else:
+                self._retry(meta_path, metadata, f"HTTP {exc.code}")
+        except (ConnectionResetError, TimeoutError, urllib.error.URLError, socket.timeout) as exc:
+            self._retry(meta_path, metadata, f"{type(exc).__name__}: {exc}")
+        except Exception as exc:
+            self._retry(meta_path, metadata, f"{type(exc).__name__}: {exc}")
+        return False
+
     def upload_loop(self) -> None:
         while not self.stop_event.is_set():
             if not self.probe_id:
                 self.stop_event.wait(2)
                 continue
+            if self.auth_error:
+                self.upload_status = STATE_AUTH_ERROR
+                self.stop_event.wait(10)
+                continue
             uploaded_any = False
             for meta_path in spool_pending(self.config.spool_path()):
                 metadata = spool_metadata(meta_path)
-                pcap_path = meta_path.with_suffix(".pcapng")
-                if metadata.get("state") == "uploaded" or not pcap_path.exists():
-                    continue
-                if metadata.get("state") == "uploading":
-                    metadata["attempts"] = int(metadata.get("attempts") or 0) + 1
-                    write_spool_metadata(meta_path, metadata)
-                try:
-                    result = http_upload(pcap_path, metadata, int(self.probe_id), self.token, self.config)
-                    metadata["state"] = "uploaded"
-                    metadata["backend_id"] = result.get("id")
-                    metadata["task_id"] = result.get("task_id")
-                    metadata["uploaded_at"] = now_iso()
-                    write_spool_metadata(meta_path, metadata)
-                    self.last_upload = now_iso()
-                    self.upload_failures = 0
+                if self._process_upload(meta_path, metadata):
                     uploaded_any = True
-                except urllib.error.HTTPError as exc:
-                    if exc.code in {429, 500, 502, 503, 504}:
-                        self.upload_failures += 1
-                        break
-                    metadata["state"] = "failed"
-                    metadata["error"] = str(exc.code)
-                    write_spool_metadata(meta_path, metadata)
-                except Exception as exc:
-                    self.upload_failures += 1
-                    metadata["state"] = "pending"
-                    metadata["error"] = str(exc)[:500]
-                    write_spool_metadata(meta_path, metadata)
-                    break
             if uploaded_any:
                 self.cleanup_uploaded()
                 self.stop_event.wait(1)
@@ -468,7 +704,7 @@ class ProbeAgent:
         retention = int(self.config.spool["retention_seconds"])
         for meta_path in spool_pending(self.config.spool_path()):
             metadata = spool_metadata(meta_path)
-            if metadata.get("state") != "uploaded":
+            if metadata.get("state") != STATE_UPLOADED:
                 continue
             uploaded = metadata.get("uploaded_at", "")
             try:
@@ -476,7 +712,7 @@ class ProbeAgent:
             except Exception:
                 age = 0
             if age >= retention:
-                meta_path.with_suffix(".pcapng").unlink(missing_ok=True)
+                resolve_pcap(meta_path) and resolve_pcap(meta_path).unlink(missing_ok=True)
                 meta_path.unlink(missing_ok=True)
 
     def asset_loop(self) -> None:
@@ -486,7 +722,7 @@ class ProbeAgent:
         while not self.stop_event.is_set():
             try:
                 services = detect_configured_services([int(item) for item in self.config.agent["ports"]], local_ip(self.config.capture["interface"]))
-                metadata = {"services": services, "hostname": socket.gethostname(), "ip": local_ip(self.config.capture["interface"]), "agent_version": AGENT_VERSION, "capture_status": self.capture_status}
+                metadata = {"services": services, "hostname": socket.gethostname(), "ip": local_ip(self.config.capture["interface"]), "agent_version": AGENT_VERSION, "capture_status": self.capture_status, "upload_status": self.upload_status}
                 if self.probe_id:
                     http_json(f"{self.config.base_url()}/api/v1/probes/{self.probe_id}/heartbeat", {"status": "online", "metadata": metadata}, self.headers(), self.config)
             except Exception:
@@ -501,7 +737,7 @@ class ProbeAgent:
             try:
                 files = file_records([Path(item) for item in self.config.agent["paths"]], int(self.config.agent["max_files"]))
                 if self.probe_id:
-                    http_json(f"{self.config.base_url()}/api/v1/probes/{self.probe_id}/heartbeat", {"status": "online", "metadata": {"file_inventory": files, "capture_status": self.capture_status}}, self.headers(), self.config)
+                    http_json(f"{self.config.base_url()}/api/v1/probes/{self.probe_id}/heartbeat", {"status": "online", "metadata": {"file_inventory": files, "capture_status": self.capture_status, "upload_status": self.upload_status}}, self.headers(), self.config)
             except Exception:
                 pass
             self.stop_event.wait(interval)
@@ -514,7 +750,11 @@ class ProbeAgent:
 
     def run(self) -> int:
         self.config.ensure()
-        self.register()
+        try:
+            self.register()
+        except Exception as exc:
+            print(f"probe registration failed: {exc}", file=sys.stderr)
+            return 1
         if not self.probe_id:
             print("probe registration failed", file=sys.stderr)
             return 1

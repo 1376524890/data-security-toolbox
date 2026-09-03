@@ -1,0 +1,17 @@
+[
+  {
+    "result": "fail",
+    "idref": "xccdf_org.dst_rule_sshd_disable_root_login",
+    "title": "Disable SSH root login",
+    "benchmark": "DST Test CIS Profile",
+    "profile": "cis_server_l1",
+    "cve": ""
+  },
+  {
+    "result": "pass",
+    "idref": "xccdf_org.dst_rule_firewall_enabled",
+    "title": "Firewall enabled",
+    "benchmark": "DST Test CIS Profile",
+    "profile": "cis_server_l1"
+  }
+]

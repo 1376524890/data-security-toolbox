@@ -1,0 +1,10 @@
+{
+  "customer": {
+    "name": "测试用户丙",
+    "phone": "13700001234",
+    "email": "tester.c@example.test",
+    "id_card": "440524188001010014",
+    "medical_record": "测试诊断: hypertension-like synthetic marker",
+    "api_token": "sk-test-json-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+  }
+}

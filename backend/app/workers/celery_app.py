@@ -12,5 +12,9 @@ celery_app.conf.update(
             "task": "security_toolbox.cleanup_pcap_retention",
             "schedule": 3600.0,
         },
+        "worker-capability-heartbeat": {
+            "task": "security_toolbox.worker_capability_heartbeat",
+            "schedule": 30.0,
+        },
     },
 )

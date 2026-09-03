@@ -1,0 +1,11 @@
+title: DST E2E Suspicious Root Login
+id: 6b155c6d-7e93-4e3e-b65f-000000000001
+status: test
+logsource:
+  category: authentication
+detection:
+  selection:
+    message|contains:
+      - "Failed password for root"
+  condition: selection
+level: high

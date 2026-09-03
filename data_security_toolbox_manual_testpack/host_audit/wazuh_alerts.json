@@ -1,0 +1,30 @@
+[
+  {
+    "timestamp": "2026-09-03T10:05:00Z",
+    "agent": {
+      "id": "001",
+      "name": "dst-test-host"
+    },
+    "rule": {
+      "id": "100999",
+      "level": 12,
+      "description": "DST E2E high severity test alert"
+    },
+    "data": {
+      "srcip": "10.66.0.30",
+      "dstip": "10.66.0.20"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T10:05:10Z",
+    "agent": {
+      "id": "001",
+      "name": "dst-test-host"
+    },
+    "rule": {
+      "id": "100998",
+      "level": 7,
+      "description": "DST E2E medium severity test alert"
+    }
+  }
+]

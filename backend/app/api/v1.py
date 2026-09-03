@@ -146,7 +146,7 @@ def _serialize_asset(item: Asset) -> dict[str, Any]:
         "sensitive_categories": item.sensitive_categories,
         "metadata": item.extra,
         "first_seen": item.first_seen,
-        "last_seen": item.last_seen,
+        "last_seen": _aware(item.last_seen),
     }
 
 
@@ -184,7 +184,7 @@ def _serialize_incident(item: Incident) -> dict[str, Any]:
         "risk_score": item.risk_score,
         "risk_level": item.risk_level,
         "timestamp": item.timestamp,
-        "last_seen": item.last_seen,
+        "last_seen": _aware(item.last_seen),
         "occurrence_count": item.occurrence_count,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
@@ -198,7 +198,7 @@ def _serialize_ioc(item: IOC) -> dict[str, Any]:
         "value": item.value,
         "source": item.source,
         "first_seen": item.first_seen,
-        "last_seen": item.last_seen,
+        "last_seen": _aware(item.last_seen),
         "tags": item.tags,
         "metadata": item.extra,
         "created_at": item.created_at,
@@ -297,11 +297,20 @@ def _serialize_file(item: FileRecord) -> dict[str, Any]:
     }
 
 
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 def _serialize_probe(item: Probe) -> dict[str, Any]:
     now = datetime.now(UTC)
     status = item.status
-    if item.last_seen:
-        age = (now - item.last_seen).total_seconds()
+    last_seen = _aware(item.last_seen)
+    if last_seen:
+        age = (now - last_seen).total_seconds()
         if age > 90:
             status = "offline"
         elif status != "degraded" and age < 90:
@@ -312,7 +321,7 @@ def _serialize_probe(item: Probe) -> dict[str, Any]:
         "hostname": item.hostname,
         "ip_address": item.ip_address,
         "status": status,
-        "last_seen": item.last_seen,
+        "last_seen": _aware(item.last_seen),
         "metadata": item.extra,
         "created_at": item.created_at,
     }
@@ -413,6 +422,37 @@ def admin_me(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"id": user.id, "username": user.username, "role": user.role}
 
 
+def _read_worker_capabilities() -> list[dict[str, Any]]:
+    try:
+        import redis as redis_lib
+        client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
+        keys = list(client.scan_iter("worker:capability:*"))
+        items = []
+        for key in keys:
+            try:
+                value = client.get(key)
+                if value:
+                    items.append(json.loads(value))
+            except Exception:
+                continue
+        return items
+    except Exception:
+        return []
+
+
+def _merge_capability(capabilities: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for item in capabilities:
+        for tool in ("tshark", "zeek", "suricata"):
+            info = item.get(tool) or {}
+            if not merged.get(tool):
+                merged[tool] = {"available": False, "version": "", "rule_count": 0}
+            merged[tool]["available"] = bool(merged[tool]["available"] or info.get("available"))
+            merged[tool]["version"] = merged[tool]["version"] or info.get("version", "")
+            merged[tool]["rule_count"] = max(merged[tool].get("rule_count", 0), int(info.get("rule_count") or 0))
+    return merged
+
+
 @router.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     redis_ok = False
@@ -428,29 +468,43 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         pending = inspect.reserved() or {}
         running = sum(len(items) for items in active.values() if items)
         queued = sum(len(items) for items in pending.values() if items)
+        workers = sum(1 for items in active.values() if items is not None)
     except Exception:
         running = 0
         queued = 0
+        workers = 0
     oldest = db.scalar(select(func.min(Task.created_at)).where(Task.status.in_(["Pending", "Running"])))
     oldest_age = max(0.0, (datetime.now(UTC) - oldest).total_seconds()) if oldest else 0.0
     storage_bytes = sum(path.stat().st_size for path in settings.storage_dir.rglob("*") if path.is_file())
     probes = db.scalars(select(Probe)).all()
-    offline = sum(1 for item in probes if _serialize_probe(item)["status"] == "offline")
+    probe_statuses = {item: 0 for item in ("online", "degraded", "offline", "auth_error")}
+    for probe in probes:
+        probe_statuses[_serialize_probe(probe)["status"]] = probe_statuses.get(_serialize_probe(probe)["status"], 0) + 1
+    capabilities = _read_worker_capabilities()
+    # A worker is online only if its Redis capability heartbeat is fresh.
+    analysis_worker = "online" if capabilities else "offline"
+    if capabilities and any(item["tshark"].get("available") for item in capabilities if isinstance(item.get("tshark"), dict)):
+        analysis_worker = "ready"
+    merged = _merge_capability(capabilities)
+    # Overall status reflects the core API/DB/Redis dependency chain. Analysis
+    # worker capability is reported granularly and separately below.
+    status = "ok" if redis_ok else "degraded"
     return {
-        "status": "ok" if redis_ok else "degraded",
+        "status": status,
         "service": settings.app_name,
+        "api": "ok",
         "database": "ok",
         "redis": "ok" if redis_ok else "unavailable",
-        "celery": {"running": running, "queued": queued},
-        "analysis_worker": "ready" if shutil.which("tshark") else "unavailable",
-        "tshark": bool(shutil.which("tshark")),
-        "zeek": bool(shutil.which("zeek")),
-        "suricata": bool(shutil.which("suricata")),
+        "celery": {"broker": "ok" if redis_ok else "unavailable", "workers": workers, "running": running, "queued": queued},
+        "analysis_worker": analysis_worker,
+        "worker_capabilities": capabilities,
+        "tshark": merged.get("tshark", {"available": False, "version": ""}),
+        "zeek": merged.get("zeek", {"available": False, "version": ""}),
+        "suricata": merged.get("suricata", {"available": False, "version": "", "rule_count": 0}),
         "storage_usage_bytes": storage_bytes,
         "storage_max_bytes": settings.pcap_storage_max_gb * 1024 * 1024 * 1024,
         "queue": {"pending": db.scalar(select(func.count(Task.id)).where(Task.status == "Pending")) or 0, "running": running, "oldest_pending_age": oldest_age},
-        "probe_count": len(probes),
-        "offline_probe_count": offline,
+        "probe": {"count": len(probes), **probe_statuses},
     }
 
 
