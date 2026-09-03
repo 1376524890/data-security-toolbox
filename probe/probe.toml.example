@@ -16,10 +16,12 @@ retention_seconds = 86400
 [agent]
 heartbeat_seconds = 30
 asset_interval_seconds = 900
+# >0 and paths set -> upload target file content to /files/upload for sensitive-data analysis.
 file_interval_seconds = 0
 bootstrap_token = "CHANGE_ME"
 token_path = "/etc/data-security-toolbox/probe.token"
 ports = [22, 80, 443, 445, 3306, 5432, 6379, 8080]
+# Directories scanned for file content (sha256 + md5 + sensitive-data analysis).
 paths = []
 max_files = 50
 demo = false

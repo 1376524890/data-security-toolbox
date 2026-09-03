@@ -3,6 +3,9 @@
 > 前端优先建设策略。以下为前端需要但后端尚未提供的能力。
 > 遵循约定：页面需要后端不存在的数据时，必须在此记录；后端补齐后移除对应条目。
 
+> **状态更新（2026-09-04）**：除个别边界外，下表 1-16 项后端均已补齐并接入前端，
+> 详见 [docs/acceptance_test_report.md](acceptance_test_report.md)。新发现的独立缺口见文末。
+
 ---
 
 ## 1. PCAP 数据包详情（最高优先级）
@@ -229,3 +232,29 @@ Feature: Network Files 下载
 | Health 引擎规则数 | Health | P3 | 扩展 health |
 
 > 注：所有缺口均已在对应前端页面以"缺口提示"方式标注，未伪造真实业务数据。
+
+---
+
+## 补全记录（2026-09-04）
+
+- 1 数据包详情/原始字节/分层 → `GET /pcaps/{pcap_id}/packets/{packet_id}`（tshark `-T json -x`）。
+- 2 Live Traffic → `GET /network/live`。
+- 3 全局 Flow → `GET /flows`。
+- 4 全局 Protocol → `GET /protocols`。
+- 5 Sensitive 聚合 → `GET /sensitive/findings`。
+- 6 Incident Trend → `GET /dashboard/incident-trend`。
+- 7 MITRE ATT&CK → 检测序列化增加 `tactic/technique/technique_id`。
+- 8 Alert 关联直连 → `GET /alerts/{id}` 增加 `assets/iocs/data_assets`。
+- 9 规则列表 → `GET /rules?type=sigma|suricata|yara`。
+- 10 Sigma 状态 → `/integrations` 增加 `sigma`。
+- 11 Probe 指标 → `GET /probes/{id}/metrics`。
+- 12 Task worker → `_serialize_task` 增加 `worker`。
+- 13 Asset 漏洞 → `GET /assets/{id}` 增加 `vulnerabilities`。
+- 14 Health 引擎规则数 → `/health` 增加 `engine_rule_counts`。
+- 15 Follow TCP Stream → `GET /pcaps/{pcap_id}/streams/{stream_id}`（ASCII+Hex）。
+- 16 文件恢复下载 → `GET /pcaps/{pcap_id}/files/{file_id}/download`（transient workspace 时 404）。
+
+### 新增缺口：探针文件摄入
+探针 `file_loop` 上报的 `file_inventory` 只存入 `probe.extra`，后端无任务将其转为
+`FileRecord/DataAsset` 并触发数据引擎。**已由探针直接上传文件内容到 `/files/upload`
+解决**（探针 `file_loop` 上传目标文件内容），无需后端新增摄入任务。
