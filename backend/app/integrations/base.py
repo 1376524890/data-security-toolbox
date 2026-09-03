@@ -80,6 +80,18 @@ class IntegrationAdapter(ABC):
                 return name
         return ""
 
+    @staticmethod
+    def _runtime_version(binary: str) -> str:
+        import subprocess
+        if not binary:
+            return ""
+        try:
+            proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10, check=False)
+            text = (proc.stdout or proc.stderr).strip().splitlines()
+            return text[0].strip() if text else ""
+        except Exception:
+            return ""
+
 
 def finding(
     adapter: str,

@@ -43,13 +43,17 @@ class ZeekAdapter(IntegrationAdapter):
 
     def health(self) -> dict[str, Any]:
         runtime = self._binary_available("zeek")
+        version = self._runtime_version(runtime)
         return {
             "name": self.name,
             "adapter_version": self.version,
             "installed": bool(runtime),
             "enabled": True,
             "healthy": bool(runtime),
-            "runtime_version": runtime,
+            "runtime_version": version,
+            "loaded_scripts": ["local"] if runtime else [],
+            "last_execution": "",
+            "last_error": "" if runtime else "Zeek binary not found",
             "supported_types": list(self.supported_types),
             "capabilities": list(self.capabilities),
             "last_check": datetime.now(UTC).isoformat(),

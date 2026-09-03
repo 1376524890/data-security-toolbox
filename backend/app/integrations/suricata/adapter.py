@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
 from app.engine.core.context import DetectionContext
 from app.integrations.base import AdapterResult, IntegrationAdapter, finding, severity_map
 from app.integrations.suricata.parser import event_records, parse_eve_payload
@@ -21,13 +22,22 @@ class SuricataAdapter(IntegrationAdapter):
 
     def health(self) -> dict[str, Any]:
         runtime = self._binary_available("suricata")
+        version = self._runtime_version(runtime)
+        rule_count = 0
+        if runtime:
+            rules_dir = settings.integration_dir / "suricata_rules"
+            if rules_dir.is_dir():
+                rule_count = sum(len([line for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip() and not line.strip().startswith("#") and "sid:" in line]) for path in rules_dir.glob("*.rules"))
         return {
             "name": self.name,
             "adapter_version": self.version,
             "installed": bool(runtime),
             "enabled": True,
             "healthy": bool(runtime),
-            "runtime_version": runtime,
+            "runtime_version": version,
+            "rule_count": rule_count,
+            "rule_source": "offline" if rule_count else "",
+            "last_rule_validation": "",
             "supported_types": list(self.supported_types),
             "capabilities": list(self.capabilities),
             "last_check": datetime.now(UTC).isoformat(),
