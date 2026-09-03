@@ -7,6 +7,7 @@ from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
 from app.rules.interpreter import interpret_rules
 from app.services.traffic_service import detect_anomalies
+from app.core.config import settings
 from app.services.traffic_state import rolling_traffic_state
 
 
@@ -18,18 +19,48 @@ class TrafficEngine(DetectionEngine):
         rule_dir = Path(__file__).resolve().parents[2] / "rules" / "network"
         findings = interpret_rules(context, rule_dir)
         probe = str(context.data.get("probe_id") or context.data.get("probe_name") or "global")
+        window = int(context.data.get("port_scan_window_seconds") or settings.port_scan_window_seconds)
+        threshold = int(context.data.get("port_scan_ports_threshold") or settings.port_scan_ports_threshold)
         rolling_traffic_state.observe(probe, context.flows)
         builtin_anomalies = detect_anomalies(context.flows, context.packets)
         for item in builtin_anomalies:
             src = str(item.get("evidence", {}).get("src") or item.get("evidence", {}).get("src_ip") or "")
-            if item["rule"] == "NETWORK_PORT_SCAN" and src and rolling_traffic_state.seen(probe, src, item["rule"], context.data.get("port_scan_window_seconds")):
+            if item["rule"] == "NETWORK_PORT_SCAN" and src and rolling_traffic_state.seen(probe, src, item["rule"], window):
                 continue
             findings.append(DetectionResult(
                 engine=self.name,
                 rule_id=item["rule"],
                 severity=item["severity"],
                 confidence=0.85,
-                evidence={"description": item["description"], "window": context.data.get("port_scan_window_seconds"), **item.get("evidence", {})},
+                evidence={"description": item["description"], "window": window, **item.get("evidence", {})},
+                recommendation="结合会话证据排查异常行为来源和目标。",
+            ).normalize())
+        # Cross-segment rolling detection: use the strict sliding-window snapshot.
+        # A single segment below the threshold can accumulate across segments and
+        # only fire here once the rolling unique-port count reaches the threshold.
+        srcs = {str(flow.get("src_ip") or "") for flow in context.flows if flow.get("src_ip")}
+        for src in sorted(srcs):
+            snap = rolling_traffic_state.snapshot(probe, src, window)
+            if len(snap["dst_ports"]) < threshold:
+                continue
+            # Only set the cooldown (via seen) once we actually fire a finding.
+            if rolling_traffic_state.seen(probe, src, "NETWORK_PORT_SCAN", window):
+                continue
+            findings.append(DetectionResult(
+                engine=self.name,
+                rule_id="NETWORK_PORT_SCAN",
+                severity="High",
+                confidence=0.9,
+                evidence={
+                    "src": src,
+                    "dst_ports": snap["dst_ports"],
+                    "port_count": len(snap["dst_ports"]),
+                    "window": window,
+                    "threshold": threshold,
+                    "rolling": True,
+                    "packet_count": snap["packets"],
+                    "bytes": snap["bytes"],
+                },
                 recommendation="结合会话证据排查异常行为来源和目标。",
             ).normalize())
         for beacon in self._beacon_flows(context):

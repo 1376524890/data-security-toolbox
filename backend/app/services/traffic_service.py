@@ -47,7 +47,7 @@ def detect_anomalies(flows: list[dict[str, Any]], packets: list[dict[str, Any]])
         by_src[flow["src_ip"]]["bytes"] += flow["bytes"]
         by_src[flow["src_ip"]]["packets"] += flow["packets"]
     for src, stats in by_src.items():
-        if len(stats["dst_ports"]) >= 20:
+        if len(stats["dst_ports"]) >= settings.port_scan_ports_threshold:
             anomalies.append({"rule": "NETWORK_PORT_SCAN", "severity": "High", "description": f"{src} 访问了 {len(stats['dst_ports'])} 个不同端口，疑似端口扫描", "evidence": {"src": src, "dst_ports": sorted(stats["dst_ports"]), "port_count": len(stats["dst_ports"]), "window": settings.port_scan_window_seconds, "packet_count": stats["packets"]}})
         if len(stats["dst_ips"]) >= 10 and stats["bytes"] > 10_000_000:
             anomalies.append({"rule": "broad_communication", "severity": "Medium", "description": f"{src} 与多个目标进行大流量通信", "evidence": {"src_ip": src, "destinations": len(stats["dst_ips"]), "bytes": stats["bytes"]}})
