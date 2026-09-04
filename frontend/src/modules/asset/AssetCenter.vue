@@ -13,7 +13,7 @@ import AssetCard from '../../components/security/AssetCard.vue'
 import AttackGraph from '../../components/security/AttackGraph.vue'
 import EvidenceViewer from '../../components/evidence/EvidenceViewer.vue'
 import JsonViewer from '../../components/evidence/JsonViewer.vue'
-import { formatDateTime } from '../../utils/format'
+import { formatDateTime, formatRiskScore } from '../../utils/format'
 
 const router = useRouter()
 const loading = ref(true)
@@ -130,7 +130,7 @@ onMounted(load)
               <el-table-column prop="engine" label="引擎" width="120" />
               <el-table-column prop="rule_id" label="规则" min-width="140" show-overflow-tooltip />
               <el-table-column label="等级" width="90"><template #default="{ row }"><SeverityTag :value="row.severity" /></template></el-table-column>
-              <el-table-column prop="risk_score" label="风险" width="70" />
+              <el-table-column label="风险" width="70"><template #default="{ row }"><span class="mono">{{ formatRiskScore(row.risk_score) }}</span></template></el-table-column>
             </el-table>
             <div class="sec-title" style="margin-top: 12px">关联事件</div>
             <el-table :data="detail.incidents" size="small">

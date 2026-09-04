@@ -12,7 +12,7 @@ import StatusBadge from '../../../components/security/StatusBadge.vue'
 import RiskBadge from '../../../components/security/RiskBadge.vue'
 import EvidenceViewer from '../../../components/evidence/EvidenceViewer.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
-import { formatDateTime } from '../../../utils/format'
+import { formatDateTime, formatRiskScore } from '../../../utils/format'
 
 const loading = ref(true)
 const error = ref('')
@@ -93,7 +93,7 @@ onMounted(load)
           <el-table-column prop="id" label="ID" width="70" />
           <el-table-column label="等级" width="90"><template #default="{ row }"><SeverityTag :value="row.severity" /></template></el-table-column>
           <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
-          <el-table-column prop="risk_score" label="风险" width="80" sortable />
+          <el-table-column prop="risk_score" label="风险" width="80" sortable><template #default="{ row }"><span class="mono">{{ formatRiskScore(row.risk_score) }}</span></template></el-table-column>
           <el-table-column label="状态" width="120"><template #default="{ row }"><StatusBadge :value="row.status" /></template></el-table-column>
           <el-table-column label="时间" width="150"><template #default="{ row }">{{ formatDateTime(row.timestamp) }}</template></el-table-column>
         </el-table>
@@ -156,7 +156,7 @@ onMounted(load)
               <el-table-column prop="engine" label="引擎" width="120" />
               <el-table-column prop="rule_id" label="规则" min-width="140" show-overflow-tooltip />
               <el-table-column label="等级" width="90"><template #default="{ row }"><SeverityTag :value="row.severity" /></template></el-table-column>
-              <el-table-column prop="risk_score" label="风险" width="70" />
+              <el-table-column label="风险" width="70"><template #default="{ row }"><span class="mono">{{ formatRiskScore(row.risk_score) }}</span></template></el-table-column>
             </el-table>
           </div>
 

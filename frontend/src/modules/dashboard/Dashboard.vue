@@ -16,7 +16,7 @@ import TrendChart from '../../components/charts/TrendChart.vue'
 import DonutChart from '../../components/charts/DonutChart.vue'
 import BarChart from '../../components/charts/BarChart.vue'
 import GaugeChart from '../../components/charts/GaugeChart.vue'
-import { formatDateTime } from '../../utils/format'
+import { formatDateTime, formatRiskScore } from '../../utils/format'
 
 const router = useRouter()
 const loading = ref(true)
@@ -111,8 +111,8 @@ onMounted(load)
           </div>
           <div class="soc-card">
             <div class="soc-card-title"><span class="dot" />风险评分</div>
-            <GaugeChart :value="risk.avg_score" :height="220" />
-            <div class="gauge-meta">最高 {{ risk.max_score }} · 平均 {{ risk.avg_score }} · 共 {{ risk.count }}</div>
+            <GaugeChart :value="Number(formatRiskScore(risk.avg_score))" :height="220" />
+            <div class="gauge-meta">最高 {{ formatRiskScore(risk.max_score) }} · 平均 {{ formatRiskScore(risk.avg_score) }} · 共 {{ risk.count }}</div>
           </div>
         </div>
 
@@ -148,7 +148,7 @@ onMounted(load)
               <el-table-column label="时间" width="150"><template #default="{ row }">{{ formatDateTime(row.timestamp) }}</template></el-table-column>
               <el-table-column label="等级" width="90"><template #default="{ row }"><SeverityTag :value="row.severity" /></template></el-table-column>
               <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
-              <el-table-column prop="risk_score" label="风险" width="80" />
+              <el-table-column label="风险" width="80"><template #default="{ row }"><span class="mono">{{ formatRiskScore(row.risk_score) }}</span></template></el-table-column>
             </el-table>
           </div>
           <div class="soc-card">

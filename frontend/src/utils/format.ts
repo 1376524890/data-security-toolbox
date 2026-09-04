@@ -12,6 +12,12 @@ export function formatDateTime(value?: string | number | null): string {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+// 风险评分统一保留两位小数（如 81 -> 81.00, 81.0 -> 81.00, 81.234 -> 81.23）
+export function formatRiskScore(value?: number | null): string {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  return Number(value).toFixed(2)
+}
+
 export function formatDuration(value?: number): string {
   if (!value) return '-'
   const seconds = Math.max(0, Number(value))

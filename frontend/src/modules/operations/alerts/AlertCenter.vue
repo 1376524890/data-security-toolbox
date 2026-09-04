@@ -11,7 +11,7 @@ import RiskBadge from '../../../components/security/RiskBadge.vue'
 import EvidenceViewer from '../../../components/evidence/EvidenceViewer.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
 import Timeline from '../../../components/common/Timeline.vue'
-import { formatDateTime } from '../../../utils/format'
+import { formatDateTime, formatRiskScore } from '../../../utils/format'
 
 const loading = ref(true)
 const error = ref('')
@@ -94,7 +94,7 @@ onMounted(load)
           <div v-for="row in items" :key="row.id" class="alert-row" :class="{ active: selected?.id === row.id }" @click="open(row)">
             <div class="ar-top">
               <SeverityTag :value="row.severity" />
-              <span class="ar-score mono">{{ row.risk_score }}</span>
+              <span class="ar-score mono">{{ formatRiskScore(row.risk_score) }}</span>
               <StatusBadge :value="row.status" />
             </div>
             <div class="ar-title">{{ row.title }}</div>

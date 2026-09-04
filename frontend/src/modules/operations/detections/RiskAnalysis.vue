@@ -14,7 +14,7 @@ import BarChart from '../../../components/charts/BarChart.vue'
 import DonutChart from '../../../components/charts/DonutChart.vue'
 import SeverityTag from '../../../components/security/SeverityTag.vue'
 import RiskBadge from '../../../components/security/RiskBadge.vue'
-import { formatDateTime } from '../../../utils/format'
+import { formatDateTime, formatRiskScore } from '../../../utils/format'
 
 const router = useRouter()
 const loading = ref(true)
@@ -61,15 +61,15 @@ onMounted(load)
       <template v-if="summary">
         <div class="stat-grid cols-4">
           <StatCard label="总风险对象" :value="summary.count" />
-          <StatCard label="最高风险评分" :value="summary.max_score" tone="danger" />
-          <StatCard label="平均风险评分" :value="summary.avg_score" tone="warning" />
+          <StatCard label="最高风险评分" :value="formatRiskScore(summary.max_score)" tone="danger" />
+          <StatCard label="平均风险评分" :value="formatRiskScore(summary.avg_score)" tone="warning" />
           <StatCard label="检测引擎" :value="engines.length" tone="info" />
         </div>
 
         <div class="grid cols-3" style="margin-top: 12px">
           <div class="soc-card">
             <div class="soc-card-title"><span class="dot" />风险评分仪表</div>
-            <GaugeChart :value="summary.avg_score" :height="240" />
+            <GaugeChart :value="Number(formatRiskScore(summary.avg_score))" :height="240" />
           </div>
           <div class="soc-card">
             <div class="soc-card-title"><span class="dot warn" />资产风险分布</div>
