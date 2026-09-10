@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.2.2
+
+- 密码评估工具新增「从探针自动识别并填充」：新增 `GET /api/v1/crypto/probe-profile`，聚合探针采集的服务 banner、TLS 握手（cipher suite/JA3/SNI）与无认证信号，自动填充密码算法/套件/协议/密钥长度后评估
+  - TLS 十六进制套件 ID 解码为 IANA 名称，识别 CBC/RSA/3DES 等弱套件与 TLSv1.2/1.3 协议
+  - 识别服务级密码/认证类型（SSH 主机密钥、MySQL/Redis 认证、TLS）与无认证/匿名访问风险，并入评估发现（GB/T 39786）
+  - 画像对算法/套件/协议/密钥长度/密钥管理标注 detected/inferred/default，诚实反映覆盖度
+
+
+
+## v2.2.1
+
+- 落实 `docs/gap-analysis.md` 本机可完善项（P0/P1 + Zeek 默认组件）：
+  - 新增「安全审计」前端页面（`/audit`，菜单「安全审计」），调用 `/audit/summary`、`/audit/logs`
+  - 安全事件中心新增「手工关联」入口（调用 `POST /incidents/correlate`）
+  - 检测中心新增「手动流水线」入口（调用 `POST /engine/pipeline`）
+  - `/integrations` 读取 worker capability，修复 Zeek/Suricata 在 API 容器视角误报 unavailable；Dockerfile 将 Zeek/Suricata 纳入 API 镜像默认组件
+  - 后端 `FileRecord` 持久化 md5（模型/序列化/上传/元数据任务 + alembic 0007 迁移）
+  - 修复探针心跳 metadata 互相覆盖：`heartbeat`/`register` 改为深度合并
+  - 修复网络文件恢复下载 404：`IntegrationAdapterEngine` 将瞬态工作区提取文件持久化到 `storage/network_files`
+
 ## v2.2
 
 - 新增《数据安全工具箱作业指导书》（`docs/数据安全工具箱作业指导书.docx` + `.md`）：按 SIP-Logger 模板结构（封面/修订页/目的/适用范围/职责/安装部署/配置指南/运维管理/升级管理/附录 API）编写，覆盖全部功能点

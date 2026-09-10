@@ -460,6 +460,7 @@ def metadata_task(file_id: int, task_id: int) -> None:
         result = extract_metadata(path)
         record.metadata_json = result
         record.sha256 = result["sha256"]
+        record.md5 = result.get("md5", "")
         record.file_type = result["file_type"]
         record.risk_level = "Medium" if result["hidden_info"]["hidden"] else "Low"
         context = DetectionContext(target_type="file", target_id=str(file_id), path=path, metadata=result, data={"file_type": result["file_type"], "metadata": result["metadata"], "probe_id": record.probe_id})

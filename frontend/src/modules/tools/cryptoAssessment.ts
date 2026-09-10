@@ -3,6 +3,15 @@
 
 import { sm3, sm4 } from 'sm-crypto'
 
+export interface PasswordSignal {
+  type?: 'weak_auth' | 'weak_password' | 'crypto' | 'secret' | 'info'
+  service?: string
+  port?: number
+  level: 'Critical' | 'High' | 'Medium' | 'Low' | 'Pass'
+  detail: string
+  recommendation?: string
+}
+
 export interface CryptoConfig {
   algorithms: string[]
   cipherSuites: string[]
@@ -10,11 +19,12 @@ export interface CryptoConfig {
   keyLengths: number[]
   keyManagement: { rotationDays?: number; storage?: string; useHardware?: boolean }
   sm4Key?: string
+  passwordSignals?: PasswordSignal[]
 }
 
 export interface CryptoFinding {
   level: 'Critical' | 'High' | 'Medium' | 'Low' | 'Pass'
-  dimension: '合规性' | '正确性' | '有效性'
+  dimension: '合规性' | '正确性' | '有效性' | '密码/认证'
   title: string
   detail: string
   standard: string
@@ -157,13 +167,29 @@ export function assessCrypto(config: CryptoConfig): CryptoAssessmentResult {
     findings.push({ level: 'Low', dimension: '有效性', title: '未使用硬件密码模块', detail: '密钥未存储于硬件密码模块（HSM），存在明文/软件存储风险。', standard: 'GM/T 0028', recommendation: '使用合规 HSM/密码卡保护密钥。' })
   }
 
+  // ---- 密码/认证信号（探针可观察到的无认证/弱口令/匿名访问） ----
+  const pwdSignals = config.passwordSignals || []
+  const signalScore: Record<string, number> = { Critical: -30, High: -20, Medium: -10, Low: -5 }
+  for (const sig of pwdSignals) {
+    if (sig.level === 'Pass') continue
+    complianceScore = Math.max(0, complianceScore + (signalScore[sig.level] ?? -5))
+    findings.push({
+      level: sig.level,
+      dimension: '密码/认证',
+      title: `${sig.detail}`,
+      detail: sig.detail,
+      standard: 'GB/T 39786-2021 / GM/T 0054',
+      recommendation: sig.recommendation || '启用强认证，禁止匿名/无密码访问并限制来源网段。',
+    })
+  }
+
   // ---- 汇总 ----
   complianceScore = Math.max(0, complianceScore)
   correctnessScore = Math.max(0, correctnessScore)
   effectivenessScore = Math.max(0, effectivenessScore)
   const overallScore = Math.round(complianceScore * 0.4 + correctnessScore * 0.35 + effectivenessScore * 0.25)
   const violations = findings.filter((f) => f.level !== 'Pass').length
-  const weakItems = weakAlgos.length + weakSuites.length + deprecated.length + weakKeys.length
+  const weakItems = weakAlgos.length + weakSuites.length + deprecated.length + weakKeys.length + pwdSignals.filter((sig) => sig.level !== 'Pass').length
   const level = overallScore >= 90 ? '合规' : overallScore >= 75 ? '基本合规' : overallScore >= 60 ? '部分合规' : '不合规'
 
   return {

@@ -9,6 +9,7 @@ export const menuGroups: MenuNode[] = [
     { path: '/incidents', title: '安全事件中心', icon: 'Warning' },
     { path: '/detections', title: '检测中心', icon: 'Aim' },
     { path: '/risk', title: '风险分析', icon: 'DataAnalysis' },
+    { path: '/audit', title: '安全审计', icon: 'DocumentChecked' },
   ]},
   { group: '网络分析', items: [
     { path: '/network/pcap', title: 'PCAP 工作台', icon: 'Connection' },

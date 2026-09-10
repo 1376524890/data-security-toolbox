@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listIncidents, getIncident, updateIncidentStatus } from '../../../api/incidents'
+import { listIncidents, getIncident, updateIncidentStatus, correlateIncidents } from '../../../api/incidents'
 import type { Incident, IncidentFilters, AttackStage } from '../../../types/incident'
 import { incidentStages } from '../../../types/incident'
 
@@ -81,13 +81,43 @@ async function changeStatus(status: string): Promise<void> {
 
 function reset(): void { filters.page = 1; load() }
 
+// --- Manual incident correlation ---
+const correlateOpen = ref(false)
+const correlateRunning = ref(false)
+const correlateFindings = ref('')
+const correlateWindow = ref(3600)
+const correlateResult = ref<Array<Record<string, unknown>>>([])
+
+async function runCorrelate(): Promise<void> {
+  if (!correlateFindings.value.trim()) {
+    ElMessage.warning('请输入待关联的发现 JSON')
+    return
+  }
+  correlateRunning.value = true
+  correlateResult.value = []
+  try {
+    const findings = JSON.parse(correlateFindings.value)
+    if (!Array.isArray(findings)) throw new Error('发现必须是一个数组')
+    correlateResult.value = await correlateIncidents(findings as Array<Record<string, unknown>>, correlateWindow.value)
+    ElMessage.success(`关联完成，共生成 ${correlateResult.value.length} 个事件`)
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    correlateRunning.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
 <template>
   <div class="incident-center">
     <div class="incident-list">
-      <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset" />
+      <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset">
+        <template #actions>
+          <el-button type="primary" plain @click="correlateOpen = true"><el-icon><Connection /></el-icon>&nbsp;手工关联</el-button>
+        </template>
+      </FilterBar>
       <StateBox :loading="loading" :error="error" :empty="!items.length" @retry="load">
         <el-table :data="items" size="small" :row-class-name="({ row }: any) => row.id === selected?.id ? 'row-active' : ''" @row-click="open">
           <el-table-column prop="id" label="ID" width="70" />
@@ -168,11 +198,37 @@ onMounted(load)
         </template>
       </StateBox>
     </div>
+
+    <el-dialog v-model="correlateOpen" title="手工事件关联" width="720px">
+      <el-form label-width="120px">
+        <el-form-item label="发现 JSON">
+          <el-input v-model="correlateFindings" type="textarea" :rows="10" placeholder='[{"engine":"zeek","rule_id":"A","severity":"High","confidence":0.8,"evidence":{"src_ip":"10.0.0.9"},"timestamp":"2026-01-01T00:00:00Z"}]' />
+        </el-form-item>
+        <el-form-item label="时间窗口(秒)">
+          <el-input-number v-model="correlateWindow" :min="60" :step="60" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="correlateOpen = false">取消</el-button>
+        <el-button type="primary" :loading="correlateRunning" @click="runCorrelate">执行关联</el-button>
+      </template>
+
+      <div v-if="correlateResult.length" class="correlate-result">
+        <div class="sec-title">关联结果（{{ correlateResult.length }}）</div>
+        <el-table :data="correlateResult" size="small">
+          <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
+          <el-table-column label="等级" width="90"><template #default="{ row }"><SeverityTag :value="row.severity" /></template></el-table-column>
+          <el-table-column label="风险" width="90"><template #default="{ row }"><RiskBadge :score="row.risk_score" /></template></el-table-column>
+          <el-table-column label="发现数" width="90"><template #default="{ row }"><span class="mono">{{ (row.findings || []).length }}</span></template></el-table-column>
+        </el-table>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .incident-center { display: flex; gap: 12px; height: calc(100vh - var(--soc-header-h) - 32px); }
+.correlate-result { margin-top: 12px; border-top: 1px solid var(--soc-border); padding-top: 12px; }
 .incident-list { flex: 1; min-width: 0; background: var(--soc-panel); border: 1px solid var(--soc-border); border-radius: var(--soc-radius); padding: 12px; overflow: auto; }
 .incident-detail { width: 46%; flex-shrink: 0; background: var(--soc-panel); border: 1px solid var(--soc-border); border-radius: var(--soc-radius); padding: 16px; overflow: auto; }
 .inv-placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--soc-text-dim); }

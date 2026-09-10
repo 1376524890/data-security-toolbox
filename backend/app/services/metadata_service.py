@@ -13,6 +13,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def md5_file(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def detect_file_type(path: Path) -> str:
     head = path.read_bytes()[:16]
     suffix = path.suffix.lower()
@@ -129,6 +137,7 @@ def extract_metadata(path: Path) -> dict[str, Any]:
         "file_type": file_type,
         "size": path.stat().st_size,
         "sha256": sha256_file(path),
+        "md5": md5_file(path),
         "metadata": metadata,
         "hidden_info": hidden_info(path, file_type, metadata),
     }

@@ -92,6 +92,7 @@ from app.services.alert_service import (
 )
 from app.services.asset_service import asset_relations
 from app.services.audit_service import audit_summary, log_analysis
+from app.services.crypto_profile import build_crypto_profile
 from app.services.protocol_service import packet_detail, protocol_tree, tcp_stream_follow
 from app.services.report_service import build_summary, render_html, render_pdf
 from app.services.traffic_service import (
@@ -315,6 +316,7 @@ def _serialize_file(item: FileRecord) -> dict[str, Any]:
         "path": item.path,
         "size": item.size,
         "sha256": item.sha256,
+        "md5": item.md5,
         "file_type": item.file_type,
         "metadata_json": item.metadata_json,
         "risk_level": item.risk_level,
@@ -465,6 +467,18 @@ def _read_worker_capabilities() -> list[dict[str, Any]]:
         return []
 
 
+def _merge_metadata(base: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any]:
+    """Deep-merge probe metadata so concurrent loops (heartbeat / asset / file)
+    never clobber each other's keys. Lists and scalars are replaced."""
+    merged: dict[str, Any] = dict(base or {})
+    for key, value in (incoming or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_metadata(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _merge_capability(capabilities: list[dict[str, Any]]) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     for item in capabilities:
@@ -565,7 +579,7 @@ def register_probe(payload: ProbeRegister, x_probe_bootstrap_token: str | None =
     else:
         probe.hostname = payload.hostname
         probe.ip_address = payload.ip_address
-        probe.extra = payload.metadata
+        probe.extra = _merge_metadata(probe.extra or {}, payload.metadata or {})
         probe.status = "online"
     if rotate:
         token = secrets.token_urlsafe(32)
@@ -588,7 +602,7 @@ def heartbeat(probe_id: int, payload: Heartbeat, request: Request, db: Session =
     metadata = payload.metadata or {}
     capture_status = str(metadata.get("capture_status") or payload.status)
     probe.status = "degraded" if capture_status == "degraded" else payload.status
-    probe.extra = payload.metadata or probe.extra
+    probe.extra = _merge_metadata(probe.extra or {}, metadata)
     probe.last_seen = datetime.now(UTC)
     db.commit()
     return {"status": "ok"}
@@ -616,6 +630,17 @@ def analyze_probe_assets(probe_id: int, db: Session = Depends(get_db)) -> dict[s
 def probe_tasks(probe_id: int, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     tasks = db.scalars(select(Task).where(Task.payload["probe_id"].as_integer() == probe_id).order_by(Task.id.desc()).limit(50)).all()
     return [_serialize_task(item) for item in tasks]
+
+
+@router.get("/crypto/probe-profile")
+def crypto_probe_profile(probe_id: int = Query(..., ge=1), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Build a probe-derived crypto / password profile for the GB/T 39786
+    assessment tool, so the UI can auto-fill its inputs from what the probe
+    actually observed (service banners, TLS handshake metadata)."""
+    try:
+        return build_crypto_profile(db, probe_id)
+    except ValueError:
+        raise HTTPException(404, "probe not found")
 
 
 @router.get("/assets")
@@ -687,7 +712,23 @@ async def upload_file(request: Request, file: UploadFile = File(...), probe_id: 
             raise HTTPException(413, "file too large") from exc
         raise
     path = Path(stored["path"])
-    record = FileRecord(probe_id=probe_id, name=path.name, path=str(path), size=int(stored["size"]), sha256=str(stored["sha256"]), file_type="", metadata_json=json.loads(metadata_json) if metadata_json else {})
+    meta = json.loads(metadata_json) if metadata_json else {}
+    # Probe already reports md5/sha256 for target files; fall back to computing
+    # the digests from the stored bytes so the hash is always persisted.
+    md5 = str(meta.get("md5") or "") if isinstance(meta, dict) else ""
+    if not md5:
+        from app.services.metadata_service import md5_file
+        md5 = md5_file(path)
+    record = FileRecord(
+        probe_id=probe_id,
+        name=path.name,
+        path=str(path),
+        size=int(stored["size"]),
+        sha256=str(stored["sha256"]),
+        md5=md5,
+        file_type="",
+        metadata_json=meta,
+    )
     db.add(record)
     db.commit()
     db.refresh(record)
@@ -1135,10 +1176,32 @@ def engine_registry() -> list[dict[str, Any]]:
 @router.get("/integrations")
 def list_integrations() -> list[dict[str, Any]]:
     entries = list(integration_registry.metadata())
+    # The API container may lack the Zeek/Suricata binaries while a live
+    # analysis worker reports the capability (published to Redis). Surface the
+    # worker's availability so the UI doesn't show a working engine as
+    # "unavailable" just because the API container can't run it.
+    worker_caps = _merge_capability(_read_worker_capabilities())
+    for entry in entries:
+        name = str(entry.get("name", ""))
+        if name in {"zeek", "suricata"}:
+            cap = worker_caps.get(name)
+            if cap and cap.get("available") and not entry.get("healthy"):
+                entry["installed"] = True
+                entry["healthy"] = True
+                entry["runtime_version"] = entry.get("runtime_version") or cap.get("version", "")
+                entry["status"] = "ready"
+                entry["message"] = "available via analysis worker"
+                entry["last_error"] = ""
+                entry["worker_available"] = True
+                if name == "suricata":
+                    entry["rule_count"] = max(
+                        entry.get("rule_count") or 0, int(cap.get("rule_count") or 0)
+                    )
     sigma_count = _engine_rule_counts().get("sigma_log_engine", 0)
     entries.append({
         "name": "sigma",
         "version": "1.0.0",
+        "adapter_version": "1.0.0",
         "installed": True,
         "enabled": True,
         "healthy": True,
@@ -1148,6 +1211,7 @@ def list_integrations() -> list[dict[str, Any]]:
         "rule_count": sigma_count,
         "status": "ready",
         "message": "Sigma-style log rule interpreter (built-in)",
+        "last_check": datetime.now(UTC).isoformat(),
     })
     return entries
 

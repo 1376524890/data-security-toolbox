@@ -52,6 +52,7 @@ class FileOut(BaseModel):
     path: str
     size: int
     sha256: str
+    md5: str = ""
     file_type: str
     metadata_json: dict[str, Any]
     risk_level: str

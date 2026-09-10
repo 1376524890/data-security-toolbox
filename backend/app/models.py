@@ -76,6 +76,7 @@ class FileRecord(TimestampMixin, Base):
     path: Mapped[str] = mapped_column(String(1024), default="")
     size: Mapped[int] = mapped_column(Integer, default=0)
     sha256: Mapped[str] = mapped_column(String(64), index=True)
+    md5: Mapped[str] = mapped_column(String(64), default="", index=True)
     file_type: Mapped[str] = mapped_column(String(128), default="")
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     risk_level: Mapped[str] = mapped_column(String(16), default="Low")

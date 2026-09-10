@@ -18,6 +18,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/incidents', component: () => import('../modules/operations/incidents/IncidentCenter.vue'), meta: { title: 'Incident Center', group: 'Security Operations' } },
   { path: '/detections', component: () => import('../modules/operations/detections/DetectionCenter.vue'), meta: { title: 'Detection Center', group: 'Security Operations' } },
   { path: '/risk', component: () => import('../modules/operations/detections/RiskAnalysis.vue'), meta: { title: 'Risk Analysis', group: 'Security Operations' } },
+  { path: '/audit', component: () => import('../modules/operations/audit/SecurityAudit.vue'), meta: { title: 'Security Audit', group: 'Security Operations' } },
   // Network Analysis
   { path: '/network/pcap', component: () => import('../modules/network/pcap/PcapWorkbench.vue'), meta: { title: 'PCAP Workbench', group: 'Network Analysis' } },
   { path: '/network/live', component: () => import('../modules/network/traffic/LiveTraffic.vue'), meta: { title: 'Live Traffic', group: 'Network Analysis' } },

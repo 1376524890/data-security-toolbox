@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import GaugeChart from '../../components/charts/GaugeChart.vue'
 import SeverityTag from '../../components/security/SeverityTag.vue'
 import StatusBadge from '../../components/security/StatusBadge.vue'
 import { assessCrypto, defaultCryptoConfig, weakCryptoConfig, type CryptoConfig, type CryptoAssessmentResult } from './cryptoAssessment'
+import { listProbes, type Probe } from '../../api/probes'
+import { getCryptoProbeProfile, type CryptoProbeProfile } from '../../api/crypto'
 import { analyzeComplexity, defaultCodeSample, type ComplexityResult } from './complexityAnalysis'
 
 const activeTab = ref('crypto')
@@ -13,6 +15,11 @@ const activeTab = ref('crypto')
 const cryptoConfig = ref<CryptoConfig>(JSON.parse(JSON.stringify(defaultCryptoConfig)))
 const cryptoResult = ref<CryptoAssessmentResult | null>(null)
 const cryptoRunning = ref(false)
+const probes = ref<Probe[]>([])
+const selectedProbeId = ref<number | null>(null)
+const detecting = ref(false)
+const detectedProfile = ref<CryptoProbeProfile | null>(null)
+
 const algorithmText = ref(defaultCryptoConfig.algorithms.join(', '))
 const suiteText = ref(defaultCryptoConfig.cipherSuites.join(', '))
 const protocolText = ref(defaultCryptoConfig.protocols.join(', '))
@@ -52,6 +59,49 @@ function loadPreset(name: 'compliant' | 'weak'): void {
   cryptoResult.value = null
 }
 
+async function loadProbes(): Promise<void> {
+  try {
+    const res = await listProbes({ page: 1, page_size: 100 })
+    probes.value = res.items || []
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function autoDetectFromProbe(): Promise<void> {
+  if (!selectedProbeId.value) {
+    ElMessage.warning('请先选择探针')
+    return
+  }
+  detecting.value = true
+  try {
+    const profile = await getCryptoProbeProfile(selectedProbeId.value)
+    const cfg = profile.config
+    cryptoConfig.value = {
+      algorithms: cfg.algorithms?.length ? cfg.algorithms : defaultCryptoConfig.algorithms,
+      cipherSuites: cfg.cipherSuites?.length ? cfg.cipherSuites : defaultCryptoConfig.cipherSuites,
+      protocols: cfg.protocols?.length ? cfg.protocols : defaultCryptoConfig.protocols,
+      keyLengths: cfg.keyLengths?.length ? cfg.keyLengths : defaultCryptoConfig.keyLengths,
+      keyManagement: { ...defaultCryptoConfig.keyManagement, ...(cfg.keyManagement || {}) },
+      sm4Key: defaultCryptoConfig.sm4Key,
+      passwordSignals: profile.passwordSignals || [],
+    }
+    algorithmText.value = cryptoConfig.value.algorithms.join(', ')
+    suiteText.value = cryptoConfig.value.cipherSuites.join(', ')
+    protocolText.value = cryptoConfig.value.protocols.join(', ')
+    keyLengthText.value = cryptoConfig.value.keyLengths.join(', ')
+    detectedProfile.value = profile
+    runCrypto()
+    ElMessage.success(`已从探针「${profile.probe_name}」自动识别并填充，开始评估`)
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    detecting.value = false
+  }
+}
+
+onMounted(loadProbes)
+
 const cryptoLevelTone = computed(() => {
   const level = cryptoResult.value?.level || ''
   return level === '合规' ? 'success' : level === '基本合规' ? 'info' : level === '部分合规' ? 'warning' : 'danger'
@@ -87,6 +137,28 @@ function runComplexity(): void {
     <el-tabs v-model="activeTab" class="eval-tabs">
       <!-- 商用密码应用安全性评估 -->
       <el-tab-pane label="商用密码应用安全性评估" name="crypto">
+        <!-- 从探针自动识别 -->
+        <div class="soc-card" style="margin-bottom: 12px">
+          <div class="soc-card-title"><span class="dot info" />从探针自动识别</div>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap">
+            <el-select v-model="selectedProbeId" placeholder="选择探针（自动读取其系统密码/加密参数）" style="width: 320px" filterable clearable>
+              <el-option v-for="p in probes" :key="p.id" :label="`${p.name} (${p.hostname} / ${p.ip_address})`" :value="p.id" />
+            </el-select>
+            <el-button type="primary" :loading="detecting" @click="autoDetectFromProbe">从探针自动识别并填充</el-button>
+            <span class="text-muted" style="font-size: 12px">依据探针采集的服务 banner 与 TLS 握手，自动填充算法/套件/协议/密钥长度后评估</span>
+          </div>
+          <div v-if="detectedProfile" style="margin-top: 8px">
+            <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center">
+              <span class="text-muted">识别结果：</span>
+              <el-tag v-for="t in detectedProfile.passwordTypes" :key="t" size="small" effect="plain">{{ t }}</el-tag>
+              <el-tag size="small" effect="plain">TLS 握手 {{ detectedProfile.tlsHandshakeCount }}</el-tag>
+              <el-tag size="small" effect="plain">服务 {{ detectedProfile.serviceCount }}</el-tag>
+            </div>
+            <div v-if="detectedProfile.passwordSignals.length" class="text-muted" style="margin-top: 6px; font-size: 12px">
+              检测到 {{ detectedProfile.passwordSignals.length }} 条密码/认证风险，已并入评估发现。
+            </div>
+          </div>
+        </div>
         <div class="grid cols-2">
           <!-- 配置输入 -->
           <div class="soc-card">

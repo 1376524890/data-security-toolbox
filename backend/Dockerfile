@@ -19,6 +19,15 @@ COPY scripts ./scripts
 RUN useradd -m -u 10001 appuser && mkdir -p /app/data/storage /app/data/reports /app/data/integrations /app/data/offline && chown -R appuser:appuser /app
 
 FROM base AS api
+USER root
+# Ship Zeek + Suricata in the API image so the engine health/status reported by
+# the API container matches the analysis worker instead of showing "unavailable".
+COPY --from=zeek-runtime /usr/local/zeek /usr/local/zeek
+COPY --from=zeek-runtime /usr/lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu/
+ENV PATH="/usr/local/zeek/bin:${PATH}"
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends suricata nmap && \
+    rm -rf /var/lib/apt/lists/*
 USER appuser
 EXPOSE 8000
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
