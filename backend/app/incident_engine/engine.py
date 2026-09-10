@@ -21,13 +21,24 @@ def _parse_ts(value: Any) -> float:
             return 0.0
 
 
+def _short_asset(value: object) -> str:
+    """Collapse a dict (e.g. an asset or CVE payload) to a short label."""
+    if isinstance(value, dict):
+        parts = []
+        for key in ("ip", "hostname", "host", "service", "port", "cve_id", "name"):
+            if value.get(key):
+                parts.append(str(value[key]))
+        return ":".join(parts) if parts else "asset"
+    return str(value)
+
+
 def _asset_keys(finding: DetectionResult) -> list[str]:
     evidence = finding.evidence
     keys = []
     for field_name in ("src_ip", "dest_ip", "dst_ip", "ip", "asset", "host", "hostname", "agent_name"):
         value = evidence.get(field_name)
         if value:
-            keys.append(str(value).lower())
+            keys.append(_short_asset(value).lower())
     for flow in evidence.get("flow", []):
         if isinstance(flow, dict):
             for field_name in ("src_ip", "dst_ip", "dest_ip"):

@@ -45,6 +45,7 @@ from app.services.alert_service import (
     queue_deliveries,
 )
 from app.services.asset_service import classify_assets
+from app.services.scan_service import discover_hosts, is_subnet, scan_host
 from app.services.metadata_service import extract_metadata
 from app.services.protocol_service import parse_pcap
 from app.services.traffic_service import detect_anomalies
@@ -110,7 +111,7 @@ def _upsert_incident(db, incident: Incident, probe_id: int | None) -> Incident:
         fingerprint=incident.fingerprint,
         probe_id=probe_id,
         source=incident.source,
-        title=incident.title,
+        title=(incident.title or "")[:255],
         severity=incident.severity,
         confidence=incident.confidence,
         status=incident.status,
@@ -591,6 +592,65 @@ def asset_task(probe_id: int, task_id: int) -> None:
             except Exception:
                 deliver_alert_task(alert_id)
     _finish(task_id, result={"probe_id": probe_id, "assets": len(assets)})
+
+
+@celery_app.task(name="security_toolbox.network_scan")
+@task_guard
+def network_scan_task(task_id: int) -> dict[str, Any]:
+    """Active network scan: discover hosts, enumerate services, run detection."""
+    from sqlalchemy import delete
+
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        if not task:
+            _finish(task_id, error="task not found")
+            return {}
+        payload = task.payload or {}
+        target = str(payload.get("target") or "")
+        if not target:
+            _finish(task_id, error="scan target is required")
+            return {}
+        discovery = bool(payload.get("discovery", True))
+        top_ports = int(payload.get("top_ports") or 1000)
+        public_exposed = bool(payload.get("public_exposed", False))
+        update_task(task_id, status="Running", progress=10, current_stage="发现存活主机")
+        hosts = [target]
+        if discovery and is_subnet(target):
+            hosts = discover_hosts(target)
+            update_task(task_id, progress=20, current_stage=f"发现 {len(hosts)} 台存活主机")
+        total_assets = 0
+        total_findings = 0
+        for idx, host in enumerate(hosts, 1):
+            update_task(task_id, progress=20 + int(60 * idx / max(1, len(hosts))), current_stage=f"扫描 {host}")
+            services = scan_host(host, top_ports)
+            if not services:
+                continue
+            # Keep re-scans current: drop stale nmap-scan assets for this host.
+            try:
+                db.execute(delete(Asset).where(Asset.probe_id.is_(None), Asset.ip == host, Asset.extra["source"].as_string() == "nmap_scan"))
+            except Exception:
+                pass
+            assets = classify_assets({"hostname": host, "ip": host, "os": "", "services": services, "public_exposed": public_exposed, "metadata": {}})
+            for a in assets:
+                meta = a.get("metadata", {}) or {}
+                a["version"] = meta.get("version", "")
+                a["product"] = meta.get("product", "")
+                db.add(Asset(probe_id=None, ip=host, hostname=host, os="", port=a["port"], protocol=a["protocol"], service=a["service"], asset_type=a["asset_type"], risk_level=a["risk_level"], sensitive_categories=a["sensitive_categories"], extra={"source": "nmap_scan", **meta}))
+            context = DetectionContext(target_type="scan", target_id=str(task_id), assets=assets, data={"public_exposed": public_exposed, "services": services, "cve_lookup_enabled": True, "nvd_api_key": ""})
+            alerts = run_pipeline(context, task_id, db)
+            total_assets += len(assets)
+            total_findings += len(alerts)
+            db.commit()
+            for alert_id, created in alerts:
+                publish_alert(alert_id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
+                try:
+                    deliver_alert_task.delay(alert_id)
+                except Exception:
+                    deliver_alert_task(alert_id)
+        db.add(AnalysisResult(task_id=task_id, module="scan", content={"target": target, "hosts": hosts, "assets": total_assets, "findings": total_findings}, risk_level="High" if total_findings else "Low"))
+        db.commit()
+    _finish(task_id, result={"target": target, "hosts": hosts, "assets": total_assets})
+    return {"target": target, "hosts": hosts, "assets": total_assets}
 
 
 @celery_app.task(name="security_toolbox.cleanup_pcap_retention")

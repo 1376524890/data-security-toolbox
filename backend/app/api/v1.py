@@ -81,6 +81,7 @@ from app.schemas import (
     LogAnalysisRequest,
     LoginRequest,
     ProbeRegister,
+    ScanRequest,
     TaskCreate,
 )
 from app.services.alert_service import (
@@ -108,6 +109,7 @@ from app.workers.tasks import (
     asset_task,
     create_task,
     metadata_task,
+    network_scan_task,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -641,6 +643,30 @@ def crypto_probe_profile(probe_id: int = Query(..., ge=1), db: Session = Depends
         return build_crypto_profile(db, probe_id)
     except ValueError:
         raise HTTPException(404, "probe not found")
+
+
+@router.post("/scan")
+def start_scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Trigger an active network scan (nmap discovery + host service enumeration)."""
+    task = create_task(db, "scan", {"target": payload.target, "discovery": payload.discovery, "top_ports": payload.top_ports, "public_exposed": payload.public_exposed})
+    _dispatch(task.id, "scan", network_scan_task)
+    return _serialize_task(task)
+
+
+@router.get("/scan/{task_id}")
+def scan_result(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Return a scan task's progress / result (assets + findings)."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "scan task not found")
+    result = _serialize_task(task)
+    hosts = (task.result or {}).get("hosts", [])
+    if hosts:
+        rows = db.scalars(select(Asset).where(Asset.extra["source"].as_string() == "nmap_scan", Asset.ip.in_(hosts))).all()
+        result["scanned_assets"] = [_serialize_asset(item) for item in rows]
+    else:
+        result["scanned_assets"] = []
+    return result
 
 
 @router.get("/assets")

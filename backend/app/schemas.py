@@ -25,6 +25,13 @@ class ProbeOut(BaseModel):
     metadata: dict[str, Any]
 
 
+class ScanRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=256, description="目标：IP / 主机名 / CIDR / 范围，如 192.168.110.0/24 或 192.168.110.1")
+    discovery: bool = True
+    top_ports: int = Field(default=1000, ge=1, le=65535)
+    public_exposed: bool = False
+
+
 class Heartbeat(BaseModel):
     status: str = "online"
     metadata: dict[str, Any] = {}
