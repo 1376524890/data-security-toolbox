@@ -649,7 +649,7 @@ def crypto_probe_profile(probe_id: int = Query(..., ge=1), db: Session = Depends
 @router.post("/scan")
 def start_scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Trigger an active network scan (nmap discovery + host service enumeration)."""
-    task = create_task(db, "scan", {"target": payload.target, "discovery": payload.discovery, "top_ports": payload.top_ports, "public_exposed": payload.public_exposed})
+    task = create_task(db, "scan", {"target": payload.target, "discovery": payload.discovery, "top_ports": payload.top_ports, "public_exposed": payload.public_exposed, "nuclei": payload.nuclei, "nuclei_tags": payload.nuclei_tags, "nuclei_templates": payload.nuclei_templates})
     _dispatch(task.id, "scan", network_scan_task)
     return _serialize_task(task)
 

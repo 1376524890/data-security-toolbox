@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.3.0（feature/nuclei-integration）
+
+- 新增 Nuclei 主动漏洞扫描集成：
+  - `nuclei_service`：运行 `nuclei -u <target> -t <templates> -jsonl`，解析结果并归一化为发现
+  - `/api/v1/scan` 支持 `nuclei`、`nuclei_tags`、`nuclei_templates` 参数；扫描任务对 nmap 发现的
+    HTTP/HTTPS 服务 URL 逐个跑 nuclei，结果进入 detection/alert/incident 流水线（引擎 `nuclei_engine`）
+  - 前端「资产中心」扫描面板新增 Nuclei 开关与 tags 输入
+  - worker 镜像安装 nuclei 二进制（Dockerfile 下载 + 本地部署时 COPY）
+  - 新增 test_nuclei 单测
+
+
 ## v2.2.3
 
 - 新增「测试数据」管理：`POST /api/v1/test/import`（导入手工测试包，标注为 test-demo 探针）、`POST /api/v1/test/clear`（清除测试数据）、`GET /api/v1/test/status`

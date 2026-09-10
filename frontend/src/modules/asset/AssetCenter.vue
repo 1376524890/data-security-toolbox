@@ -28,6 +28,8 @@ const activeTab = ref('basic')
 const filters = reactive({ risk: '', asset_type: '', search: '', page: 1, page_size: 50 })
 const scanTarget = ref('')
 const scanTopPorts = ref(1000)
+const scanNuclei = ref(false)
+const scanNucleiTags = ref('')
 const scanning = ref(false)
 const scanResult = ref<ScanResult | null>(null)
 
@@ -60,7 +62,7 @@ async function runScan(): Promise<void> {
   scanning.value = true
   scanResult.value = null
   try {
-    const task = await startScan({ target: scanTarget.value, discovery: scanTarget.value.includes('/') || scanTarget.value.includes('-'), top_ports: scanTopPorts.value })
+    const task = await startScan({ target: scanTarget.value, discovery: scanTarget.value.includes('/') || scanTarget.value.includes('-'), top_ports: scanTopPorts.value, nuclei: scanNuclei.value, nuclei_tags: scanNucleiTags.value })
     // poll until done
     for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 3000))
@@ -118,6 +120,8 @@ onMounted(load)
       <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
         <el-input v-model="scanTarget" placeholder="目标：IP / 主机 / CIDR / 范围，如 192.168.110.0/24" style="width: 320px" clearable />
         <el-input-number v-model="scanTopPorts" :min="1" :max="65535" :step="100" style="width: 130px" />
+        <el-switch v-model="scanNuclei" active-text="Nuclei" />
+        <el-input v-if="scanNuclei" v-model="scanNucleiTags" placeholder="nuclei tags，如 tech,cve" style="width: 180px" clearable />
         <el-button type="primary" :loading="scanning" @click="runScan">开始扫描</el-button>
         <span class="text-muted" style="font-size: 12px">扫描结果将写入资产并进入资产/合规/威胁情报(CVE)流水线</span>
       </div>

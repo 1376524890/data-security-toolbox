@@ -14,7 +14,7 @@ from app.core.database import SessionLocal
 from app.engine import registry
 from app.engine.core.context import DetectionContext
 from app.engine.core.pipeline import DetectionPipeline
-from app.engine.core.result import DetectionResult
+from app.engine.core.result import DetectionResult, PipelineResult
 from app.engine.graph import build_graph
 from app.engine.risk_engine.engine import RiskEngine
 from app.incident_engine.engine import IncidentEngine
@@ -47,6 +47,7 @@ from app.services.alert_service import (
 from app.services.asset_service import classify_assets
 from app.services.scan_service import discover_hosts, is_subnet, scan_host
 from app.services.metadata_service import extract_metadata
+from app.services.nuclei_service import run_nuclei_scan, templates_dir
 from app.services.protocol_service import parse_pcap
 from app.services.traffic_service import detect_anomalies
 from app.workers.celery_app import celery_app
@@ -594,6 +595,29 @@ def asset_task(probe_id: int, task_id: int) -> None:
     _finish(task_id, result={"probe_id": probe_id, "assets": len(assets)})
 
 
+def _nuclei_to_detection(item: dict[str, Any]) -> DetectionResult:
+    """Convert a normalized nuclei finding into a DetectionResult."""
+    return DetectionResult(
+        engine="nuclei_engine",
+        rule_id=f"NUCLEI_{item.get('template_id') or item.get('name') or 'unknown'}",
+        severity=item.get("severity", "Low"),
+        confidence=0.8,
+        evidence={
+            "template_id": item.get("template_id", ""),
+            "name": item.get("name", ""),
+            "type": item.get("type", ""),
+            "host": item.get("host", ""),
+            "port": item.get("port", ""),
+            "url": item.get("url", ""),
+            "matched_at": item.get("matched_at", ""),
+            "extracted": item.get("extracted", []),
+            "reference": item.get("reference", []),
+            "matcher_name": item.get("matcher_name", ""),
+        },
+        recommendation=f"根据 Nuclei 模板「{item.get('name') or item.get('template_id')}」评估并修复受影响资产。",
+    ).normalize()
+
+
 @celery_app.task(name="security_toolbox.network_scan")
 @task_guard
 def network_scan_task(task_id: int) -> dict[str, Any]:
@@ -613,6 +637,9 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
         discovery = bool(payload.get("discovery", True))
         top_ports = int(payload.get("top_ports") or 1000)
         public_exposed = bool(payload.get("public_exposed", False))
+        nuclei = bool(payload.get("nuclei", False))
+        nuclei_tags = str(payload.get("nuclei_tags") or "")
+        nuclei_tpl = str(payload.get("nuclei_templates") or "")
         update_task(task_id, status="Running", progress=10, current_stage="发现存活主机")
         hosts = [target]
         if discovery and is_subnet(target):
@@ -647,6 +674,31 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
                     deliver_alert_task.delay(alert_id)
                 except Exception:
                     deliver_alert_task(alert_id)
+            if nuclei:
+                # Run nuclei against each discovered HTTP/HTTPS service URL.
+                nuclei_targets = []
+                for svc in services:
+                    name = str(svc.get("service", "")).lower()
+                    port = int(svc.get("port", 0) or 0)
+                    if "http" in name or "https" in name or port in (80, 443, 8080, 8443):
+                        scheme = "https" if (port in (443, 8443) or "https" in name) else "http"
+                        nuclei_targets.append(f"{scheme}://{host}:{port}")
+                if not nuclei_targets:
+                    nuclei_targets = [host]
+                for target_url in nuclei_targets:
+                    update_task(task_id, progress=90, current_stage=f"Nuclei 扫描 {target_url}")
+                    nfindings = run_nuclei_scan(target_url, templates_dir=nuclei_tpl or templates_dir(), tags=nuclei_tags)
+                    if nfindings:
+                        nresult = PipelineResult(target_type="scan", target_id=str(task_id), findings=[_nuclei_to_detection(f) for f in nfindings])
+                        n_alerts = _run_correlations_and_alerts(db, context, task_id, nresult, None)
+                        total_findings += len(n_alerts)
+                        db.commit()
+                        for alert_id, created in n_alerts:
+                            publish_alert(alert_id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
+                            try:
+                                deliver_alert_task.delay(alert_id)
+                            except Exception:
+                                deliver_alert_task(alert_id)
         db.add(AnalysisResult(task_id=task_id, module="scan", content={"target": target, "hosts": hosts, "assets": total_assets, "findings": total_findings}, risk_level="High" if total_findings else "Low"))
         db.commit()
     _finish(task_id, result={"target": target, "hosts": hosts, "assets": total_assets})

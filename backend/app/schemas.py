@@ -30,6 +30,9 @@ class ScanRequest(BaseModel):
     discovery: bool = True
     top_ports: int = Field(default=1000, ge=1, le=65535)
     public_exposed: bool = False
+    nuclei: bool = False
+    nuclei_tags: str = ""
+    nuclei_templates: str = ""
 
 
 class Heartbeat(BaseModel):

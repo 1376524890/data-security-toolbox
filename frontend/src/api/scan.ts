@@ -6,6 +6,9 @@ export interface ScanRequest {
   discovery?: boolean
   top_ports?: number
   public_exposed?: boolean
+  nuclei?: boolean
+  nuclei_tags?: string
+  nuclei_templates?: string
 }
 
 export interface ScanResult extends Task {

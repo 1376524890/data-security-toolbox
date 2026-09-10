@@ -42,7 +42,12 @@ COPY --from=zeek-runtime /usr/local/zeek /usr/local/zeek
 COPY --from=zeek-runtime /usr/lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu/
 ENV PATH="/usr/local/zeek/bin:${PATH}"
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tshark suricata nmap ffmpeg && \
+    apt-get install -y --no-install-recommends tshark suricata nmap ffmpeg curl unzip && \
     rm -rf /var/lib/apt/lists/*
+# Install nuclei (active vulnerability scanner) for the network-scan pipeline.
+# Uses the daemon HTTP proxy when direct GitHub is blocked.
+ARG NUCLEI_VERSION=v3.11.1
+RUN curl -fsSL -o /tmp/nuclei.zip "https://github.com/projectdiscovery/nuclei/releases/download/${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION#v}_linux_arm64.zip" && \
+    unzip -o /tmp/nuclei.zip -d /usr/local/bin/ && rm -f /tmp/nuclei.zip && chmod +x /usr/local/bin/nuclei
 USER appuser
 CMD ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]

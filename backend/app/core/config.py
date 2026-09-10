@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     external_engine_dir: Path = Path("./data/external")
     integration_dir: Path = Path("./data/integrations")
     offline_dir: Path = Path("./data/offline")
+    nuclei_bin: str = "nuclei"
+    nuclei_templates_dir: str = "/app/data/nuclei-templates"
     misp_url: str = ""
     misp_api_key: str = ""
     wazuh_url: str = ""
