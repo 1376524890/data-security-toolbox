@@ -9,6 +9,21 @@ from app.engine.core.result import DetectionResult
 from app.services.protocol_service import stream_tshark
 from app.engine.data_engine.engine import shannon_entropy
 
+def _first_num(value: object, cast: type = int, default: int = 0):
+    """Parse a numeric tshark field that may be a comma-separated list (e.g.
+    ``dns.resp.len`` returns '16,16,16'). Take the first numeric token."""
+    text = str(value or "").strip()
+    if not text:
+        return default
+    token = text.split(",")[0].strip()
+    try:
+        return cast(token)
+    except (ValueError, TypeError):
+        return default
+
+
+
+
 # Bounded detail rows kept for the UI / evidence; detection still runs over the
 # full stream via streaming aggregation so a large PCAP never grows memory.
 MAX_PROTOCOL_DETAIL_ROWS = 10000
@@ -25,17 +40,17 @@ def tcp_streams(path: Path, timeout: int = 300) -> list[dict[str, Any]]:
         if len(parts) < 9:
             continue
         stream_id = parts[0] or "unknown"
-        length = int(parts[2] or 0)
+        length = _first_num(parts[2], int, 0)
         payload_hex = parts[3] or ""
-        timestamp = float(parts[4] or 0)
+        timestamp = _first_num(parts[4], float, 0.0)
         stream = streams[stream_id]
         stream["stream"] = stream_id
         stream["packets"] += 1
         stream["bytes"] += length
         stream["src_ip"] = parts[5]
         stream["dst_ip"] = parts[6]
-        stream["src_port"] = int(parts[7] or 0)
-        stream["dst_port"] = int(parts[8] or 0)
+        stream["src_port"] = _first_num(parts[7], int, 0)
+        stream["dst_port"] = _first_num(parts[8], int, 0)
         stream["start"] = min(stream["start"], timestamp) if stream["start"] else timestamp
         stream["end"] = max(stream["end"], timestamp)
         if payload_hex:
@@ -89,7 +104,7 @@ def app_analysis(path: Path, max_rows: int = MAX_PROTOCOL_DETAIL_ROWS, timeout: 
         dns_resp = parts[2] if len(parts) > 2 else ""
         dns_txt = parts[3] if len(parts) > 3 else ""
         if dns_name or dns_resp:
-            row = {"name": dns_name, "type": dns_type, "resp_len": int(dns_resp or 0), "txt": dns_txt}
+            row = {"name": dns_name, "type": dns_type, "resp_len": _first_num(dns_resp, int, 0), "txt": dns_txt}
             if len(dns_rows) < max_rows:
                 dns_rows.append(row)
             if dns_name:

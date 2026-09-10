@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.3.2（feature/nuclei-integration）
+
+- 修复 PCAP 解析 bug：`dns.resp.len` 等 tshark 字段返回逗号列表时 `int()` 抛
+  `invalid literal for int()`；新增 `_first_num` 助手解析首个数值，覆盖
+  tcp_streams / app_analysis 相关字段
+- 修复 nuclei 扫描入库 bug：`_run_correlations_and_alerts` 返回 `(Alert,bool)`，
+  误当 `(alert_id,bool)` 传给 publish_alert；改为 `alert.id`
+- 测试数据导入幂等：按 probe+sha256/segment_id 跳过已存在记录，避免
+  `uq_pcap_probe_segment` 唯一约束报错
+- 新增 test_nuclei / test_protocol(_first_num) 用例；crypto 测试探针名改为唯一
+
+
 ## v2.3.1（feature/nuclei-integration）
 
 - 扫描自动化集成到探针：

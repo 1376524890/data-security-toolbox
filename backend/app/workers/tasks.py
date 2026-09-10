@@ -693,12 +693,12 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
                         n_alerts = _run_correlations_and_alerts(db, context, task_id, nresult, None)
                         total_findings += len(n_alerts)
                         db.commit()
-                        for alert_id, created in n_alerts:
-                            publish_alert(alert_id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
+                        for alert, created in n_alerts:
+                            publish_alert(alert.id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
                             try:
-                                deliver_alert_task.delay(alert_id)
+                                deliver_alert_task.delay(alert.id)
                             except Exception:
-                                deliver_alert_task(alert_id)
+                                deliver_alert_task(alert.id)
         db.add(AnalysisResult(task_id=task_id, module="scan", content={"target": target, "hosts": hosts, "assets": total_assets, "findings": total_findings}, risk_level="High" if total_findings else "Low"))
         db.commit()
     _finish(task_id, result={"target": target, "hosts": hosts, "assets": total_assets})

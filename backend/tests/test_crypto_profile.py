@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from app.core.database import SessionLocal
 from app.models import AnalysisResult, Asset, PcapRecord, Probe, Task
 from app.services.crypto_profile import build_crypto_profile
@@ -49,7 +51,7 @@ def _seed_tls_handshake(probe_id: int) -> None:
 
 
 def test_build_crypto_profile_detects_algorithms_and_weak_auth() -> None:
-    probe_id = _seed_probe("crypto-probe", [{"port": 3306, "service": "mysql"}])
+    probe_id = _seed_probe(f"crypto-probe-{uuid4().hex[:8]}", [{"port": 3306, "service": "mysql"}])
     _seed_asset(probe_id, "mysql", 3306, "5.7.40 noauth Authentication not required")
     _seed_asset(probe_id, "ssh", 22, "SSH-2.0-OpenSSH_9.6")
     _seed_tls_handshake(probe_id)
@@ -71,7 +73,7 @@ def test_build_crypto_profile_detects_algorithms_and_weak_auth() -> None:
 
 
 def test_build_crypto_profile_empty_probe_uses_defaults() -> None:
-    probe_id = _seed_probe("empty-probe", [])
+    probe_id = _seed_probe(f"empty-probe-{uuid4().hex[:8]}", [])
     with SessionLocal() as db:
         profile = build_crypto_profile(db, probe_id)
     assert profile["config"]["algorithms"] == []

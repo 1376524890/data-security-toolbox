@@ -25,3 +25,11 @@ def test_parse_fixture_pcap() -> None:
     result = parse_pcap(fixture, max_packets=100)
     assert result["packet_count"] >= 20
     assert result["flows"]
+
+
+def test_first_num_handles_comma_lists() -> None:
+    from app.engine.protocol_engine.engine import _first_num
+    assert _first_num("16,16,16", int, 0) == 16
+    assert _first_num("", int, 0) == 0
+    assert _first_num("abc", int, 0) == 0
+    assert _first_num("3.14,2.0", float, 0.0) == 3.14

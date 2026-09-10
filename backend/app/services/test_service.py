@@ -51,7 +51,11 @@ def import_test_data(db) -> dict[str, Any]:
         for src in sorted(folder_path.iterdir()):
             if not src.is_file():
                 continue
-            path, sha, md5, size = _store(src, "uploads")
+            sha = hashlib.sha256(src.read_bytes()).hexdigest()
+            # idempotent: skip files already imported for this test probe
+            if db.scalar(select(FileRecord).where(FileRecord.probe_id == probe.id, FileRecord.sha256 == sha).limit(1)):
+                continue
+            path, _, md5, size = _store(src, "uploads")
             rec = FileRecord(probe_id=probe.id, name=path.name, path=str(path), size=size, sha256=sha, md5=md5, file_type=src.suffix.lower().lstrip("."), metadata_json={"source": "test"}, risk_level="Low")
             db.add(rec)
             db.flush()
@@ -65,8 +69,12 @@ def import_test_data(db) -> dict[str, Any]:
         for src in sorted(pcap_dir.iterdir()):
             if not src.is_file():
                 continue
+            segment_id = f"test-{src.stem}"
+            # idempotent: skip pcaps already imported for this test probe
+            if db.scalar(select(PcapRecord).where(PcapRecord.probe_id == probe.id, PcapRecord.segment_id == segment_id).limit(1)):
+                continue
             path, sha, md5, size = _store(src, "pcaps")
-            rec = PcapRecord(probe_id=probe.id, segment_id=f"test-{src.stem}", filename=path.name, storage_path=str(path), size=size, sha256=sha, ingest_status="ingested", analysis_status="pending", probe_metadata={"source": "test"}, sequence=0)
+            rec = PcapRecord(probe_id=probe.id, segment_id=segment_id, filename=path.name, storage_path=str(path), size=size, sha256=sha, ingest_status="ingested", analysis_status="pending", probe_metadata={"source": "test"}, sequence=0)
             db.add(rec)
             db.flush()
             task = create_task(db, "pcap", {"pcap_id": rec.id})
