@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElNotification } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { menuGroups } from './router/menu'
 import { useAuthStore } from './stores/auth'
 import { useSystemStore } from './stores/system'
+import { importTestData, clearTestData, getTestStatus, markTestImported, consumeTestImported, type TestStatus } from './api/test'
 import type { IntegrationStatus } from './types/integration'
 
 const route = useRoute()
@@ -14,6 +15,8 @@ const system = useSystemStore()
 const collapsed = ref(false)
 const now = ref(new Date())
 let clock = 0
+const testStatus = ref<TestStatus | null>(null)
+const testBusy = ref(false)
 
 const currentTitle = computed(() => String(route.meta.title || 'Dashboard'))
 const currentGroup = computed(() => String(route.meta.group || ''))
@@ -42,11 +45,45 @@ function openAlerts(): void {
   router.push('/alerts')
 }
 
-onMounted(() => {
+async function loadTestStatus(): Promise<void> {
+  try { testStatus.value = await getTestStatus() } catch { testStatus.value = null }
+}
+
+async function onImportTest(): Promise<void> {
+  if (testBusy.value) return
+  testBusy.value = true
+  try {
+    const r = await importTestData()
+    markTestImported()
+    ElMessage.success(`已导入测试数据：${r.files} 文件 / ${r.pcaps} PCAP（刷新页面将自动清除）`)
+    await loadTestStatus()
+  } catch (err) {
+    ElMessage.error(`导入失败：${err instanceof Error ? err.message : String(err)}`)
+  } finally { testBusy.value = false }
+}
+
+async function onClearTest(): Promise<void> {
+  if (testBusy.value) return
+  testBusy.value = true
+  try {
+    await clearTestData()
+    ElMessage.success('已清除测试数据')
+    await loadTestStatus()
+  } catch (err) {
+    ElMessage.error(`清除失败：${err instanceof Error ? err.message : String(err)}`)
+  } finally { testBusy.value = false }
+}
+
+onMounted(async () => {
   clock = window.setInterval(() => { now.value = new Date() }, 1000)
   if (!route.meta.public) {
     system.start()
     system.connect(onAlert)
+    // 刷新页面后恢复原样：若上一会话导入了测试数据，则本次自动清除
+    if (consumeTestImported()) {
+      try { await clearTestData() } catch { /* ignore */ }
+    }
+    loadTestStatus()
   }
 })
 onBeforeUnmount(() => {
@@ -104,6 +141,22 @@ onBeforeUnmount(() => {
             <el-button size="small" text @click="openAlerts"><el-icon><Bell /></el-icon></el-button>
           </el-badge>
           <span class="header-clock mono">{{ now.toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
+          <el-dropdown trigger="click" @command="(cmd: string) => { if (cmd === 'import') onImportTest(); if (cmd === 'clear') onClearTest() }">
+            <el-button size="small" text :loading="testBusy">
+              <el-icon><MagicStick /></el-icon>
+              <span v-if="testStatus?.present" class="test-badge">测试数据</span>
+              <span v-else>测试数据</span>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="import">导入测试数据</el-dropdown-item>
+                <el-dropdown-item command="clear" :disabled="!testStatus?.present">清除测试数据</el-dropdown-item>
+                <el-dropdown-item disabled>
+                  状态：{{ testStatus?.present ? `已导入（${testStatus.files} 文件 / ${testStatus.pcaps} PCAP）` : '未导入' }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button size="small" text @click="system.refresh()"><el-icon><Refresh /></el-icon></el-button>
           <el-dropdown v-if="auth.user">
             <span class="text-muted" style="cursor: pointer">{{ auth.user.username }}</span>
@@ -125,6 +178,7 @@ onBeforeUnmount(() => {
 @import './styles/theme.css';
 @import './styles/main.css';
 
+.test-badge { color: var(--soc-warning); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--soc-warning); display: inline-block; }
 .status-dot.ok { background: var(--soc-success); }
 .status-dot.degraded { background: var(--soc-warning); }

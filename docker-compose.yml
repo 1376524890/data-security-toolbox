@@ -70,6 +70,7 @@ services:
       COOKIE_SECURE: "false"
     volumes:
       - backend_data:/app/data
+      - ./data_security_toolbox_manual_testpack:/app/data_security_toolbox_manual_testpack:ro
     depends_on:
       postgres:
         condition: service_healthy

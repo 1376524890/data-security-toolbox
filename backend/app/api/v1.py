@@ -95,6 +95,7 @@ from app.services.asset_service import asset_relations
 from app.services.audit_service import audit_summary, log_analysis
 from app.services.crypto_profile import build_crypto_profile
 from app.services.protocol_service import packet_detail, protocol_tree, tcp_stream_follow
+from app.services.test_service import clear_test_data, import_test_data, test_status
 from app.services.report_service import build_summary, render_html, render_pdf
 from app.services.traffic_service import (
     detect_anomalies,
@@ -667,6 +668,23 @@ def scan_result(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     else:
         result["scanned_assets"] = []
     return result
+
+
+@router.post("/test/import")
+def import_test(payload: dict[str, Any] | None = None, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Import the manual test pack (labeled test data) for demos/verification."""
+    return import_test_data(db)
+
+
+@router.post("/test/clear")
+def clear_test(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Remove all imported test data (test-demo probe + linked records)."""
+    return clear_test_data(db)
+
+
+@router.get("/test/status")
+def get_test_status(db: Session = Depends(get_db)) -> dict[str, Any]:
+    return test_status(db)
 
 
 @router.get("/assets")

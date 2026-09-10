@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.2.3
+
+- 新增「测试数据」管理：`POST /api/v1/test/import`（导入手工测试包，标注为 test-demo 探针）、`POST /api/v1/test/clear`（清除测试数据）、`GET /api/v1/test/status`
+- 前端头部新增「测试数据」下拉：导入/清除测试数据；导入后设置 sessionStorage，**刷新页面自动清除、恢复原样**
+- docker-compose 为 backend 挂载 `data_security_toolbox_manual_testpack`（只读）
+
+
 ## v2.2.2
 
 - 密码评估工具新增「从探针自动识别并填充」：新增 `GET /api/v1/crypto/probe-profile`，聚合探针采集的服务 banner、TLS 握手（cipher suite/JA3/SNI）与无认证信号，自动填充密码算法/套件/协议/密钥长度后评估
