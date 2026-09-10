@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.3.1（feature/nuclei-integration）
+
+- 扫描自动化集成到探针：
+  - 探针新增 `[scan]` 配置（enabled / interval_seconds / targets / discovery / top_ports / nuclei / nuclei_tags）
+  - 探针 `scan_loop` 定时调用 `POST /api/v1/probes/{id}/scan`（探针鉴权），自动触发 nmap+nuclei 网络环境扫描；
+    targets 为空时自动按探针自身 IP 推导 /24
+  - 新增 `POST /api/v1/probes/{id}/scan`（探针鉴权）与 `ProbeScanRequest` schema；
+    `_is_probe_api` 白名单放行 `/probes/{id}/scan`
+  - `probe.toml.example` 补充 `[scan]` 说明
+
+
 ## v2.3.0（feature/nuclei-integration）
 
 - 新增 Nuclei 主动漏洞扫描集成：

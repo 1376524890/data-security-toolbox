@@ -58,6 +58,15 @@ DEFAULT_CONFIG = {
         "max_files": 50,
         "demo": False,
     },
+    "scan": {
+        "enabled": False,
+        "interval_seconds": 3600,
+        "targets": [],
+        "discovery": True,
+        "top_ports": 1000,
+        "nuclei": False,
+        "nuclei_tags": "",
+    },
 }
 
 # Upload state machine states.
@@ -118,6 +127,10 @@ class Config:
     @property
     def agent(self) -> dict[str, Any]:
         return self.data["agent"]
+
+    @property
+    def scan(self) -> dict[str, Any]:
+        return self.data["scan"]
 
     def base_url(self) -> str:
         return str(self.server["url"]).rstrip("/")
@@ -790,6 +803,39 @@ class ProbeAgent:
             self.heartbeat_once()
             self.stop_event.wait(interval)
 
+    def _default_targets(self) -> list[str]:
+        targets = [str(t) for t in (self.config.scan.get("targets") or []) if str(t).strip()]
+        if targets:
+            return targets
+        ip = local_ip(self.config.capture["interface"])
+        if ip and "." in ip:
+            parts = ip.split(".")
+            return [".".join(parts[:3]) + ".0/24"]
+        return []
+
+    def scan_loop(self) -> None:
+        scan_cfg = self.config.scan
+        if not scan_cfg.get("enabled"):
+            return
+        interval = max(60, int(scan_cfg.get("interval_seconds") or 3600))
+        while not self.stop_event.is_set():
+            targets = self._default_targets()
+            if self.probe_id and targets:
+                try:
+                    payload = {
+                        "targets": targets,
+                        "discovery": bool(scan_cfg.get("discovery", True)),
+                        "top_ports": int(scan_cfg.get("top_ports") or 1000),
+                        "nuclei": bool(scan_cfg.get("nuclei", False)),
+                        "nuclei_tags": str(scan_cfg.get("nuclei_tags") or ""),
+                    }
+                    http_json(f"{self.config.base_url()}/api/v1/probes/{self.probe_id}/scan", payload, self.headers(), self.config)
+                    print(f"probe scan triggered for {targets}", file=sys.stderr)
+                except Exception as exc:
+                    print(f"probe scan trigger failed: {exc}", file=sys.stderr)
+            self.stop_event.wait(interval)
+
+
     def run(self) -> int:
         self.config.ensure()
         try:
@@ -806,6 +852,7 @@ class ProbeAgent:
             threading.Thread(target=self.heartbeat_loop, name="heartbeat", daemon=True),
             threading.Thread(target=self.asset_loop, name="assets", daemon=True),
             threading.Thread(target=self.file_loop, name="files", daemon=True),
+            threading.Thread(target=self.scan_loop, name="scan", daemon=True),
         ]
         for thread in threads:
             thread.start()

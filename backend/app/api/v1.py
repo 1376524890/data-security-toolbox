@@ -81,6 +81,7 @@ from app.schemas import (
     LogAnalysisRequest,
     LoginRequest,
     ProbeRegister,
+    ProbeScanRequest,
     ScanRequest,
     TaskCreate,
 )
@@ -685,6 +686,24 @@ def clear_test(db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.get("/test/status")
 def get_test_status(db: Session = Depends(get_db)) -> dict[str, Any]:
     return test_status(db)
+
+
+@router.post("/probes/{probe_id}/scan")
+def probe_scan(probe_id: int, payload: ProbeScanRequest, request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Probe-authenticated trigger for automated network environment scanning."""
+    probe = require_probe_headers(request, db)
+    if probe.id != probe_id:
+        raise HTTPException(403, "probe id mismatch")
+    tasks = []
+    for target in payload.targets:
+        task = create_task(db, "scan", {
+            "target": target, "discovery": payload.discovery, "top_ports": payload.top_ports,
+            "public_exposed": False, "nuclei": payload.nuclei, "nuclei_tags": payload.nuclei_tags,
+            "nuclei_templates": payload.nuclei_templates, "probe_id": probe_id,
+        })
+        _dispatch(task.id, "scan", network_scan_task)
+        tasks.append(_serialize_task(task))
+    return {"tasks": tasks}
 
 
 @router.get("/assets")

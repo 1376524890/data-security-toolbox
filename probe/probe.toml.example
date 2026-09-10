@@ -25,3 +25,16 @@ ports = [22, 80, 443, 445, 3306, 5432, 6379, 8080]
 paths = []
 max_files = 50
 demo = false
+
+# Automated network environment scan (nmap discovery + optional nuclei), triggered
+# by the probe against the backend's scan pipeline. Leave enabled=false to disable.
+[scan]
+enabled = false
+interval_seconds = 3600
+# targets: list of IP / CIDR / range. If empty, the probe auto-derives a /24 from
+# its own interface IP.
+targets = []
+discovery = true
+top_ports = 1000
+nuclei = false
+nuclei_tags = ""
