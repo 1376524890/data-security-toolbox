@@ -24,8 +24,9 @@ export function listProbes(query: { search?: string; status?: string; page: numb
   return apiGet('/probes', query as unknown as Record<string, unknown>)
 }
 
-export function registerProbe(payload: ProbeRegisterPayload): Promise<{ id: number; name: string }> {
-  return apiPost('/probes/register', payload)
+export function registerProbe(payload: ProbeRegisterPayload, bootstrapToken?: string): Promise<{ id: number; name: string }> {
+  const config = bootstrapToken ? { headers: { 'X-Probe-Bootstrap-Token': bootstrapToken } } : undefined
+  return apiPost('/probes/register', payload, config)
 }
 
 export function analyzeProbe(id: number): Promise<Task> {

@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { listAssets, getAsset } from '../../api/assets'
+import { startScan, getScan, type ScanResult } from '../../api/scan'
 import type { Asset, AssetDetail } from '../../types/asset'
 import StateBox from '../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../components/common/FilterBar.vue'
@@ -25,6 +26,10 @@ const drawer = ref(false)
 const detailLoading = ref(false)
 const activeTab = ref('basic')
 const filters = reactive({ risk: '', asset_type: '', search: '', page: 1, page_size: 50 })
+const scanTarget = ref('')
+const scanTopPorts = ref(1000)
+const scanning = ref(false)
+const scanResult = ref<ScanResult | null>(null)
 
 const filterFields: FilterField[] = [
   { key: 'search', label: '搜索 IP/主机/服务', placeholder: '搜索 IP / 主机 / 服务', width: '240px' },
@@ -49,6 +54,30 @@ const graphEdges = computed(() => {
   detail.value.incidents.forEach((inc) => edges.push({ source: root, target: `incident:${inc.id}`, label: 'incident' }))
   return edges
 })
+
+async function runScan(): Promise<void> {
+  if (!scanTarget.value) { return }
+  scanning.value = true
+  scanResult.value = null
+  try {
+    const task = await startScan({ target: scanTarget.value, discovery: scanTarget.value.includes('/') || scanTarget.value.includes('-'), top_ports: scanTopPorts.value })
+    // poll until done
+    for (let i = 0; i < 120; i++) {
+      await new Promise((r) => setTimeout(r, 3000))
+      const cur = await getScan(task.id)
+      if (cur.status === 'Success' || cur.status === 'Failed' || cur.status === 'Failure') {
+        scanResult.value = cur
+        break
+      }
+    }
+    if (scanResult.value?.status !== 'Success') throw new Error(scanResult.value?.error || '扫描未完成或失败')
+    load()
+  } catch (err) {
+    scanResult.value = { ...(scanResult.value || { id: 0 }), status: 'Failed', error: err instanceof Error ? err.message : String(err) } as ScanResult
+  } finally {
+    scanning.value = false
+  }
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -84,6 +113,22 @@ onMounted(load)
 
 <template>
   <div>
+    <div class="soc-card" style="margin-bottom: 12px">
+      <div class="soc-card-title"><span class="dot info" />网络扫描（nmap 主动发现 + 服务/版本枚举）</div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+        <el-input v-model="scanTarget" placeholder="目标：IP / 主机 / CIDR / 范围，如 192.168.110.0/24" style="width: 320px" clearable />
+        <el-input-number v-model="scanTopPorts" :min="1" :max="65535" :step="100" style="width: 130px" />
+        <el-button type="primary" :loading="scanning" @click="runScan">开始扫描</el-button>
+        <span class="text-muted" style="font-size: 12px">扫描结果将写入资产并进入资产/合规/威胁情报(CVE)流水线</span>
+      </div>
+      <div v-if="scanResult" style="margin-top: 8px">
+        <el-tag v-if="scanResult.status === 'Success'" type="success" size="small">扫描完成：{{ (scanResult.result as any)?.assets ?? 0 }} 个资产</el-tag>
+        <el-tag v-else type="danger" size="small">扫描失败：{{ scanResult.error }}</el-tag>
+        <div v-if="scanResult.scanned_assets?.length" style="margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap">
+          <el-tag v-for="a in scanResult.scanned_assets" :key="a.id" size="small" effect="plain">{{ a.ip }}:{{ a.port }} {{ a.service }} ({{ a.asset_type }})</el-tag>
+        </div>
+      </div>
+    </div>
     <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset" />
     <StateBox :loading="loading" :error="error" :empty="!items.length" @retry="load">
       <div class="asset-cards" style="margin-bottom: 12px">

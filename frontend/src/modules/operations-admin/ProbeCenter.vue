@@ -17,6 +17,7 @@ const detail = ref<Probe | null>(null)
 const tasks = ref<Task[]>([])
 const drawer = ref(false)
 const filters = reactive({ search: '', status: '', page: 1, page_size: 50 })
+const bootstrapToken = ref('')
 
 const filterFields: FilterField[] = [
   { key: 'search', label: '搜索名称/IP', placeholder: '搜索名称 / 主机 / IP', width: '240px' },
@@ -62,8 +63,13 @@ async function runAnalyze(row: Probe): Promise<void> {
 
 async function handleRegister(): Promise<void> {
   try {
-    const res = await registerProbe({ name: `probe-${Date.now()}`, hostname: 'manual', ip_address: '0.0.0.0' })
+    if (!bootstrapToken.value) {
+      ElMessage.warning('生产环境需填写探针引导令牌（PROBE_BOOTSTRAP_TOKEN）')
+      return
+    }
+    const res = await registerProbe({ name: `probe-${Date.now()}`, hostname: 'manual', ip_address: '0.0.0.0' }, bootstrapToken.value)
     ElMessage.success(`探针已注册 #${res.id}（token 见响应）`)
+    bootstrapToken.value = ''
     load()
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : String(err))
@@ -78,7 +84,7 @@ onMounted(load)
 <template>
   <div>
     <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset">
-      <template #actions><el-button type="primary" @click="handleRegister">注册探针</el-button></template>
+      <template #actions><el-input v-model="bootstrapToken" placeholder="探针引导令牌（生产必填）" style="width: 220px; margin-right: 8px" show-password clearable /><el-button type="primary" @click="handleRegister">注册探针</el-button></template>
     </FilterBar>
     <StateBox :loading="loading" :error="error" :empty="!items.length" @retry="load">
       <el-table :data="items" size="small" @row-click="open">
