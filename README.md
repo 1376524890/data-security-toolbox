@@ -69,6 +69,18 @@ docker compose exec backend python scripts/seed.py
 docker compose -f docker-compose.yml -f docker-compose.integrations.yml --profile integrations up -d
 ```
 
+### 4. 跨平台 / 跨架构部署
+
+本套 compose 与镜像已做架构自适应，**无需手动指定 `platform`**：
+
+- **Linux x86_64 / arm64**：`docker compose build && docker compose up -d` 直接构建原生架构。后端 Dockerfile 通过 `dpkg --print-architecture` 自动识别 amd64/arm64：
+  - Zeek 运行时库按架构拷贝（amd64 → `x86_64-linux-gnu`，arm64 → `aarch64-linux-gnu`），并用 `LD_LIBRARY_PATH` 指向，不覆盖系统库。
+  - nuclei 主动扫描器按架构下载对应二进制（`linux_amd64` / `linux_arm64`）。
+- **Windows（Docker Desktop，WSL2 后端）**：在 Windows 上以 Linux 容器方式运行，原生支持 x86_64。请确保 Docker Desktop 使用 WSL2 后端（默认），并在 PowerShell / WSL 中执行上述命令。相对路径挂载（`./data_security_toolbox_manual_testpack`）与 `docker compose` 均兼容。
+- **可选集成（wazuh / misp）仅发布 amd64**：在 arm64 主机上运行会走 QEMU 模拟（明显变慢），x86_64 / Windows 则原生运行。若 ARM 上不需要，可跳过 `--profile integrations`。
+
+> 说明：镜像本身为多架构（postgres/redis/node/nginx/flower 均含 amd64+arm64），构建时自动选择与宿主机一致的架构。
+
 ## 探针部署与运行
 
 探针部署在**受监控主机**，负责抓包、资产采集与目标文件采集。需要 **Python 3.11+**（`tomllib`、`datetime.UTC`）、`requests`、`psutil`，以及 `dumpcap`（优先）或 `tcpdump`。系统自带 Python 过旧（如 3.8）时，请用 python3.11+（如 miniconda）并相应修改 systemd 的 `ExecStart`。

@@ -1,0 +1,15 @@
+# Keep the build context small and free of host-specific caches/artifacts.
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.venv
+venv
+data
+*.db
+*.sqlite3
+.DS_Store
+.env

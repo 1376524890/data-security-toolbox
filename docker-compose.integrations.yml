@@ -1,3 +1,6 @@
+# 可选集成服务（默认不启动，需 --profile integrations）。
+# 注意：wazuh 和 misp 镜像只发布 amd64 版本，因此在 arm64/aarch64 主机上运行时
+# 需要 Docker/QEMU 模拟（会明显变慢）；Windows 上由 Docker Desktop 提供模拟。
 services:
   wazuh:
     image: wazuh/wazuh-manager:4.9.2
@@ -6,7 +9,8 @@ services:
     restart: unless-stopped
 
   misp:
-    image: harvarditsecurity/misp:2.4.198
+    # 该镜像仓库只提供 latest tag（无版本号 tag），故使用 latest。
+    image: harvarditsecurity/misp:latest
     platform: linux/amd64
     profiles: ["integrations"]
     environment:

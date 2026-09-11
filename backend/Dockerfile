@@ -4,9 +4,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
+# Debian 13 (trixie) renamed libpcap0.8 -> libpcap0.8t64, so use the new name.
+# libpangoft2 / harfbuzz / fontconfig are runtime deps of WeasyPrint.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    libpcap0.8 libxml2-dev libxslt1-dev libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 fonts-noto-cjk tshark && \
+    libpcap0.8t64 libxml2-dev libxslt1-dev libcairo2 libpango-1.0-0 libpangocairo-1.0-0 \
+    libpangoft2-1.0-0 libgdk-pixbuf-2.0-0 libharfbuzz0b libfontconfig1 fonts-noto-cjk tshark && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -18,13 +21,29 @@ COPY alembic.ini .
 COPY scripts ./scripts
 RUN useradd -m -u 10001 appuser && mkdir -p /app/data/storage /app/data/reports /app/data/integrations /app/data/offline && chown -R appuser:appuser /app
 
+# Zeek ships a self-contained install under /usr/local/zeek plus the system
+# shared-libraries it links against (libnode, libuv, ICU, ...). The Zeek image is
+# multi-arch (amd64 + arm64), so detect the Debian multiarch lib dir inside the
+# Zeek stage and stage only the lib tree. We copy the libs into a dedicated path
+# and point LD_LIBRARY_PATH at it instead of overwriting the base image's system
+# libs, which keeps the base image stable across architecture.
+FROM zeek/zeek:latest AS zeek-runtime
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) d=x86_64-linux-gnu ;; \
+        arm64) d=aarch64-linux-gnu ;; \
+        *) echo "unsupported zeek architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac && \
+    mkdir -p /opt/zeek-runtime-libs && \
+    cp -a "/usr/lib/$d/." /opt/zeek-runtime-libs/
+
 FROM base AS api
 USER root
 # Ship Zeek + Suricata in the API image so the engine health/status reported by
 # the API container matches the analysis worker instead of showing "unavailable".
 COPY --from=zeek-runtime /usr/local/zeek /usr/local/zeek
-COPY --from=zeek-runtime /usr/lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu/
-ENV PATH="/usr/local/zeek/bin:${PATH}"
+COPY --from=zeek-runtime /opt/zeek-runtime-libs /usr/local/zeek/lib/system
+ENV PATH="/usr/local/zeek/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/zeek/lib/system:${LD_LIBRARY_PATH}"
 RUN apt-get update && \
     apt-get install -y --no-install-recommends suricata nmap && \
     rm -rf /var/lib/apt/lists/*
@@ -32,22 +51,25 @@ USER appuser
 EXPOSE 8000
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
 
-FROM zeek/zeek:latest AS zeek-runtime
-
 FROM base AS analysis-worker
 USER root
 COPY --from=zeek-runtime /usr/local/zeek /usr/local/zeek
-# Zeek is built on Debian 13 (trixie) against Node 20; copy its shared library
-# tree (libnode, libuv, ICU, ...) so the binary can run on the same distro base.
-COPY --from=zeek-runtime /usr/lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu/
-ENV PATH="/usr/local/zeek/bin:${PATH}"
+COPY --from=zeek-runtime /opt/zeek-runtime-libs /usr/local/zeek/lib/system
+ENV PATH="/usr/local/zeek/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/zeek/lib/system:${LD_LIBRARY_PATH}"
 RUN apt-get update && \
     apt-get install -y --no-install-recommends tshark suricata nmap ffmpeg curl unzip && \
     rm -rf /var/lib/apt/lists/*
 # Install nuclei (active vulnerability scanner) for the network-scan pipeline.
 # Uses the daemon HTTP proxy when direct GitHub is blocked.
 ARG NUCLEI_VERSION=v3.11.1
-RUN curl -fsSL -o /tmp/nuclei.zip "https://github.com/projectdiscovery/nuclei/releases/download/${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION#v}_linux_arm64.zip" && \
+RUN arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+        amd64) narch=amd64 ;; \
+        arm64) narch=arm64 ;; \
+        *) echo "unsupported nuclei architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/nuclei.zip "https://github.com/projectdiscovery/nuclei/releases/download/${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION#v}_linux_${narch}.zip" && \
     unzip -o /tmp/nuclei.zip -d /usr/local/bin/ && rm -f /tmp/nuclei.zip && chmod +x /usr/local/bin/nuclei
 USER appuser
 CMD ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
