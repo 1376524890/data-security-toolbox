@@ -23,3 +23,8 @@ reports/
 
 # local refactor backup (not committed)
 .refactor-trash/
+
+# local deployment artifacts (regenerable, too large for git)
+dist-deploy/
+dist-deploy.zip
+dist-deploy.tar
