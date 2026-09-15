@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listTasks, getTask, type TaskQuery } from '../../api/tasks'
 import type { Task } from '../../types/task'
+import TaskActions from '../../components/common/TaskActions.vue'
 import StateBox from '../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../components/common/FilterBar.vue'
 import DetailDrawer from '../../components/common/DetailDrawer.vue'
@@ -20,8 +21,8 @@ const filters = reactive<TaskQuery>({ search: '', status: '', kind: '', page: 1,
 
 const filterFields: FilterField[] = [
   { key: 'search', label: '搜索类型/阶段', placeholder: '搜索类型 / 阶段 / 错误', width: '240px' },
-  { key: 'status', label: '状态', type: 'select', options: ['Pending', 'Running', 'Success', 'Failed'].map((v) => ({ label: v, value: v })), width: '110px' },
-  { key: 'kind', label: '类型', type: 'select', options: ['pcap', 'assets', 'metadata'].map((v) => ({ label: v, value: v })), width: '110px' },
+  { key: 'status', label: '状态', type: 'select', options: ['Pending', 'Running', 'Success', 'Failed', 'Partial', 'Cancelled'].map((v) => ({ label: v, value: v })), width: '110px' },
+  { key: 'kind', label: '类型', type: 'select', options: ['pcap', 'assets', 'metadata', 'probe_scan', 'data_asset_scan'].map((v) => ({ label: v, value: v })), width: '110px' },
 ]
 
 function duration(task: Task): string {
@@ -39,6 +40,7 @@ async function load(): Promise<void> {
     const result = await listTasks({ ...filters })
     items.value = result.items
     total.value = result.total
+    if (!result.items.length && filters.page > 1) { filters.page -= 1; await load() }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -62,7 +64,7 @@ onMounted(load)
 
 <template>
   <div>
-    <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset" />
+    <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset"><template #actions><el-button @click="load">刷新</el-button></template></FilterBar>
     <StateBox :loading="loading" :error="error" :empty="!items.length" @retry="load">
       <el-table :data="items" size="small" @row-click="open">
         <el-table-column prop="id" label="ID" width="70" />
@@ -72,6 +74,7 @@ onMounted(load)
         <el-table-column label="进度" width="120"><template #default="{ row }"><el-progress :percentage="row.progress" :stroke-width="6" /></template></el-table-column>
         <el-table-column label="时长" width="90"><template #default="{ row }">{{ duration(row) }}</template></el-table-column>
         <el-table-column label="创建时间" width="160"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
+        <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><TaskActions :task="row" @changed="load" /></template></el-table-column>
       </el-table>
       <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="filters.page_size" :current-page="filters.page" @current-change="(p: number) => { filters.page = p; load() }" />
     </StateBox>

@@ -17,6 +17,7 @@ celery_app.conf.update(
         "security_toolbox.run_probe_deployment": {"queue": settings.deployment_worker_queue},
     },
     beat_schedule={
+        "expire-probe-tasks": {"task": "security_toolbox.expire_probe_tasks", "schedule": 60.0},
         "cleanup-pcap-retention": {
             "task": "security_toolbox.cleanup_pcap_retention",
             "schedule": 3600.0,

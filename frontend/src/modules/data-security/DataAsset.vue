@@ -27,7 +27,7 @@ const collectDialog = ref(false)
 const collecting = ref(false)
 const collectProgress = ref(0)
 const collectStage = ref('')
-const collectForm = reactive({ probe_id: null as number | null, pathsText: '', max_files: 200, max_depth: 3, include_databases: true })
+const collectForm = reactive({ probe_id: null as number | null, pathsText: '', max_files: 200, max_depth: 3, timeout_seconds: 120, include_databases: true })
 
 const filterFields = computed<FilterField[]>(() => [
   { key: 'search', label: '搜索名称', placeholder: '搜索资产名称', width: '200px' },
@@ -98,6 +98,7 @@ async function submitCollect(): Promise<void> {
       paths,
       max_files: collectForm.max_files,
       max_depth: collectForm.max_depth,
+      timeout_seconds: collectForm.timeout_seconds,
       include_databases: collectForm.include_databases,
     })
     for (let i = 0; i < 100; i++) {
@@ -210,6 +211,7 @@ onMounted(() => { load(); loadProbes() })
           <el-input v-model="collectForm.pathsText" type="textarea" :rows="4" placeholder="每行一个绝对路径，例如：&#10;/srv/data&#10;/var/www/uploads" />
         </el-form-item>
         <el-form-item label="文件上限"><el-input-number v-model="collectForm.max_files" :min="1" :max="2000" /></el-form-item>
+        <el-form-item label="执行时限（秒）"><el-input-number v-model="collectForm.timeout_seconds" :min="5" :max="1800" /></el-form-item>
         <el-form-item label="目录深度"><el-input-number v-model="collectForm.max_depth" :min="0" :max="8" /></el-form-item>
         <el-form-item label="数据库服务"><el-switch v-model="collectForm.include_databases" /></el-form-item>
       </el-form>

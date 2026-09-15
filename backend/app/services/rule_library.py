@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import uuid
 import zipfile
 from pathlib import Path
@@ -12,6 +13,58 @@ import regex
 import requests
 
 from app.core.config import settings
+
+
+# Entities that describe infrastructure metadata instead of protected data.
+# They stay useful as transfer evidence but can never make a stream sensitive:
+# almost every HTTP header carries an IP address and a date.
+STRUCTURAL_ENTITIES = {'IP_ADDRESS', 'MAC_ADDRESS', 'DATE_TIME', 'URL', 'NRP', 'LOCATION'}
+# Presidio encodes pattern precision in the pattern name and in ``score``.
+# Rules stored before ``score`` was persisted fall back to the name marker.
+# Marker to confidence, mirroring the Presidio scoring convention (High=.85,
+# Medium=.6, Low=.3) for stores written before ``score`` was persisted.
+WEAK_MARKERS = (('very weak', .1), ('very low', .1), ('weak', .25), ('low', .3), ('medium', .55), ('high', .85))
+# Analyst-authored rules are intentional, so they alert unless told otherwise.
+MANUAL_CONFIDENCE = .7
+# Upstream imports without a precision annotation are only usable as evidence:
+# the worldwide identity pack contains impostor patterns such as foreign
+# licence plates that match ordinary payload text.
+IMPORTED_CONFIDENCE = .5
+DEFAULT_CONFIDENCE = MANUAL_CONFIDENCE
+# A hit below this precision is recorded as evidence but never raises an alert.
+MIN_ALERT_CONFIDENCE = .6
+
+
+def _plausible_email(value):
+    """Reject loose ``user@host`` matches such as ``security@172.18.0.2``.
+
+    The upstream Presidio email pattern accepts any domain, so it also matches
+    the host part of a database connection string.
+    """
+    return bool(re.fullmatch(r'[^@\s]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z]{2,}', value))
+
+
+# Known-oversensitive upstream patterns that need a value-level sanity check.
+MATCH_VALIDATORS = {'EMAIL_ADDRESS': _plausible_email}
+
+
+def rule_confidence(rule):
+    """Precision of one rule in ``0..1``; missing upstream scores stay conservative."""
+    value = rule.get('confidence', rule.get('score'))
+    if isinstance(value, bool):
+        value = None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        name = str(rule.get('name', '')).casefold()
+        fallback = MANUAL_CONFIDENCE if str(rule.get('source') or 'manual') == 'manual' else IMPORTED_CONFIDENCE
+        confidence = next((score for marker, score in WEAK_MARKERS if marker in name), fallback)
+    return round(min(1.0, max(0.0, confidence)), 4)
+
+
+def sensitive_entity(rule):
+    """True when the rule describes protected data rather than infrastructure metadata."""
+    return str(rule.get('entity') or rule.get('name') or '').upper() not in STRUCTURAL_ENTITIES
 
 
 def atomic_json(path, value):
@@ -37,7 +90,8 @@ def validate_rule(value):
     except (regex.error, TimeoutError) as exc:
         raise ValueError(f'无效正则: {exc}') from exc
     return {'name': name, 'pattern': pattern, 'entity': str(value.get('entity') or name)[:200],
-            'enabled': bool(value.get('enabled', True)), 'source': 'manual', 'mode': 'regex'}
+            'enabled': bool(value.get('enabled', True)), 'source': 'manual', 'mode': 'regex',
+            'confidence': rule_confidence({'confidence': value.get('confidence'), 'name': name})}
 
 
 def managed_rules():
@@ -77,10 +131,13 @@ def import_presidio_wheel(content, version):
                     try:
                         values = dict(zip(('name', 'regex', 'score'), [ast.literal_eval(x) for x in call.args]))
                         values.update({x.arg: ast.literal_eval(x.value) for x in call.keywords})
-                        rule = validate_rule({'name': cls.name + ': ' + values['name'], 'pattern': values['regex'], 'entity': entity})
+                        rule = validate_rule({'name': cls.name + ': ' + values['name'], 'pattern': values['regex'], 'entity': entity,
+                                              'confidence': values.get('score')})
                         rule.update(id='presidio-' + hashlib.sha256((cls.name + values['name']).encode()).hexdigest()[:24],
-                                    source='Presidio', version=version, recognizer=cls.name, score=float(values.get('score', 0)))
-                        rule['enabled'] = current.get(rule['id'], rule['score'] >= .5)
+                                    source='Presidio', version=version, recognizer=cls.name)
+                        # Metadata locators and weak patterns are imported for
+                        # evidence but stay disabled unless an analyst opts in.
+                        rule['enabled'] = current.get(rule['id'], rule['confidence'] >= MIN_ALERT_CONFIDENCE and sensitive_entity(rule))
                         rules.append(rule)
                     except (ValueError, TypeError, KeyError, SyntaxError):
                         skipped += 1
@@ -113,15 +170,19 @@ def scan_managed(text, rules, minimum=1, errors=None):
     for rule in rules:
         if not rule.get('enabled', True):
             continue
+        validate = MATCH_VALIDATORS.get(str(rule.get('entity', '')).upper())
         try:
-            matches = regex.finditer(rule['pattern'], text, regex.I | regex.M | regex.S, timeout=.05)
             count, samples = 0, []
-            for match in matches:
+            for match in regex.finditer(rule['pattern'], text, regex.I | regex.M | regex.S, timeout=.05):
+                value = match.group()
+                if validate and not validate(value):
+                    continue
                 count += 1
                 if len(samples) < 3:
-                    samples.append(masked(match.group()))
+                    samples.append(masked(value))
             if count >= minimum:
-                hits.append({'kind': rule['entity'], 'rule_id': rule['id'], 'count': count, 'samples': samples})
+                hits.append({'kind': rule['entity'], 'rule_id': rule.get('id', ''), 'count': count, 'samples': samples,
+                             'confidence': rule_confidence(rule), 'sensitive': sensitive_entity(rule)})
         except TimeoutError:
             if errors is not None:
                 errors.append(rule['id'])

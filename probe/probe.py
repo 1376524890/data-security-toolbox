@@ -48,7 +48,7 @@ try:
 except ImportError:
     from data_assets import discover_data_assets
 
-AGENT_VERSION = "3.3.0"
+AGENT_VERSION = "3.3.1"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
     "capture": {"interface": "any", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},
@@ -919,9 +919,35 @@ class ProbeAgent:
             commands = json.load(response).get('commands', [])
         return commands[0] if commands else None
 
+    def _job_stop_event(self, task_id):
+        agent = self
+
+        class JobStop:
+            stopped = False
+            checked = 0.0
+
+            def is_set(self):
+                if agent.stop_event.is_set() or self.stopped:
+                    return True
+                if task_id and time.monotonic() - self.checked >= 3:
+                    self.checked = time.monotonic()
+                    try:
+                        req = urllib.request.Request(
+                            f'{agent.config.base_url()}/api/v1/probes/{agent.probe_id}/command-status?task_id={task_id}',
+                            headers=agent.headers())
+                        with urllib.request.urlopen(req, context=ssl_context(agent.config), timeout=2) as response:
+                            self.stopped = bool(json.load(response).get('stop'))
+                    except urllib.error.HTTPError as exc:
+                        self.stopped = exc.code in (401, 403, 404)
+                    except (OSError, ValueError):
+                        pass  # Local deadline still bounds a job during a network outage.
+                return self.stopped
+
+        return JobStop()
+
     def _run_scan_job(self, state_dir: Path, config: dict[str, Any], task_id: int | None) -> None:
         try:
-            report = scan_network(config, self.stop_event)
+            report = scan_network(config, self._job_stop_event(task_id))
         except Exception as exc:
             report = {'assets': [], 'complete': False, 'error': str(exc)[:500]}
         report.update(report_id=uuid.uuid4().hex, task_id=task_id)
@@ -929,8 +955,10 @@ class ProbeAgent:
 
     def _run_data_asset_job(self, state_dir: Path, config: dict[str, Any], task_id: int | None) -> None:
         merged = {**self.config.data_assets, **(config or {})}
+        if not merged.get('paths'):
+            merged['paths'] = self.config.data_assets.get('paths') or []
         try:
-            report = discover_data_assets(merged, self.stop_event)
+            report = discover_data_assets(merged, self._job_stop_event(task_id))
         except Exception as exc:
             report = {'assets': [], 'databases': [], 'scanned_paths': [], 'complete': False,
                       'error': str(exc)[:500], 'observed_at': now_iso(), 'scanner': 'probe-file-inventory'}
@@ -962,13 +990,17 @@ class ProbeAgent:
                         kind = job.get('kind')
                         if kind == 'data_asset_scan':
                             self._run_data_asset_job(state_dir, job.get('config') or {}, job.get('id'))
+                            self._upload_pending(pending_data, 'data-assets')
                         elif kind == 'asset_scan':
                             self._run_scan_job(state_dir, job.get('config') or {}, job.get('id'))
+                            self._upload_pending(pending_scan, 'inventory')
                 if scheduled_scan and time.monotonic() >= next_scan:
                     self._run_scan_job(state_dir, scan_cfg, None)
+                    self._upload_pending(pending_scan, 'inventory')
                     next_scan = time.monotonic() + max(60, int(scan_cfg.get('interval_seconds', 3600)))
                 if scheduled_data and time.monotonic() >= next_data:
                     self._run_data_asset_job(state_dir, {}, None)
+                    self._upload_pending(pending_data, 'data-assets')
                     next_data = time.monotonic() + max(60, int(data_cfg.get('interval_seconds', 3600)))
             except Exception as exc:
                 print(f'probe inventory upload/scan retry: {type(exc).__name__}', file=sys.stderr)

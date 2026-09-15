@@ -15,6 +15,7 @@ from urllib.parse import unquote_plus
 
 import dpkt
 
+from app.services.rule_library import DEFAULT_CONFIDENCE, MIN_ALERT_CONFIDENCE
 
 MAX_STREAM = 2 * 1024 * 1024
 MAX_TOTAL = 32 * 1024 * 1024
@@ -22,7 +23,62 @@ MAX_STREAMS = 256
 MAX_PACKETS = 200000
 MAX_OBJECTS = 500
 DEFAULT_POLICY = {'enabled': True, 'categories': ['phone', 'id_card', 'email', 'api_key'],
-                  'keywords': [], 'fingerprints': [], 'min_matches': 1}
+                  'keywords': [], 'fingerprints': [], 'min_matches': 1,
+                  'min_confidence': MIN_ALERT_CONFIDENCE,
+                  'exclude_cidrs': ['127.0.0.0/8', '::1/128']}
+# Precision of the built-in patterns. ``token`` matches any long random run, so
+# hashes, base64 blobs and container ids keep it below the alert threshold.
+BUILTIN_CONFIDENCE = {'phone': .7, 'id_card': .9, 'bank_card': .85, 'email': .85, 'api_key': .95, 'token': .3}
+
+
+def normalize_policy(config):
+    """Fill policy defaults so stored policies written before a key existed stay usable."""
+    policy = {**DEFAULT_POLICY, **(config or {})}
+    try:
+        policy['min_matches'] = max(1, int(policy['min_matches']))
+    except (TypeError, ValueError):
+        policy['min_matches'] = DEFAULT_POLICY['min_matches']
+    try:
+        policy['min_confidence'] = min(1.0, max(0.0, float(policy['min_confidence'])))
+    except (TypeError, ValueError):
+        policy['min_confidence'] = MIN_ALERT_CONFIDENCE
+    if not isinstance(policy.get('exclude_cidrs'), list):
+        policy['exclude_cidrs'] = list(DEFAULT_POLICY['exclude_cidrs'])
+    return policy
+
+
+def alertable(hit, min_confidence):
+    """A hit raises an alert only when it is protected data of sufficient precision."""
+    return bool(hit.get('sensitive', True)) and float(hit.get('confidence', DEFAULT_CONFIDENCE)) >= min_confidence
+
+
+def host_internal(value, networks):
+    """True for addresses that never leave the host: loopback, link-local, unspecified, multicast."""
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return (address.is_loopback or address.is_link_local or address.is_unspecified or address.is_multicast
+            or any(address in network for network in networks))
+
+
+def excluded_networks(policy):
+    networks = []
+    for item in policy['exclude_cidrs']:
+        try:
+            networks.append(ipaddress.ip_network(str(item), strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
+def looks_like_text(data):
+    """Cheap guard so binary protocols are not decoded as cleartext payload."""
+    sample = data[:8192]
+    if not sample or b'\x00' in sample:
+        return False
+    printable = sum(1 for byte in sample if byte in (9, 10, 13) or 32 <= byte < 127 or byte >= 128)
+    return printable / len(sample) >= .9
 
 
 def reassemble(path):
@@ -183,36 +239,46 @@ def inspect_content(body, config):
     # complete detection-engine registry (which itself registers DLP).
     from app.engine.data_engine.engine import REGEX_RULES
 
+    policy = normalize_policy(config)
+    minimum = policy['min_matches']
     text = unquote_plus(body.decode('utf-8', 'replace'))
     hits = []
-    for category in config.get('categories', DEFAULT_POLICY['categories']):
+    for category in policy['categories']:
         pattern = REGEX_RULES.get(category)
-        if pattern:
-            matches = list(pattern.finditer(text))
-            if len(matches) >= config.get('min_matches', 1):
-                hits.append({'kind': category, 'count': len(matches), 'samples': [masked(m.group()) for m in matches[:3]]})
-    for keyword in config.get('keywords', []):
+        if not pattern:
+            continue
+        matches = list(pattern.finditer(text))
+        if len(matches) >= minimum:
+            hits.append({'kind': category, 'count': len(matches), 'samples': [masked(m.group()) for m in matches[:3]],
+                         'confidence': BUILTIN_CONFIDENCE.get(category, DEFAULT_CONFIDENCE), 'sensitive': True})
+    for keyword in policy['keywords']:
         count = text.casefold().count(keyword.casefold())
-        if count >= config.get('min_matches', 1):
-            hits.append({'kind': 'keyword', 'count': count, 'samples': [masked(keyword)]})
+        if count >= minimum:
+            hits.append({'kind': 'keyword', 'count': count, 'samples': [masked(keyword)], 'confidence': 1.0, 'sensitive': True})
     digest = hashlib.sha256(body).hexdigest()
-    if digest in config.get('fingerprints', []):
-        hits.append({'kind': 'file_fingerprint', 'count': 1, 'samples': [digest]})
+    if digest in policy['fingerprints']:
+        hits.append({'kind': 'file_fingerprint', 'count': 1, 'samples': [digest], 'confidence': 1.0, 'sensitive': True})
     from app.services.rule_library import scan_managed
-    hits.extend(scan_managed(text, config.get('managed_rules', []), config.get('min_matches', 1), config.get('rule_timeouts')))
+    hits.extend(scan_managed(text, policy.get('managed_rules', []), minimum, policy.get('rule_timeouts')))
     return hits
 
 
 def analyze_capture(path, config):
     from app.services.rule_library import managed_rules
-    config = {**config, 'managed_rules': managed_rules(), 'rule_timeouts': []}
+    policy = normalize_policy({**config, 'managed_rules': managed_rules(), 'rule_timeouts': []})
+    networks = excluded_networks(policy)
     streams, coverage = reassemble(path)
+    coverage['excluded_streams'] = 0
     objects, observations, findings = [], {'domain': set(), 'url': set(), 'hash': set()}, []
     for key, data, incomplete in streams:
+        if host_internal(key[0], networks) or host_internal(key[2], networks):
+            # Host-internal traffic never leaves the machine, so it is not egress.
+            coverage['excluded_streams'] += 1
+            continue
         extracted = http_objects(data)
         if not extracted:
             # Cleartext protocols without an HTTP parser still get bounded text scanning.
-            if b'\x00' not in data[:512]:
+            if looks_like_text(data):
                 extracted = [{'filename': 'tcp-payload', 'body': data, 'complete': False, 'content_type': 'text/plain'}]
         for obj in extracted:
             if len(objects) >= MAX_OBJECTS:
@@ -227,18 +293,22 @@ def analyze_capture(path, config):
                 observations['url'].add(obj['url'])
             if metadata['complete'] and not obj.get('is_header'):
                 observations['hash'].update((hashlib.sha256(body).hexdigest(), hashlib.md5(body).hexdigest(), hashlib.sha1(body).hexdigest()))
-            hits = inspect_content(body, config)
+            hits = inspect_content(body, policy)
             if not metadata['complete']:
                 hits = [h for h in hits if h['kind'] != 'file_fingerprint']
             # Query/header values can themselves contain secrets; retain path only in evidence.
             metadata['url'] = metadata.get('url', '').split('?', 1)[0]
             metadata['matches'] = hits
             objects.append(metadata)
-            if hits:
+            triggered = [h for h in hits if alertable(h, policy['min_confidence'])]
+            if triggered:
                 findings.append({
-                    'engine': 'dlp_engine', 'rule_id': 'DLP_TRANSFER_001', 'severity': 'High', 'confidence': .9,
-                    'evidence': {**metadata, 'action': 'alert', 'mode': 'passive'},
+                    'engine': 'dlp_engine', 'rule_id': 'DLP_TRANSFER_001', 'severity': 'High',
+                    'confidence': max(hit['confidence'] for hit in triggered),
+                    'evidence': {**metadata, 'action': 'alert', 'mode': 'passive',
+                                 'triggered_by': [hit['kind'] for hit in triggered]},
                     'recommendation': '核查传输目的地和业务授权；对敏感内容脱敏、加密，必要时通过网关或终端策略阻断。',
                 })
-    coverage['rule_timeouts'] = sorted(set(config['rule_timeouts']))
-    return {'objects': objects, 'coverage': coverage, 'mode': 'passive', 'tls_decryption': False}, observations, findings
+    coverage['rule_timeouts'] = sorted(set(policy['rule_timeouts']))
+    return {'objects': objects, 'coverage': coverage, 'mode': 'passive', 'tls_decryption': False,
+            'sensitive_objects': len(findings)}, observations, findings

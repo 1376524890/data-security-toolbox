@@ -567,7 +567,11 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
         })
         alerts = run_pipeline(context, task_id, db)
         if context.data.get('dlp'):
-            db.add(AnalysisResult(task_id=task_id, module='dlp', content=context.data['dlp'], risk_level='High' if any(o['matches'] for o in context.data['dlp']['objects']) else 'Low'))
+            dlp = context.data['dlp']
+            # Matches alone are evidence; only protected data of sufficient
+            # precision makes a capture a high-risk transfer.
+            db.add(AnalysisResult(task_id=task_id, module='dlp', content=dlp,
+                                  risk_level='High' if dlp.get('sensitive_objects') else 'Low'))
         db.add(AnalysisResult(
             task_id=task_id,
             module="protocol_details",
@@ -857,3 +861,11 @@ def wazuh_alerts_task() -> dict[str, Any]:
     for alert, created in alerts:
         publish_alert(alert.id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
     return {"status": "ok", "records": len(records), "findings": len(result.findings), "alerts": len(alerts)}
+
+
+@celery_app.task(name="security_toolbox.expire_probe_tasks")
+def expire_remote_probe_tasks():
+    from app.services.probe_task_service import expire_probe_tasks
+    with SessionLocal() as db:
+        expire_probe_tasks(db)
+        db.commit()

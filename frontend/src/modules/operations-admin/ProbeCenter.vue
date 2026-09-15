@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { listProbes, analyzeProbe, queueProbeScan, getProbeTasks, type Probe } from '../../api/probes'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { listProbes, deleteProbe, analyzeProbe, queueProbeScan, getProbeTasks, type Probe } from '../../api/probes'
+import { useAuthStore } from '../../stores/auth'
 import type { Task } from '../../types/task'
+import TaskActions from '../../components/common/TaskActions.vue'
 import StateBox from '../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../components/common/FilterBar.vue'
 import DetailDrawer from '../../components/common/DetailDrawer.vue'
@@ -11,6 +13,8 @@ import StatusBadge from '../../components/security/StatusBadge.vue'
 import { formatDateTime } from '../../utils/format'
 
 const loading = ref(true)
+const auth = useAuthStore()
+const deletingId = ref<number | null>(null)
 const error = ref('')
 const items = ref<Probe[]>([])
 const total = ref(0)
@@ -69,6 +73,27 @@ async function runAnalyze(row: Probe): Promise<void> {
   }
 }
 
+async function remove(row: Probe): Promise<void> {
+  if (deletingId.value !== null) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除探针“${row.name}”（${row.ip_address}）？历史采集数据和部署记录将保留，探针凭据将失效。此操作不会卸载远程探针，请先停止主机上的探针服务，避免重新注册。`,
+      '删除探针',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch { return }
+  deletingId.value = row.id
+  try {
+    await deleteProbe(row.id)
+    if (detail.value?.id === row.id) { drawer.value = false; detail.value = null; tasks.value = [] }
+    if (items.value.length === 1 && filters.page > 1) filters.page -= 1
+    ElMessage.success('探针已删除')
+    await load()
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err))
+  } finally { deletingId.value = null }
+}
+
 function openScan(row: Probe): void {
   scanProbe.value = row
   scanTargets.value = row.ip_address && row.ip_address !== '0.0.0.0' ? row.ip_address : ''
@@ -107,7 +132,7 @@ onMounted(load)
         <el-table-column label="CPU" width="80"><template #default="{ row }">{{ cpu(row) }}</template></el-table-column>
         <el-table-column label="内存" width="90"><template #default="{ row }">{{ mem(row) }}</template></el-table-column>
         <el-table-column label="最近上报" width="160"><template #default="{ row }">{{ formatDateTime(row.last_seen) }}</template></el-table-column>
-        <el-table-column label="操作" width="190"><template #default="{ row }"><el-button size="small" @click.stop="runAnalyze(row)">分析</el-button><el-button size="small" @click.stop="openScan(row)">扫描</el-button><el-button size="small" type="primary" @click.stop="open(row)">详情</el-button></template></el-table-column>
+        <el-table-column label="操作" width="270" fixed="right"><template #default="{ row }"><el-button size="small" @click.stop="runAnalyze(row)">分析</el-button><el-button size="small" @click.stop="openScan(row)">扫描</el-button><el-button size="small" type="primary" @click.stop="open(row)">详情</el-button><el-button v-if="auth.user?.role === 'admin'" size="small" type="danger" :loading="deletingId === row.id" :disabled="deletingId !== null" @click.stop="remove(row)">删除</el-button></template></el-table-column>
       </el-table>
       <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="filters.page_size" :current-page="filters.page" @current-change="(p: number) => { filters.page = p; load() }" />
     </StateBox>
@@ -133,6 +158,7 @@ onMounted(load)
           <el-table-column prop="kind" label="类型" width="110" />
           <el-table-column label="状态" width="100"><template #default="{ row }"><StatusBadge :value="row.status" /></template></el-table-column>
           <el-table-column prop="current_stage" label="阶段" min-width="140" />
+          <el-table-column label="操作" width="110"><template #default="{ row }"><TaskActions :task="row" @changed="detail && open(detail)" /></template></el-table-column>
         </el-table>
       </template>
     </DetailDrawer>

@@ -1,4 +1,4 @@
-import { apiGet } from './client'
+import client, { apiGet, apiPost } from './client'
 import type { PageResult } from '../types/common'
 import type { Task } from '../types/task'
 
@@ -16,4 +16,12 @@ export function listTasks(query: TaskQuery): Promise<PageResult<Task>> {
 
 export function getTask(id: number): Promise<Task> {
   return apiGet(`/tasks/${id}`)
+}
+
+export function stopTask(id: number): Promise<Task> {
+  return apiPost(`/tasks/${id}/stop`)
+}
+
+export async function deleteTask(id: number): Promise<void> {
+  await client.delete(`/tasks/${id}`)
 }

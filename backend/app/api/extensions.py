@@ -2,6 +2,9 @@
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 import ipaddress
+import re
+from pathlib import PurePosixPath
+from app.services.probe_task_service import TERMINAL, expire_probe_tasks
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -12,6 +15,9 @@ from app.core.database import get_db
 from app.core.security import require_probe_headers
 from app.models import Asset, DataAsset, Probe, Task, IOC, SystemSetting, AnalysisResult
 from app.services.asset_service import classify_service
+from app.services.rule_library import MIN_ALERT_CONFIDENCE
+
+from app.services.dlp_service import DEFAULT_POLICY
 
 router = APIRouter(prefix='/api/v1')
 
@@ -75,6 +81,7 @@ def authenticated_probe(probe_id, request, db):
 
 def queue_probe_scan(db: Session, probe_id: int, config: dict) -> Task:
     """Queue one bounded scan job for a probe (shared by the admin and scan APIs)."""
+    expire_probe_tasks(db)
     active = db.scalar(select(Task).where(Task.kind == 'probe_scan', Task.payload['probe_id'].as_integer() == probe_id,
                                          Task.status.in_(['Pending', 'Running'])))
     if active:
@@ -102,18 +109,31 @@ COMMAND_STAGES = {'probe_scan': '探针本地资产扫描', 'data_asset_scan': '
 @router.get('/probes/{probe_id}/commands')
 def probe_commands(probe_id: int, request: Request, db: Session = Depends(get_db)):
     authenticated_probe(probe_id, request, db)
+    expire_probe_tasks(db)
+    db.commit()
     tasks = db.scalars(select(Task).where(Task.kind.in_(list(COMMAND_KINDS)), Task.payload['probe_id'].as_integer() == probe_id,
                                         Task.status.in_(['Pending', 'Running'])).order_by(Task.id).with_for_update()).all()
     now = datetime.now(UTC)
     for task in tasks:
-        updated = task.updated_at.replace(tzinfo=UTC) if task.updated_at.tzinfo is None else task.updated_at
-        if task.status == 'Running' and now - updated < timedelta(minutes=15):
+        if task.status == 'Running':
             continue
         task.status, task.current_stage = 'Running', COMMAND_STAGES.get(task.kind, '探针本地任务')
+        task.started_at = now
         task.updated_at = now
         db.commit()
         return {'commands': [{'id': task.id, 'kind': COMMAND_KINDS[task.kind], 'config': task.payload['config']}]}
     return {'commands': []}
+
+
+@router.get('/probes/{probe_id}/command-status')
+def command_status(probe_id: int, task_id: int, request: Request, db: Session = Depends(get_db)):
+    authenticated_probe(probe_id, request, db)
+    expire_probe_tasks(db)
+    db.commit()
+    task = db.get(Task, task_id)
+    if not task or task.payload.get('probe_id') != probe_id:
+        raise HTTPException(404, 'task not found')
+    return {'stop': task.status in TERMINAL or bool(task.payload.get('deleted')), 'status': task.status}
 
 
 @router.post('/probes/{probe_id}/inventory')
@@ -121,12 +141,12 @@ def inventory(probe_id: int, payload: InventoryReport, request: Request, db: Ses
     probe = authenticated_probe(probe_id, request, db)
     # Serialize reports from one probe; atomic asset upserts and replay handling.
     db.execute(select(Probe.id).where(Probe.id == probe_id).with_for_update())
-    task = db.get(Task, payload.task_id) if payload.task_id else db.scalar(select(Task).where(
+    task = db.scalar(select(Task).where(Task.id == payload.task_id).with_for_update()) if payload.task_id else db.scalar(select(Task).where(
         Task.kind == 'probe_scan', Task.payload['probe_id'].as_integer() == probe_id,
         Task.payload['report_id'].as_string() == payload.report_id))
     if payload.task_id and (not task or task.kind != 'probe_scan' or task.payload.get('probe_id') != probe_id):
         raise HTTPException(403, 'scan task does not belong to probe')
-    if task and task.status in ['Success', 'Failed', 'Partial']:
+    if task and (task.status in TERMINAL or task.payload.get('deleted')):
         return {'id': task.id, 'duplicate': True, 'assets': task.result.get('assets', 0)}
     if not task:
         task = Task(kind='probe_scan', payload={'probe_id': probe_id, 'report_id': payload.report_id})
@@ -216,6 +236,7 @@ class DataAssetReport(BaseModel):
     assets: list[ProbeDataAsset] = Field(default_factory=list, max_length=4096)
     databases: list[ProbeDataAsset] = Field(default_factory=list, max_length=256)
     scanned_paths: list[str] = Field(default_factory=list, max_length=64)
+    max_depth: int | None = Field(default=None, ge=0, le=8)
     complete: bool = True
     error: str = Field(default='', max_length=500)
     observed_at: str = Field(default='', max_length=64)
@@ -225,8 +246,14 @@ class DataAssetReport(BaseModel):
 @router.post('/probes/{probe_id}/data-assets/jobs')
 def queue_data_asset_scan(probe_id: int, payload: DataAssetScanConfig, db: Session = Depends(get_db)):
     """Queue a bounded data-asset collection for one probe."""
-    if not db.get(Probe, probe_id):
+    probe = db.get(Probe, probe_id)
+    if not probe:
         raise HTTPException(404, 'probe not found')
+    version = str((probe.extra or {}).get('agent_version') or (probe.extra or {}).get('version') or '')
+    match = re.match(r'^(\d+)\.(\d+)\.(\d+)', version)
+    if match and tuple(map(int, match.groups())) < (3, 3, 0):
+        raise HTTPException(409, f'探针版本 {version} 不支持数据资产采集，请在探针部署页升级到 3.3.1')
+    expire_probe_tasks(db)
     active = db.scalar(select(Task).where(Task.kind == 'data_asset_scan', Task.payload['probe_id'].as_integer() == probe_id,
                                          Task.status.in_(['Pending', 'Running'])))
     if active:
@@ -244,12 +271,12 @@ def data_asset_inventory(probe_id: int, payload: DataAssetReport, request: Reque
     """Ingest a probe-side data asset inventory (idempotent per report)."""
     probe = authenticated_probe(probe_id, request, db)
     db.execute(select(Probe.id).where(Probe.id == probe_id).with_for_update())
-    task = db.get(Task, payload.task_id) if payload.task_id else db.scalar(select(Task).where(
+    task = db.scalar(select(Task).where(Task.id == payload.task_id).with_for_update()) if payload.task_id else db.scalar(select(Task).where(
         Task.kind == 'data_asset_scan', Task.payload['probe_id'].as_integer() == probe_id,
         Task.payload['report_id'].as_string() == payload.report_id))
     if payload.task_id and (not task or task.kind != 'data_asset_scan' or task.payload.get('probe_id') != probe_id):
         raise HTTPException(403, 'data asset task does not belong to probe')
-    if task and task.status in ['Success', 'Failed', 'Partial']:
+    if task and (task.status in TERMINAL or task.payload.get('deleted')):
         return {'id': task.id, 'duplicate': True, 'assets': task.result.get('assets', 0)}
     if not task:
         task = Task(kind='data_asset_scan', payload={'probe_id': probe_id, 'report_id': payload.report_id})
@@ -258,11 +285,11 @@ def data_asset_inventory(probe_id: int, payload: DataAssetReport, request: Reque
     now = datetime.now(UTC)
     source = f'probe:{probe.name}'
     existing = db.scalars(select(DataAsset).where(DataAsset.extra['probe_id'].as_integer() == probe_id)).all()
-    index = {(item.name, item.asset_type): item for item in existing}
+    index = {((item.extra or {}).get('path') or item.name, item.asset_type): item for item in existing}
     seen: set[tuple[str, str]] = set()
     stored = 0
     for item in [*payload.assets, *payload.databases]:
-        key = (item.name, item.asset_type)
+        key = (item.path or item.name, item.asset_type)
         row = index.get(key)
         if not row:
             row = DataAsset(name=item.name, asset_type=item.asset_type, sensitivity=item.sensitivity,
@@ -283,7 +310,14 @@ def data_asset_inventory(probe_id: int, payload: DataAssetReport, request: Reque
         stored += 1
     if payload.complete and not payload.error:
         for key, row in index.items():
-            if key not in seen:
+            path = (row.extra or {}).get('path', '')
+            in_scope = path.startswith('/') and any(
+                PurePosixPath(path).is_relative_to(PurePosixPath(root))
+                and payload.max_depth is not None
+                and len(PurePosixPath(path).relative_to(PurePosixPath(root)).parts) <= payload.max_depth + (0 if row.asset_type == 'directory' else 1)
+                for root in payload.scanned_paths if root.startswith('/')
+            )
+            if key not in seen and in_scope:
                 row.extra = {**(row.extra or {}), 'status': 'not_observed', 'checked_at': now.isoformat()}
     task.status = 'Failed' if payload.error else ('Success' if payload.complete else 'Partial')
     task.progress, task.current_stage, task.finished_at = 100, '探针数据资产采集完成', now
@@ -348,6 +382,7 @@ def start_intel_sync(provider: str, db: Session = Depends(get_db)):
     from app.workers.tasks import sync_intelligence_task
     if provider not in PROVIDERS:
         raise HTTPException(404, 'Unknown intelligence provider')
+    expire_probe_tasks(db)
     active = db.scalar(select(Task).where(Task.kind == 'intel_sync', Task.status.in_(['Pending', 'Running']), Task.payload['provider'].as_string() == provider))
     if active:
         raise HTTPException(409, 'Sync is already queued')
@@ -372,6 +407,8 @@ class DlpPolicy(BaseModel):
     keywords: list[str] = Field(default_factory=list, max_length=100)
     fingerprints: list[str] = Field(default_factory=list, max_length=1000)
     min_matches: int = Field(default=1, ge=1, le=1000)
+    min_confidence: float = Field(default=MIN_ALERT_CONFIDENCE, ge=0, le=1)
+    exclude_cidrs: list[str] = Field(default_factory=lambda: list(DEFAULT_POLICY['exclude_cidrs']), max_length=50)
 
     @field_validator('keywords')
     @classmethod
@@ -388,12 +425,24 @@ class DlpPolicy(BaseModel):
             raise ValueError('Expected SHA256 fingerprints')
         return sorted(set(v.lower() for v in values))
 
+    @field_validator('exclude_cidrs')
+    @classmethod
+    def cidrs_valid(cls, values):
+        networks = []
+        for value in values:
+            try:
+                networks.append(str(ipaddress.ip_network(value.strip(), strict=False)))
+            except ValueError as exc:
+                raise ValueError(f'无效网段: {value}') from exc
+        return sorted(set(networks))
+
 
 @router.get('/dlp/policy')
 def dlp_policy(db: Session = Depends(get_db)):
-    from app.services.dlp_service import DEFAULT_POLICY
+    from app.services.dlp_service import normalize_policy
     row = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
-    return row.value if row else DEFAULT_POLICY
+    # Stored policies may predate a key; the UI always needs the effective values.
+    return normalize_policy(row.value if row else {})
 
 
 @router.post('/dlp/policy')

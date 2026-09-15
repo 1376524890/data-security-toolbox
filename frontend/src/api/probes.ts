@@ -1,4 +1,5 @@
 import { apiGet, apiPost } from './client'
+import client from './client'
 import type { PageResult } from '../types/common'
 import type { Task } from '../types/task'
 
@@ -31,6 +32,10 @@ export function registerProbe(payload: ProbeRegisterPayload, bootstrapToken?: st
 
 export function analyzeProbe(id: number): Promise<Task> {
   return apiPost(`/probes/${id}/analyze`)
+}
+
+export async function deleteProbe(id: number): Promise<void> {
+  await client.delete(`/probes/${id}`)
 }
 
 export function queueProbeScan(id: number, payload: { targets: string[]; ports: number[] }): Promise<Task> {

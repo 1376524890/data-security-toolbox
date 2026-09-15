@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.app_name, version="2.6.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.7.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
 app.include_router(deployments_router)
@@ -39,7 +39,7 @@ PUBLIC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 def _is_probe_api(path: str) -> bool:
     return (
         path == "/api/v1/probes/register"
-        or (path.startswith("/api/v1/probes/") and any(path.endswith(s) for s in ('/heartbeat', '/scan', '/commands', '/inventory', '/data-assets')))
+        or (path.startswith("/api/v1/probes/") and any(path.endswith(s) for s in ('/heartbeat', '/scan', '/commands', '/inventory', '/data-assets', '/command-status')))
         or path in {"/api/v1/pcaps/upload", "/api/v1/files/upload"}
         or path == "/api/v1/health"
     )

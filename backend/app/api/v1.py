@@ -21,9 +21,10 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import false, func, or_, select
+from sqlalchemy import false, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.services.probe_task_service import PROBE_TASK_KINDS, TERMINAL, expire_probe_tasks, visible_tasks
 from app.api.pagination import page_response, paginate
 from app.core.config import settings
 from app.core.database import get_db
@@ -34,6 +35,7 @@ from app.core.security import (
     get_session_user,
     hash_token,
     require_probe_headers,
+    require_active_admin,
     set_admin_cookie,
     verify_password,
     verify_token,
@@ -713,6 +715,35 @@ def list_probes(status: str | None = None, search: str | None = None, page: int 
     return page_response([_serialize_probe(item) for item in result["items"]], page, page_size, result["total"])
 
 
+@router.delete("/probes/{probe_id}", dependencies=[Depends(require_active_admin)])
+def delete_probe(probe_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+    expire_probe_tasks(db)
+    probe = db.get(Probe, probe_id)
+    if not probe:
+        raise HTTPException(404, "探针不存在")
+    active_task = db.scalar(select(Task.id).where(
+        Task.payload["probe_id"].as_integer() == probe_id,
+        Task.status.in_(["Pending", "Running"]),
+    ).limit(1))
+    if active_task:
+        raise HTTPException(409, "探针有未完成任务，请等待任务结束后再删除")
+    deployments = db.scalars(select(ProbeDeployment).where(or_(
+        ProbeDeployment.probe_id == probe_id, ProbeDeployment.id == probe.deployment_id,
+    ))).all()
+    if any(item.status not in {"ONLINE", "FAILED", "CANCELLED"} for item in deployments):
+        raise HTTPException(409, "探针部署尚未结束，请等待部署结束后再删除")
+    # Preserve collected records and deployment history, clearing foreign keys.
+    for model in (Asset, FileRecord, PcapRecord, Incident, Alert, ProbeDeployment, ProbeEnrollment):
+        db.execute(update(model).where(model.probe_id == probe_id).values(probe_id=None))
+    if probe.deployment_id:
+        db.execute(update(ProbeEnrollment).where(
+            ProbeEnrollment.deployment_id == probe.deployment_id,
+        ).values(expires_at=datetime.now(UTC)))
+    db.delete(probe)
+    db.commit()
+    return {"status": "ok"}
+
+
 @router.post("/probes/{probe_id}/analyze")
 def analyze_probe_assets(probe_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     task = create_task(db, "assets", {"probe_id": probe_id})
@@ -722,7 +753,9 @@ def analyze_probe_assets(probe_id: int, db: Session = Depends(get_db)) -> dict[s
 
 @router.get("/probes/{probe_id}/tasks")
 def probe_tasks(probe_id: int, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    tasks = db.scalars(select(Task).where(Task.payload["probe_id"].as_integer() == probe_id).order_by(Task.id.desc()).limit(50)).all()
+    expire_probe_tasks(db)
+    db.commit()
+    tasks = db.scalars(select(Task).where(visible_tasks(), Task.payload["probe_id"].as_integer() == probe_id).order_by(Task.id.desc()).limit(50)).all()
     return [_serialize_task(item) for item in tasks]
 
 
@@ -1185,7 +1218,9 @@ def pcap_alerts(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @router.get("/tasks")
 def list_tasks(status: str | None = None, kind: str | None = None, search: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
-    query = select(Task)
+    expire_probe_tasks(db)
+    db.commit()
+    query = select(Task).where(visible_tasks())
     if status:
         query = query.where(Task.status == status)
     if kind:
@@ -1205,9 +1240,36 @@ def create_generic_task(payload: TaskCreate, db: Session = Depends(get_db)) -> d
 @router.get("/tasks/{task_id}")
 def task_detail(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     task = db.get(Task, task_id)
-    if not task:
+    if not task or task.payload.get("deleted"):
         raise HTTPException(404, "task not found")
     return _serialize_task(task)
+
+
+@router.post("/tasks/{task_id}/stop", dependencies=[Depends(require_active_admin)])
+def stop_task(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
+    if not task or task.payload.get("deleted"):
+        raise HTTPException(404, "任务不存在")
+    if task.kind not in PROBE_TASK_KINDS:
+        raise HTTPException(409, "当前仅支持停止探针扫描和数据资产采集任务")
+    if task.status not in TERMINAL:
+        task.status, task.current_stage = "Cancelled", "已停止；已领取任务由探针检查后退出"
+        task.finished_at = datetime.now(UTC)
+        db.commit()
+    return _serialize_task(task)
+
+
+@router.delete("/tasks/{task_id}", dependencies=[Depends(require_active_admin)])
+def delete_task(task_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+    task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
+    if not task or task.payload.get("deleted"):
+        raise HTTPException(404, "任务不存在")
+    if task.status not in TERMINAL:
+        raise HTTPException(409, "请先停止任务，或等待任务完成后再删除")
+    # Keep a tombstone for late probe reports and linked analysis evidence.
+    task.payload = {**task.payload, "deleted": True}
+    db.commit()
+    return {"status": "ok"}
 
 
 @router.post("/audit/logs")

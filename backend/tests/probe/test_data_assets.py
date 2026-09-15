@@ -75,3 +75,36 @@ def test_infer_columns_from_json_and_sql() -> None:
 
     sql_columns = data_assets.infer_columns("CREATE TABLE t (id int, id_card varchar(18));", ".sql")
     assert {column["name"] for column in sql_columns} == {"id", "id_card"}
+
+
+def test_formats_and_missing_directory(tmp_path):
+    import gzip
+    (tmp_path / 'users.tsv').write_text('name\tphone\n张三\t13800138000', encoding='utf-8')
+    (tmp_path / 'users.jsonl').write_text('{"phone":"13800138000"}\n{"phone":"13900139000"}', encoding='utf-8')
+    with gzip.open(tmp_path / 'dump.sql.gz', 'wt') as output:
+        output.write('CREATE TABLE users (phone varchar(20));')
+    report = data_assets.discover_data_assets({'paths': [str(tmp_path)], 'include_databases': False})
+    for item in report['assets']:
+        if item['asset_type'] != 'directory':
+            assert 'phone' in {column['name'] for column in item['columns']}
+    missing = data_assets.discover_data_assets({'paths': [str(tmp_path / 'missing')], 'include_databases': False})
+    assert not missing['complete'] and missing['error']
+
+
+def test_cancelled_walk_and_overlapping_roots(tmp_path):
+    import threading
+    _write_sample_tree(tmp_path)
+    stop = threading.Event()
+    stop.set()
+    assert not data_assets.discover_data_assets({'paths': [str(tmp_path)]}, stop)['complete']
+    report = data_assets.discover_data_assets({'paths': [str(tmp_path), str(tmp_path / 'customer_data')], 'include_databases': False})
+    paths = [item['path'] for item in report['assets'] if item['asset_type'] != 'directory']
+    assert len(paths) == len(set(paths))
+
+
+def test_symlink_not_followed(tmp_path):
+    target = tmp_path / 'target.csv'
+    target.write_text('phone\n13800138000')
+    link = tmp_path / 'link.csv'
+    link.symlink_to(target)
+    assert data_assets.inspect_file(link) is None

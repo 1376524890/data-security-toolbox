@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     deployment_allow_password: bool = True
     deployment_default_profile: str = "standard"
     deployment_verify_host_key: bool = True
-    probe_agent_version: str = "3.3.0"
+    probe_agent_version: str = "3.3.1"
     pcap_index_limit: int = 10000
     pcap_retention_days: int = 7
     pcap_storage_max_gb: int = 100

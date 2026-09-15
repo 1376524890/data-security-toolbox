@@ -12,6 +12,8 @@ so the inventory can run on production servers without exfiltrating data.
 from __future__ import annotations
 
 import csv
+import gzip
+import stat as stat_module
 import hashlib
 import io
 import json
@@ -78,8 +80,8 @@ def scan_text(text: str, limit: int = SCAN_LIMIT) -> dict[str, int]:
     return {name: len(pattern.findall(sample)) for name, pattern in SENSITIVE_RULES.items()}
 
 
-def _csv_columns(text: str) -> list[dict]:
-    reader = csv.reader(io.StringIO(text))
+def _csv_columns(text: str, delimiter: str = ',') -> list[dict]:
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     try:
         header = next(reader)
     except (StopIteration, csv.Error):
@@ -134,47 +136,55 @@ def _sql_columns(text: str) -> list[dict]:
     return columns
 
 
-def _json_columns(text: str) -> list[dict]:
+def _json_columns(text: str, jsonl: bool = False) -> list[dict]:
     try:
-        data = json.loads(text[:SCAN_LIMIT])
+        data = [json.loads(line) for line in text.splitlines()[:SAMPLE_ROWS] if line.strip()] if jsonl else json.loads(text[:SCAN_LIMIT])
     except (ValueError, TypeError):
         return []
     if isinstance(data, dict):
         names = list(data.keys())[:64]
     elif isinstance(data, list) and data and isinstance(data[0], dict):
-        names = list(data[0].keys())[:64]
+        names = list(dict.fromkeys(key for row in data[:SAMPLE_ROWS] if isinstance(row, dict) for key in row))[:64]
     else:
         return []
     columns = []
     for name in names:
+        records = [data] if isinstance(data, dict) else data[:SAMPLE_ROWS]
+        sample = ' '.join(str(row.get(name, ''))[:4096] for row in records if isinstance(row, dict))[:4096]
+        counts = scan_text(sample)
         categories = [category for category, words in COLUMN_HINTS.items() if any(word in str(name).lower() for word in words)]
+        categories = list(dict.fromkeys([*categories, *(category for category, count in counts.items() if count)]))
         columns.append({
-            'name': str(name)[:256],
+            'name': str(name)[:256] or 'unnamed',
             'detected_type': categories[0] if categories else 'text',
             'sensitivity': _severity(categories) if categories else 'Unknown',
-            'confidence': 0.6 if categories else 0.3,
+            'confidence': 0.9 if any(counts.values()) else (0.6 if categories else 0.3),
             'categories': categories,
-            'count': 0,
+            'count': sum(counts.values()),
         })
     return columns
 
 
 def infer_columns(text: str, suffix: str) -> list[dict]:
     if suffix in {'.csv', '.tsv'}:
-        return _csv_columns(text)
+        return _csv_columns(text, '\t' if suffix == '.tsv' else ',')
     if suffix == '.sql':
         return _sql_columns(text)
     if suffix in {'.json', '.jsonl'}:
-        return _json_columns(text)
+        return _json_columns(text, suffix == '.jsonl')
     return []
 
 
 def _read_text(path: Path) -> str:
-    try:
-        with path.open('r', encoding='utf-8', errors='replace') as handle:
-            return handle.read(SCAN_LIMIT)
-    except OSError:
-        return ''
+    opener = gzip.open if path.name.lower().endswith('.sql.gz') else open
+    with opener(path, 'rb') as handle:
+        raw = handle.read(SCAN_LIMIT)
+    for encoding in ('utf-8-sig', 'gb18030'):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode('utf-8', errors='replace')
 
 
 def _sha256(path: Path, size: int) -> str:
@@ -183,8 +193,15 @@ def _sha256(path: Path, size: int) -> str:
     digest = hashlib.sha256()
     try:
         with path.open('rb') as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            remaining = HASH_LIMIT + 1
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
                 digest.update(chunk)
+                remaining -= len(chunk)
+            if remaining == 0:
+                return ''
     except OSError:
         return ''
     return digest.hexdigest()
@@ -192,16 +209,23 @@ def _sha256(path: Path, size: int) -> str:
 
 def inspect_file(path: Path) -> dict | None:
     try:
-        stat = path.stat()
+        stat = path.lstat()
     except OSError:
         return None
-    if not path.is_file():
+    if not stat_module.S_ISREG(stat.st_mode):
         return None
     suffix = path.suffix.lower()
     lower_name = path.name.lower()
     if lower_name.endswith('.sql.gz'):
         suffix = '.sql'
-    text = _read_text(path) if suffix in TEXT_EXTENSIONS else ''
+    if lower_name == '.env':
+        suffix = '.env'
+    read_error = ''
+    try:
+        text = _read_text(path) if suffix in TEXT_EXTENSIONS else ''
+    except (OSError, EOFError) as exc:
+        text = ''
+        read_error = type(exc).__name__
     counts = scan_text(text) if text else {}
     categories = [category for category, count in counts.items() if count]
     columns = infer_columns(text, suffix)
@@ -229,7 +253,7 @@ def inspect_file(path: Path) -> dict | None:
         'categories': categories[:16],
         'counts': counts,
         'columns': columns[:256],
-        'evidence': {'extension': suffix, 'scanned_bytes': len(text), 'sample_rows': SAMPLE_ROWS},
+        'evidence': {'extension': suffix, 'scanned_bytes': len(text), 'sample_rows': SAMPLE_ROWS, 'sampled': stat.st_size > SCAN_LIMIT, 'read_error': read_error},
     }
 
 
@@ -290,42 +314,69 @@ def discover_data_assets(config: dict, stop_event=None) -> dict:
     assets: list[dict] = []
     scanned_paths: list[str] = []
     directories = 0
+    file_count = 0
+    visited = set()
     truncated = False
+    errors = []
 
     def expired() -> bool:
         return time.monotonic() >= deadline or bool(stop_event and stop_event.is_set())
 
+    def walk_error(exc):
+        if len(errors) < 10:
+            errors.append(f'目录不可读取: {exc.filename}')
+
     for root in paths:
-        if not root.is_dir():
+        if expired():
+            truncated = True
+            break
+        if root.is_symlink() or not root.is_dir():
+            errors.append(f'目录不存在或不可读取: {root}')
             continue
+        root = root.absolute()
         scanned_paths.append(str(root))
-        for current, subdirs, files in _walk(root, max_depth):
-            if expired() or len(assets) >= max_files:
+        for current, subdirs, files in _walk(root, max_depth, walk_error):
+            if expired() or directories >= MAX_DIRECTORIES:
                 truncated = True
                 break
+            directories += 1
             subdirs[:] = sorted(item for item in subdirs if item not in SKIP_DIRECTORIES and not item.startswith('.docker'))
             total_size = 0
             counted = 0
+            directory_categories = set()
             for name in sorted(files):
-                if expired() or len(assets) >= max_files:
+                path = Path(current) / name
+                if path in visited or path.is_symlink():
+                    continue
+                if expired() or file_count >= max_files:
                     truncated = True
                     break
-                record = inspect_file(Path(current) / name)
+                visited.add(path)
+                record = inspect_file(path)
                 if not record:
                     continue
+                if record['evidence'].get('read_error'):
+                    errors.append(f'文件不可读取: {path}')
                 total_size += record['size']
                 counted += 1
+                file_count += 1
+                directory_categories.update(record['categories'])
                 assets.append(record)
-            if counted and directories < MAX_DIRECTORIES:
-                directories += 1
-                assets.append(_directory_asset(Path(current), counted, total_size, _category_hints(Path(current))))
+            if counted:
+                assets.append(_directory_asset(Path(current), counted, total_size, sorted(directory_categories)))
+            if truncated:
+                break
         if truncated:
             break
-    databases = detect_local_databases(LOCAL_DATABASE_SERVICES) if include_databases and not expired() else []
-    # Never report a "complete" empty inventory when nothing was configured: the
-    # platform treats a complete report as authoritative and would mark every
-    # previously discovered asset as no longer observed.
-    error = '' if configured else '未配置数据资产采集目录（agent.paths / data.paths）'
+    databases = []
+    if include_databases:
+        for port, engine in LOCAL_DATABASE_SERVICES.items():
+            if expired():
+                truncated = True
+                break
+            databases.extend(detect_local_databases({port: engine}, timeout=min(.4, max(.01, deadline - time.monotonic()))))
+    truncated = truncated or expired()
+    error = '; '.join(errors)[:500] if configured else '未配置数据资产采集目录（agent.paths / data.paths）'
     counts: dict[str, int] = {}
     for item in assets:
         for category in item.get('categories', []):
@@ -335,7 +386,8 @@ def discover_data_assets(config: dict, stop_event=None) -> dict:
         'databases': databases,
         'scanned_paths': scanned_paths,
         'counts': counts,
-        'complete': bool(configured) and not truncated,
+        'max_depth': max_depth,
+        'complete': bool(scanned_paths) and not truncated and not errors,
         'error': error,
         'observed_at': datetime.now(UTC).isoformat(),
         'scanner': 'probe-file-inventory',
@@ -344,12 +396,12 @@ def discover_data_assets(config: dict, stop_event=None) -> dict:
     }
 
 
-def _walk(root: Path, max_depth: int):
+def _walk(root: Path, max_depth: int, onerror=None):
     """os.walk wrapper honouring the depth limit without loading the whole tree."""
     import os
 
     base_depth = len(root.parts)
-    for current, subdirs, files in os.walk(root, followlinks=False):
+    for current, subdirs, files in os.walk(root, followlinks=False, onerror=onerror):
         depth = len(Path(current).parts) - base_depth
         if depth >= max_depth:
             subdirs[:] = []

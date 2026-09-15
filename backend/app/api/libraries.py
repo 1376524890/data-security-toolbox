@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.models import LocalCve, SystemSetting
-from app.services.rule_library import atomic_json, managed_rules, save_manual_rule, update_presidio
+from app.services.rule_library import (atomic_json, managed_rules, rule_confidence, save_manual_rule,
+                                       sensitive_entity, update_presidio)
 
 router = APIRouter(prefix='/api/v1', tags=['rule-libraries'])
 
@@ -22,12 +23,18 @@ router = APIRouter(prefix='/api/v1', tags=['rule-libraries'])
 @router.get('/dlp/rules')
 def list_dlp_rules(db: Session = Depends(get_db)):
     from app.engine.data_engine.engine import REGEX_RULES
-    from app.services.dlp_service import DEFAULT_POLICY
+    from app.services.dlp_service import BUILTIN_CONFIDENCE, DEFAULT_CONFIDENCE, normalize_policy
     policy = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
-    active = (policy.value if policy else DEFAULT_POLICY).get('categories', [])
-    builtins = [{'id': name, 'name': name, 'entity': name, 'pattern': pattern.pattern, 'source': 'builtin',
-                 'mode': 'regex', 'enabled': name in active} for name, pattern in REGEX_RULES.items()]
-    rules = builtins + managed_rules()
+    effective = normalize_policy(policy.value if policy else {})
+    active, threshold = effective['categories'], effective['min_confidence']
+    builtins = [{'id': name, 'name': name, 'entity': name, 'pattern': pattern.pattern, 'source': 'builtin', 'mode': 'regex',
+                 'enabled': name in active, 'confidence': BUILTIN_CONFIDENCE.get(name, DEFAULT_CONFIDENCE), 'sensitive': True}
+                for name, pattern in REGEX_RULES.items()]
+    # Legacy stores may predate the confidence field, so report the effective value.
+    managed = [{**rule, 'confidence': rule_confidence(rule), 'sensitive': sensitive_entity(rule)} for rule in managed_rules()]
+    rules = builtins + managed
+    for rule in rules:
+        rule['alertable'] = rule['sensitive'] and rule['confidence'] >= threshold
     return {'items': rules, 'total': len(rules)}
 
 
