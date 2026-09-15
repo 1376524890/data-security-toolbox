@@ -2,6 +2,7 @@ import functools
 import json
 import smtplib
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -45,7 +46,7 @@ from app.services.alert_service import (
     queue_deliveries,
 )
 from app.services.asset_service import classify_assets
-from app.services.scan_service import discover_hosts, is_subnet, scan_host
+from app.services.scan_service import detect_interception, discover_hosts, is_subnet, nmap_available, scan_host
 from app.services.metadata_service import extract_metadata
 from app.services.nuclei_service import run_nuclei_scan, templates_dir
 from app.services.protocol_service import parse_pcap
@@ -293,12 +294,14 @@ def create_task(db, kind: str, payload: dict[str, Any]) -> Task:
     return task
 
 
-def _finish(task_id: int, error: str = "", result: dict[str, Any] | None = None) -> None:
+def _finish(task_id: int, error: str = "", result: dict[str, Any] | None = None, status: str | None = None) -> None:
     import socket as _socket
 
     payload = dict(result or {})
     payload.setdefault("worker", _socket.gethostname())
-    update_task(task_id, status="Success" if not error else "Failed", progress=100, current_stage="done" if not error else "failed", error=error, finished_at=datetime.now(UTC), result=payload)
+    final = status or ("Success" if not error else "Failed")
+    stage = {"Success": "done", "Partial": "partial", "Failed": "failed"}.get(final, final.lower())
+    update_task(task_id, status=final, progress=100, current_stage=stage, error=error, finished_at=datetime.now(UTC), result=payload)
 
 
 def _mark_failed(task_id: int, exc: Exception, stage: str = "failed") -> None:
@@ -647,7 +650,14 @@ def _nuclei_to_detection(item: dict[str, Any]) -> DetectionResult:
 @celery_app.task(name="security_toolbox.network_scan")
 @task_guard
 def network_scan_task(task_id: int) -> dict[str, Any]:
-    """Active network scan: discover hosts, enumerate services, run detection."""
+    """Active network scan: discover hosts, enumerate services, run detection.
+
+    Host discovery and port scanning never depend on ICMP/ARP or raw sockets:
+    ``nmap`` is invoked with ``-Pn -sT`` and a dependency-free TCP-connect engine
+    takes over whenever nmap is missing, blocked or returns nothing - otherwise
+    a containerised platform scans a reachable network and still reports zero
+    assets.
+    """
     from sqlalchemy import delete
 
     with SessionLocal() as db:
@@ -662,33 +672,57 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
             return {}
         discovery = bool(payload.get("discovery", True))
         top_ports = int(payload.get("top_ports") or 1000)
+        ports = [int(item) for item in (payload.get("ports") or []) if str(item).strip().isdigit()]
         public_exposed = bool(payload.get("public_exposed", False))
         nuclei = bool(payload.get("nuclei", False))
         nuclei_tags = str(payload.get("nuclei_tags") or "")
         nuclei_tpl = str(payload.get("nuclei_templates") or "")
-        update_task(task_id, status="Running", progress=10, current_stage="发现存活主机")
+        port_scope = f"{len(ports)} 个指定端口" if ports else f"top {top_ports} 端口"
+        update_task(task_id, status="Running", progress=5, current_stage=f"发现存活主机（TCP-connect / {port_scope}）")
+        warning = ""
+        if discovery:
+            warning = detect_interception(ports=ports or None)
+            if warning:
+                update_task(task_id, log=f"[scan] {warning}\n")
         hosts = [target]
         if discovery and is_subnet(target):
-            hosts = discover_hosts(target)
-            update_task(task_id, progress=20, current_stage=f"发现 {len(hosts)} 台存活主机")
+            hosts = discover_hosts(target, ports=ports or None)
+            update_task(task_id, progress=15, current_stage=f"发现 {len(hosts)} 台存活主机", log=f"[scan] discovery {target} -> {len(hosts)} host(s)\n")
+        if not hosts:
+            db.add(AnalysisResult(task_id=task_id, module="scan", content={"target": target, "hosts": [], "assets": 0, "findings": 0}, risk_level="Low"))
+            db.commit()
+            _finish(task_id, result={"target": target, "hosts": [], "alive_hosts": 0, "assets": 0, "findings": 0, "engine": "python-tcp", "reason": "no live host answered the TCP liveness ports"})
+            return {"target": target, "hosts": [], "assets": 0}
+        scanned_hosts: list[str] = []
         total_assets = 0
         total_findings = 0
+        engines: set[str] = set()
+        # Bounded parallelism: nmap is invoked per host, so scanning a segment
+        # four hosts at a time keeps a /24 practical while staying gentle.
+        scan_concurrency = max(1, min(int(payload.get("concurrency") or 4), 8))
+        services_by_host: dict[str, list[dict[str, Any]]] = {}
+        with ThreadPoolExecutor(max_workers=scan_concurrency) as pool:
+            for host, services in pool.map(lambda item: (item, scan_host(item, top_ports, ports=ports or None)), hosts):
+                services_by_host[host] = services or []
+                update_task(task_id, progress=15 + int(65 * len(services_by_host) / max(1, len(hosts))),
+                            current_stage=f"扫描 {host} ({len(services_by_host)}/{len(hosts)})")
         for idx, host in enumerate(hosts, 1):
-            update_task(task_id, progress=20 + int(60 * idx / max(1, len(hosts))), current_stage=f"扫描 {host}")
-            services = scan_host(host, top_ports)
+            services = services_by_host.get(host) or []
             if not services:
                 continue
-            # Keep re-scans current: drop stale nmap-scan assets for this host.
+            scanned_hosts.append(host)
+            engines.add("nmap" if any(str(item.get("product", "")).strip() for item in services) else "python-tcp")
+            # Keep re-scans current: drop stale platform assets for this host.
             try:
-                db.execute(delete(Asset).where(Asset.probe_id.is_(None), Asset.ip == host, Asset.extra["source"].as_string() == "nmap_scan"))
+                db.execute(delete(Asset).where(Asset.probe_id.is_(None), Asset.ip == host, Asset.extra["source"].as_string().in_(["platform_scan", "nmap_scan"])))
             except Exception:
-                pass
+                db.rollback()
             assets = classify_assets({"hostname": host, "ip": host, "os": "", "services": services, "public_exposed": public_exposed, "metadata": {}})
             for a in assets:
                 meta = a.get("metadata", {}) or {}
                 a["version"] = meta.get("version", "")
                 a["product"] = meta.get("product", "")
-                db.add(Asset(probe_id=None, ip=host, hostname=host, os="", port=a["port"], protocol=a["protocol"], service=a["service"], asset_type=a["asset_type"], risk_level=a["risk_level"], sensitive_categories=a["sensitive_categories"], extra={"source": "nmap_scan", **meta}))
+                db.add(Asset(probe_id=None, ip=host, hostname=host, os="", port=a["port"], protocol=a["protocol"], service=a["service"], asset_type=a["asset_type"], risk_level=a["risk_level"], sensitive_categories=a["sensitive_categories"], extra={"source": "platform_scan", **meta}))
             context = DetectionContext(target_type="scan", target_id=str(task_id), assets=assets, data={"public_exposed": public_exposed, "services": services, "cve_lookup_enabled": True, "nvd_api_key": ""})
             alerts = run_pipeline(context, task_id, db)
             total_assets += len(assets)
@@ -725,11 +759,16 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
                                 deliver_alert_task.delay(alert.id)
                             except Exception:
                                 deliver_alert_task(alert.id)
-        db.add(AnalysisResult(task_id=task_id, module="scan", content={"target": target, "hosts": hosts, "assets": total_assets, "findings": total_findings}, risk_level="High" if total_findings else "Low"))
+        summary = {"target": target, "hosts": hosts, "alive_hosts": len(scanned_hosts), "assets": total_assets, "findings": total_findings, "ports": ports, "top_ports": top_ports, "engine": "+".join(sorted(engines)) or ("nmap" if nmap_available() else "python-tcp")}
+        if warning:
+            summary["warning"] = warning
+        db.add(AnalysisResult(task_id=task_id, module="scan", content=summary, risk_level="High" if total_findings else "Low"))
         db.commit()
-    _finish(task_id, result={"target": target, "hosts": hosts, "assets": total_assets})
-    return {"target": target, "hosts": hosts, "assets": total_assets}
-
+    if not scanned_hosts:
+        _finish(task_id, result={**summary, "reason": "存活主机未开放任何被扫描端口"}, status="Partial")
+        return summary
+    _finish(task_id, result=summary)
+    return summary
 
 @celery_app.task(name="security_toolbox.cleanup_pcap_retention")
 @task_guard

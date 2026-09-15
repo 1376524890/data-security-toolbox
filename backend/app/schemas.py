@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ProbeRegister(BaseModel):
@@ -30,19 +30,36 @@ class ProbeScanRequest(BaseModel):
     targets: list[str] = Field(min_length=1, description="要扫描的目标：IP / CIDR / 范围")
     discovery: bool = True
     top_ports: int = Field(default=1000, ge=1, le=65535)
+    ports: list[int] = Field(default_factory=list, max_length=256, description="显式端口列表；为空时按 top_ports 扫描")
     nuclei: bool = False
     nuclei_tags: str = ""
     nuclei_templates: str = ""
+
+    @field_validator("ports")
+    @classmethod
+    def ports_valid(cls, values: list[int]) -> list[int]:
+        if any(int(item) < 1 or int(item) > 65535 for item in values):
+            raise ValueError("invalid tcp port")
+        return sorted({int(item) for item in values})
 
 
 class ScanRequest(BaseModel):
     target: str = Field(min_length=1, max_length=256, description="目标：IP / 主机名 / CIDR / 范围，如 192.168.110.0/24 或 192.168.110.1")
     discovery: bool = True
     top_ports: int = Field(default=1000, ge=1, le=65535)
+    ports: list[int] = Field(default_factory=list, max_length=256, description="显式端口列表；为空时按 top_ports 扫描")
     public_exposed: bool = False
     nuclei: bool = False
     nuclei_tags: str = ""
     nuclei_templates: str = ""
+    probe_id: int | None = Field(default=None, ge=1, description="使用该探针就近扫描（留空则从平台/worker 扫描）")
+
+    @field_validator("ports")
+    @classmethod
+    def ports_valid(cls, values: list[int]) -> list[int]:
+        if any(int(item) < 1 or int(item) > 65535 for item in values):
+            raise ValueError("invalid tcp port")
+        return sorted({int(item) for item in values})
 
 
 class Heartbeat(BaseModel):
@@ -133,6 +150,25 @@ class ProbeDeploymentPreflightRequest(BaseModel):
     key_passphrase: str | None = None
     profile: Literal["lite", "standard", "sensor"] = "standard"
     backend_url: str = Field(default='', max_length=1024)
+    data_paths: list[str] = Field(default_factory=list, max_length=32, description="探针所在服务器要采集的数据资产目录")
+    data_interval_seconds: int = Field(default=3600, ge=60, le=86400)
+    data_max_files: int = Field(default=200, ge=1, le=2000)
+    data_max_depth: int = Field(default=3, ge=0, le=8)
+    data_include_databases: bool = True
+
+    @field_validator("data_paths")
+    @classmethod
+    def data_paths_valid(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            item = str(value).strip()
+            if not item:
+                continue
+            if not item.startswith('/') or '..' in item.split('/') or len(item) > 512:
+                raise ValueError('数据资产目录必须是绝对路径且不含 ".."')
+            if item not in cleaned:
+                cleaned.append(item)
+        return cleaned
 
     @model_validator(mode="after")
     def credential_exclusive(self) -> "ProbeDeploymentPreflightRequest":

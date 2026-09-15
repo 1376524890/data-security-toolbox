@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import require_probe_headers
-from app.models import Asset, Probe, Task, IOC, SystemSetting, AnalysisResult
+from app.models import Asset, DataAsset, Probe, Task, IOC, SystemSetting, AnalysisResult
 from app.services.asset_service import classify_service
 
 router = APIRouter(prefix='/api/v1')
@@ -73,35 +73,46 @@ def authenticated_probe(probe_id, request, db):
     return probe
 
 
-@router.post('/probes/{probe_id}/scan-jobs')
-def queue_scan(probe_id: int, payload: ScanConfig, db: Session = Depends(get_db)):
-    if not db.get(Probe, probe_id):
-        raise HTTPException(404, 'probe not found')
+def queue_probe_scan(db: Session, probe_id: int, config: dict) -> Task:
+    """Queue one bounded scan job for a probe (shared by the admin and scan APIs)."""
     active = db.scalar(select(Task).where(Task.kind == 'probe_scan', Task.payload['probe_id'].as_integer() == probe_id,
                                          Task.status.in_(['Pending', 'Running'])))
     if active:
         raise HTTPException(409, 'Probe already has an active scan job')
     task = Task(kind='probe_scan', status='Pending', progress=0, current_stage='等待探针领取',
-                payload={'probe_id': probe_id, 'config': payload.model_dump()})
+                payload={'probe_id': probe_id, 'config': config})
     db.add(task)
     db.commit()
+    db.refresh(task)
+    return task
+
+
+@router.post('/probes/{probe_id}/scan-jobs')
+def queue_scan(probe_id: int, payload: ScanConfig, db: Session = Depends(get_db)):
+    if not db.get(Probe, probe_id):
+        raise HTTPException(404, 'probe not found')
+    task = queue_probe_scan(db, probe_id, payload.model_dump())
     return {'id': task.id, 'status': task.status, 'location': 'probe'}
+
+
+COMMAND_KINDS = {'probe_scan': 'asset_scan', 'data_asset_scan': 'data_asset_scan'}
+COMMAND_STAGES = {'probe_scan': '探针本地资产扫描', 'data_asset_scan': '探针本地数据资产采集'}
 
 
 @router.get('/probes/{probe_id}/commands')
 def probe_commands(probe_id: int, request: Request, db: Session = Depends(get_db)):
     authenticated_probe(probe_id, request, db)
-    tasks = db.scalars(select(Task).where(Task.kind == 'probe_scan', Task.payload['probe_id'].as_integer() == probe_id,
+    tasks = db.scalars(select(Task).where(Task.kind.in_(list(COMMAND_KINDS)), Task.payload['probe_id'].as_integer() == probe_id,
                                         Task.status.in_(['Pending', 'Running'])).order_by(Task.id).with_for_update()).all()
     now = datetime.now(UTC)
     for task in tasks:
         updated = task.updated_at.replace(tzinfo=UTC) if task.updated_at.tzinfo is None else task.updated_at
         if task.status == 'Running' and now - updated < timedelta(minutes=15):
             continue
-        task.status, task.current_stage = 'Running', '探针本地资产扫描'
+        task.status, task.current_stage = 'Running', COMMAND_STAGES.get(task.kind, '探针本地任务')
         task.updated_at = now
         db.commit()
-        return {'commands': [{'id': task.id, 'kind': 'asset_scan', 'config': task.payload['config']}]}
+        return {'commands': [{'id': task.id, 'kind': COMMAND_KINDS[task.kind], 'config': task.payload['config']}]}
     return {'commands': []}
 
 
@@ -144,11 +155,148 @@ def inventory(probe_id: int, payload: InventoryReport, request: Request, db: Ses
     task.status = 'Failed' if payload.error else ('Success' if payload.complete else 'Partial')
     task.progress, task.current_stage, task.finished_at = 100, '探针扫描完成', now
     task.error = payload.error
-    task.result = {'assets': len(seen), 'complete': payload.complete, 'report_id': payload.report_id, 'location': 'probe'}
+    task.result = {'assets': len(seen), 'complete': payload.complete, 'report_id': payload.report_id, 'location': 'probe',
+                   'hosts': payload.scanned_hosts, 'ports': payload.ports, 'engine': payload.scanner, 'errors': payload.error}
     probe.extra = {**(probe.extra or {}), 'last_scan': {**task.result, 'status': task.status, 'at': now.isoformat()}}
     probe.last_seen = now
     db.commit()
     return {'id': task.id, 'duplicate': False, 'assets': len(seen)}
+
+
+class DataAssetScanConfig(BaseModel):
+    paths: list[str] = Field(default_factory=list, max_length=32, description="目标服务器上要采集的目录")
+    max_files: int = Field(default=200, ge=1, le=2000)
+    max_depth: int = Field(default=3, ge=0, le=8)
+    include_databases: bool = True
+    timeout_seconds: int = Field(default=120, ge=5, le=1800)
+
+    @field_validator('paths')
+    @classmethod
+    def paths_valid(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            item = str(value).strip()
+            if not item:
+                continue
+            if '..' in item.split('/') or not item.startswith('/') or len(item) > 512:
+                raise ValueError('paths must be absolute Linux paths without ".."')
+            if item not in cleaned:
+                cleaned.append(item)
+        return cleaned
+
+
+class DataAssetColumn(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    detected_type: str = Field(default='', max_length=64)
+    sensitivity: str = Field(default='Unknown', max_length=16)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    categories: list[str] = Field(default_factory=list, max_length=16)
+    count: int = Field(default=0, ge=0)
+
+
+class ProbeDataAsset(BaseModel):
+    name: str = Field(min_length=1, max_length=512)
+    asset_type: str = Field(default='file', max_length=64)
+    sensitivity: str = Field(default='Low', max_length=16)
+    path: str = Field(default='', max_length=1024)
+    size: int = Field(default=0, ge=0)
+    sha256: str = Field(default='', max_length=64)
+    modified_at: str = Field(default='', max_length=64)
+    categories: list[str] = Field(default_factory=list, max_length=16)
+    counts: dict[str, int] = Field(default_factory=dict)
+    columns: list[DataAssetColumn] = Field(default_factory=list, max_length=256)
+    evidence: dict = Field(default_factory=dict)
+
+
+class DataAssetReport(BaseModel):
+    """Inventory produced on the probe host itself; no raw content is uploaded."""
+
+    report_id: str = Field(min_length=1, max_length=64, pattern=r'^[a-zA-Z0-9_-]+$')
+    task_id: int | None = None
+    assets: list[ProbeDataAsset] = Field(default_factory=list, max_length=4096)
+    databases: list[ProbeDataAsset] = Field(default_factory=list, max_length=256)
+    scanned_paths: list[str] = Field(default_factory=list, max_length=64)
+    complete: bool = True
+    error: str = Field(default='', max_length=500)
+    observed_at: str = Field(default='', max_length=64)
+    scanner: str = Field(default='probe-file-inventory', max_length=64)
+
+
+@router.post('/probes/{probe_id}/data-assets/jobs')
+def queue_data_asset_scan(probe_id: int, payload: DataAssetScanConfig, db: Session = Depends(get_db)):
+    """Queue a bounded data-asset collection for one probe."""
+    if not db.get(Probe, probe_id):
+        raise HTTPException(404, 'probe not found')
+    active = db.scalar(select(Task).where(Task.kind == 'data_asset_scan', Task.payload['probe_id'].as_integer() == probe_id,
+                                         Task.status.in_(['Pending', 'Running'])))
+    if active:
+        raise HTTPException(409, 'Probe already has an active data asset job')
+    task = Task(kind='data_asset_scan', status='Pending', progress=0, current_stage='等待探针领取',
+                payload={'probe_id': probe_id, 'config': payload.model_dump()})
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return {'id': task.id, 'status': task.status, 'location': 'probe'}
+
+
+@router.post('/probes/{probe_id}/data-assets')
+def data_asset_inventory(probe_id: int, payload: DataAssetReport, request: Request, db: Session = Depends(get_db)):
+    """Ingest a probe-side data asset inventory (idempotent per report)."""
+    probe = authenticated_probe(probe_id, request, db)
+    db.execute(select(Probe.id).where(Probe.id == probe_id).with_for_update())
+    task = db.get(Task, payload.task_id) if payload.task_id else db.scalar(select(Task).where(
+        Task.kind == 'data_asset_scan', Task.payload['probe_id'].as_integer() == probe_id,
+        Task.payload['report_id'].as_string() == payload.report_id))
+    if payload.task_id and (not task or task.kind != 'data_asset_scan' or task.payload.get('probe_id') != probe_id):
+        raise HTTPException(403, 'data asset task does not belong to probe')
+    if task and task.status in ['Success', 'Failed', 'Partial']:
+        return {'id': task.id, 'duplicate': True, 'assets': task.result.get('assets', 0)}
+    if not task:
+        task = Task(kind='data_asset_scan', payload={'probe_id': probe_id, 'report_id': payload.report_id})
+        db.add(task)
+        db.flush()
+    now = datetime.now(UTC)
+    source = f'probe:{probe.name}'
+    existing = db.scalars(select(DataAsset).where(DataAsset.extra['probe_id'].as_integer() == probe_id)).all()
+    index = {(item.name, item.asset_type): item for item in existing}
+    seen: set[tuple[str, str]] = set()
+    stored = 0
+    for item in [*payload.assets, *payload.databases]:
+        key = (item.name, item.asset_type)
+        row = index.get(key)
+        if not row:
+            row = DataAsset(name=item.name, asset_type=item.asset_type, sensitivity=item.sensitivity,
+                            source=source, columns=[], extra={})
+            db.add(row)
+            index[key] = row
+        row.sensitivity = item.sensitivity
+        row.source = source
+        row.columns = [column.model_dump() for column in item.columns]
+        row.extra = {
+            'probe_id': probe_id, 'probe': probe.name, 'host': probe.ip_address or probe.hostname,
+            'path': item.path, 'size': item.size, 'sha256': item.sha256, 'modified_at': item.modified_at,
+            'categories': item.categories, 'counts': item.counts, 'evidence': item.evidence,
+            'status': 'observed', 'scanner': payload.scanner,
+            'observed_at': payload.observed_at or now.isoformat(),
+        }
+        seen.add(key)
+        stored += 1
+    if payload.complete and not payload.error:
+        for key, row in index.items():
+            if key not in seen:
+                row.extra = {**(row.extra or {}), 'status': 'not_observed', 'checked_at': now.isoformat()}
+    task.status = 'Failed' if payload.error else ('Success' if payload.complete else 'Partial')
+    task.progress, task.current_stage, task.finished_at = 100, '探针数据资产采集完成', now
+    task.error = payload.error
+    task.result = {'assets': stored, 'complete': payload.complete, 'report_id': payload.report_id,
+                   'location': 'probe', 'paths': payload.scanned_paths,
+                   'databases': len(payload.databases), 'host': probe.ip_address or probe.hostname}
+    probe.extra = {**(probe.extra or {}), 'last_data_asset_scan': {**task.result, 'status': task.status, 'at': now.isoformat()}}
+    probe.last_seen = now
+    db.add(AnalysisResult(task_id=task.id, module='data_assets', content=task.result,
+                          risk_level='High' if any(item.sensitivity in ('Critical', 'High') for item in [*payload.assets, *payload.databases]) else 'Low'))
+    db.commit()
+    return {'id': task.id, 'duplicate': False, 'assets': stored}
 
 
 class IocImport(BaseModel):

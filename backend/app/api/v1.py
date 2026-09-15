@@ -21,7 +21,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.pagination import page_response, paginate
@@ -326,6 +326,7 @@ def _serialize_anomaly(item: Anomaly) -> dict[str, Any]:
 
 
 def _serialize_data_asset(item: DataAsset) -> dict[str, Any]:
+    extra = item.extra or {}
     return {
         "id": item.id,
         "name": item.name,
@@ -333,7 +334,15 @@ def _serialize_data_asset(item: DataAsset) -> dict[str, Any]:
         "sensitivity": item.sensitivity,
         "source": item.source,
         "columns": item.columns,
-        "extra": item.extra,
+        "probe_id": extra.get("probe_id"),
+        "probe": extra.get("probe", ""),
+        "host": extra.get("host", ""),
+        "path": extra.get("path", ""),
+        "size": extra.get("size", 0),
+        "categories": extra.get("categories", []),
+        "status": extra.get("status", "observed"),
+        "observed_at": extra.get("observed_at", ""),
+        "extra": extra,
         "created_at": item.created_at,
     }
 
@@ -730,10 +739,31 @@ def crypto_probe_profile(probe_id: int = Query(..., ge=1), db: Session = Depends
 
 @router.post("/scan")
 def start_scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Trigger an active network scan (nmap discovery + host service enumeration)."""
-    task = create_task(db, "scan", {"target": payload.target, "discovery": payload.discovery, "top_ports": payload.top_ports, "public_exposed": payload.public_exposed, "nuclei": payload.nuclei, "nuclei_tags": payload.nuclei_tags, "nuclei_templates": payload.nuclei_templates})
+    """Trigger an active network scan.
+
+    Without ``probe_id`` the platform itself discovers hosts and enumerates
+    services (nmap ``-Pn -sT`` with a built-in TCP-connect fallback). With
+    ``probe_id`` the bounded scan is queued for that probe, which is the only
+    way to reach a segment the platform container cannot route to.
+    """
+    if payload.probe_id:
+        from app.api.extensions import queue_probe_scan
+
+        if not db.get(Probe, payload.probe_id):
+            raise HTTPException(404, "probe not found")
+        ports = payload.ports or [22, 80, 443, 445, 3306, 5432, 6379, 8080]
+        task = queue_probe_scan(db, payload.probe_id, {
+            "targets": [payload.target],
+            "ports": ports,
+            "max_hosts": 256,
+            "concurrency": 32,
+            "connect_timeout": 0.5,
+            "timeout_seconds": 300,
+        })
+        return {**_serialize_task(task), "location": "probe", "probe_id": payload.probe_id}
+    task = create_task(db, "scan", {"target": payload.target, "discovery": payload.discovery, "top_ports": payload.top_ports, "ports": payload.ports, "public_exposed": payload.public_exposed, "nuclei": payload.nuclei, "nuclei_tags": payload.nuclei_tags, "nuclei_templates": payload.nuclei_templates})
     _dispatch(task.id, "scan", network_scan_task)
-    return _serialize_task(task)
+    return {**_serialize_task(task), "location": "platform"}
 
 
 @router.get("/scan/{task_id}")
@@ -743,12 +773,17 @@ def scan_result(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     if not task:
         raise HTTPException(404, "scan task not found")
     result = _serialize_task(task)
-    hosts = (task.result or {}).get("hosts", [])
-    if hosts:
-        rows = db.scalars(select(Asset).where(Asset.extra["source"].as_string() == "nmap_scan", Asset.ip.in_(hosts))).all()
-        result["scanned_assets"] = [_serialize_asset(item) for item in rows]
+    hosts = list((task.result or {}).get("hosts") or [])
+    if task.kind == "probe_scan":
+        probe_id = (task.payload or {}).get("probe_id")
+        query = select(Asset).where(Asset.probe_id == probe_id, Asset.extra["source"].as_string() == "probe_scan")
     else:
-        result["scanned_assets"] = []
+        query = select(Asset).where(Asset.extra["source"].as_string().in_(["platform_scan", "nmap_scan"]))
+    if hosts:
+        query = query.where(Asset.ip.in_(hosts))
+    else:
+        query = query.where(false())
+    result["scanned_assets"] = [_serialize_asset(item) for item in db.scalars(query.order_by(Asset.ip, Asset.port)).all()]
     return result
 
 
@@ -1645,7 +1680,7 @@ def risk_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.get("/data/assets")
-def data_assets(search: str | None = None, sensitivity: str | None = None, asset_type: str | None = None, source: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
+def data_assets(search: str | None = None, sensitivity: str | None = None, asset_type: str | None = None, source: str | None = None, probe_id: int | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
     query = select(DataAsset)
     if search:
         query = query.where(DataAsset.name.ilike(f"%{search}%"))
@@ -1655,6 +1690,8 @@ def data_assets(search: str | None = None, sensitivity: str | None = None, asset
         query = query.where(DataAsset.asset_type == asset_type)
     if source:
         query = query.where(DataAsset.source == source)
+    if probe_id:
+        query = query.where(DataAsset.extra["probe_id"].as_integer() == probe_id)
     result = paginate(db, query.order_by(DataAsset.id.desc()), page, page_size)
     return page_response([_serialize_data_asset(item) for item in result["items"]], page, page_size, result["total"])
 

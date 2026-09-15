@@ -33,6 +33,7 @@ export interface ProbeDeployment {
   registered_at?: string | null
   first_heartbeat_at?: string | null
   preflight_result: Record<string, unknown>
+  data_config?: { paths?: string[]; interval_seconds?: number; max_files?: number; max_depth?: number; include_databases?: boolean }
   result: Record<string, unknown>
   created_at: string
   updated_at: string
@@ -60,6 +61,12 @@ export interface PreflightPayload {
   private_key?: string
   key_passphrase?: string
   profile: 'lite' | 'standard' | 'sensor'
+  /** Directories the deployed probe inventories for data assets. */
+  data_paths?: string[]
+  data_interval_seconds?: number
+  data_max_files?: number
+  data_max_depth?: number
+  data_include_databases?: boolean
 }
 
 export interface CreateDeploymentPayload extends PreflightPayload {

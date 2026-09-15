@@ -55,6 +55,7 @@ def _serialize(deployment: ProbeDeployment) -> dict[str, Any]:
         "registered_at": deployment.registered_at,
         "first_heartbeat_at": deployment.first_heartbeat_at,
         "preflight_result": deployment.preflight_result,
+        "data_config": deployment.data_config or {},
         "result": deployment.result,
         "created_at": deployment.created_at,
         "updated_at": deployment.updated_at,
@@ -128,6 +129,13 @@ def create_deployment(payload: ProbeDeploymentCreate, request: Request, db: Sess
         created_by=user.username,
         backend_url=payload.backend_url or settings.deployment_backend_url,
         idempotency_key=payload.idempotency_key,
+        data_config={
+            "paths": payload.data_paths,
+            "interval_seconds": payload.data_interval_seconds,
+            "max_files": payload.data_max_files,
+            "max_depth": payload.data_max_depth,
+            "include_databases": payload.data_include_databases,
+        },
     )
     db.add(deployment)
     db.flush()

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.api import deployments as deployments_module
 from app.core.database import SessionLocal
 from app.deployment.credential import encrypt_credential
+from app.deployment.service import build_probe_toml
 from app.deployment.enrollment import create_enrollment
 from app.main import app
 from app.models import ProbeDeployment, ProbeDeploymentCredential, ProbeEnrollment
@@ -101,3 +102,65 @@ def test_register_consumes_enrollment_and_heartbeat_online() -> None:
         assert dep.first_heartbeat_at is not None
         enrollment = db.scalar(select(ProbeEnrollment).where(ProbeEnrollment.deployment_id == dep_id))
         assert enrollment.consumed_at is not None
+
+
+def test_create_deployment_persists_data_asset_config(monkeypatch) -> None:
+    monkeypatch.setattr(deployments_module, "_dispatch", lambda deployment_id: None)
+    with TestClient(app) as client:
+        payload = {
+            "name": "test-deploy-data",
+            "host": "10.0.0.9",
+            "port": 22,
+            "username": "root",
+            "auth_type": "password",
+            "password": "secret",
+            "profile": "standard",
+            "idempotency_key": "api-key-data-config",
+            "data_paths": ["/srv/data", "/var/www/uploads"],
+            "data_interval_seconds": 1800,
+            "data_max_files": 300,
+            "data_max_depth": 4,
+            "data_include_databases": False,
+        }
+        resp = client.post("/api/v1/probe-deployments", json=payload)
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["data_config"] == {
+            "paths": ["/srv/data", "/var/www/uploads"],
+            "interval_seconds": 1800,
+            "max_files": 300,
+            "max_depth": 4,
+            "include_databases": False,
+        }
+        with SessionLocal() as db:
+            dep = db.get(ProbeDeployment, body["id"])
+            assert dep is not None
+            assert dep.data_config["paths"] == ["/srv/data", "/var/www/uploads"]
+            toml = build_probe_toml(dep, "bootstrap-token", None, interface="eth0")
+    assert "[data]" in toml
+    data_section = toml.split("[data]", 1)[1]
+    assert "enabled = true" in data_section
+    assert 'paths = ["/srv/data", "/var/www/uploads"]' in data_section
+    assert "interval_seconds = 1800" in data_section
+    assert "max_files = 300" in data_section
+    assert "max_depth = 4" in data_section
+    assert "include_databases = false" in data_section
+    scan_section = toml.split("[scan]", 1)[1].split("[data]", 1)[0]
+    assert "allow_remote = true" in scan_section
+
+
+def test_create_deployment_rejects_relative_data_paths(monkeypatch) -> None:
+    monkeypatch.setattr(deployments_module, "_dispatch", lambda deployment_id: None)
+    with TestClient(app) as client:
+        payload = {
+            "name": "test-deploy-bad-path",
+            "host": "10.0.0.11",
+            "username": "root",
+            "auth_type": "password",
+            "password": "secret",
+            "profile": "standard",
+            "idempotency_key": "api-key-bad-data-path",
+            "data_paths": ["C:/Users/data", "/srv/../etc"],
+        }
+        resp = client.post("/api/v1/probe-deployments", json=payload)
+        assert resp.status_code == 422

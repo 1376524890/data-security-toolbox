@@ -5,21 +5,29 @@ export interface ScanRequest {
   target: string
   discovery?: boolean
   top_ports?: number
+  /** Explicit TCP ports; takes precedence over top_ports when set. */
+  ports?: number[]
   public_exposed?: boolean
   nuclei?: boolean
   nuclei_tags?: string
   nuclei_templates?: string
+  /** Run the scan from this probe instead of the platform/worker host. */
+  probe_id?: number
+}
+
+export interface ScanAsset {
+  id: number
+  ip: string
+  port: number
+  protocol: string
+  service: string
+  asset_type: string
+  risk_level: string
 }
 
 export interface ScanResult extends Task {
-  scanned_assets?: Array<{
-    id: number
-    ip: string
-    port: number
-    service: string
-    asset_type: string
-    risk_level: string
-  }>
+  location?: 'platform' | 'probe'
+  scanned_assets?: ScanAsset[]
 }
 
 export function startScan(payload: ScanRequest): Promise<Task> {

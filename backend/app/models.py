@@ -403,6 +403,7 @@ class ProbeDeployment(TimestampMixin, Base):
     probe_id: Mapped[int | None] = mapped_column(ForeignKey("probes.id", ondelete="SET NULL"), nullable=True, index=True)
     preflight_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    data_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     credential: Mapped["ProbeDeploymentCredential | None"] = relationship(back_populates="deployment", uselist=False, cascade="all, delete-orphan")
     enrollment: Mapped["ProbeEnrollment | None"] = relationship(back_populates="deployment", uselist=False, cascade="all, delete-orphan")
     events: Mapped[list["ProbeDeploymentEvent"]] = relationship(back_populates="deployment", cascade="all, delete-orphan", order_by="ProbeDeploymentEvent.seq")

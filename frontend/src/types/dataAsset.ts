@@ -16,6 +16,14 @@ export interface DataAsset {
   sensitivity: string
   source: string
   columns: DataColumn[]
+  probe_id?: number | null
+  probe?: string
+  host?: string
+  path?: string
+  size?: number
+  categories?: string[]
+  status?: string
+  observed_at?: string
   extra?: Record<string, unknown>
   created_at: string
 }

@@ -42,6 +42,11 @@ const form = reactive({
   private_key: '',
   key_passphrase: '',
   profile: 'standard' as 'lite' | 'standard' | 'sensor',
+  data_paths: '',
+  data_interval_seconds: 3600,
+  data_max_files: 200,
+  data_max_depth: 3,
+  data_include_databases: true,
 })
 
 function idempotencyKey(): string {
@@ -60,6 +65,11 @@ function payload(): CreateDeploymentPayload {
     private_key: form.auth_type === 'private_key' ? form.private_key : undefined,
     key_passphrase: form.auth_type === 'private_key' ? form.key_passphrase || undefined : undefined,
     profile: form.profile,
+    data_paths: form.data_paths.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean),
+    data_interval_seconds: form.data_interval_seconds,
+    data_max_files: form.data_max_files,
+    data_max_depth: form.data_max_depth,
+    data_include_databases: form.data_include_databases,
     idempotency_key: idempotencyKey(),
   }
 }
@@ -128,7 +138,19 @@ async function submit(): Promise<void> {
 function retry(row: ProbeDeployment): void {
   resetForm()
   retryId.value = row.id
-  Object.assign(form, { name: row.name, host: row.host, port: row.port, username: row.username, auth_type: row.auth_type, profile: row.profile })
+  Object.assign(form, {
+    name: row.name,
+    host: row.host,
+    port: row.port,
+    username: row.username,
+    auth_type: row.auth_type,
+    profile: row.profile,
+    data_paths: (row.data_config?.paths || []).join('\n'),
+    data_interval_seconds: row.data_config?.interval_seconds ?? 3600,
+    data_max_files: row.data_config?.max_files ?? 200,
+    data_max_depth: row.data_config?.max_depth ?? 3,
+    data_include_databases: row.data_config?.include_databases ?? true,
+  })
   dialog.value = true
 }
 
@@ -173,6 +195,11 @@ function resetForm(): void {
     private_key: '',
     key_passphrase: '',
     profile: 'standard',
+    data_paths: '',
+    data_interval_seconds: 3600,
+    data_max_files: 200,
+    data_max_depth: 3,
+    data_include_databases: true,
   })
   preflightResult.value = null
 }
@@ -219,6 +246,9 @@ onUnmounted(() => { disposed = true; clearTimeout(pollTimer) })
           <el-descriptions-item label="目标">{{ detail.host }}:{{ detail.port }}</el-descriptions-item>
           <el-descriptions-item label="账户">{{ detail.username }}</el-descriptions-item>
           <el-descriptions-item label="Profile">{{ detail.profile }}</el-descriptions-item>
+          <el-descriptions-item label="数据资产目录" :span="2">
+            <span class="mono">{{ (detail.data_config?.paths || []).length ? (detail.data_config?.paths || []).join('、') : '未配置（可在数据资产页手动采集）' }}</span>
+          </el-descriptions-item>
           <el-descriptions-item label="状态"><StatusBadge :value="detail.status" /></el-descriptions-item>
           <el-descriptions-item label="Probe ID">{{ detail.probe_id ?? '—' }} <el-button v-if="detail.status === 'ONLINE'" link type="primary" @click="router.push('/probes')">查看探针</el-button></el-descriptions-item>
           <el-descriptions-item label="包版本">{{ detail.package_version || '—' }}</el-descriptions-item>
@@ -252,6 +282,16 @@ onUnmounted(() => { disposed = true; clearTimeout(pollTimer) })
         <el-form-item v-if="form.auth_type === 'private_key'" label="密钥口令"><el-input v-model="form.key_passphrase" type="password" show-password /></el-form-item>
         <el-form-item label="平台回连地址"><el-input v-model="form.backend_url" placeholder="http://平台任一可达网卡IP:8000（留空使用平台默认地址）" /><div style="color:var(--soc-text-muted);font-size:12px">可指定平台任一网卡的 IPv4、IPv6（如 http://[IPv6]:8000）或域名；预检会从探针主机验证连通性。默认采集所有网卡。</div></el-form-item>
         <el-form-item label="Profile"><el-select v-model="form.profile"><el-option value="lite" label="Lite（仅心跳/资产）" /><el-option value="standard" label="Standard（有界采集）" /><el-option value="sensor" label="Sensor（持续采集）" /></el-select></el-form-item>
+        <el-form-item label="数据资产目录">
+          <el-input v-model="form.data_paths" type="textarea" :rows="3" placeholder="每行一个绝对路径，例如：&#10;/srv/data&#10;/var/www/uploads&#10;留空则部署后不自动采集，可稍后在「数据资产」页手动触发" />
+          <div style="color:var(--soc-text-muted);font-size:12px">部署后探针会枚举这些目录（文件名、字段、敏感类目统计，不上传原始数据），也可由平台随时下发采集任务。</div>
+        </el-form-item>
+        <el-form-item label="采集周期"><el-input-number v-model="form.data_interval_seconds" :min="60" :max="86400" :step="300" /> <span style="margin-left:8px;color:var(--soc-text-muted);font-size:12px">秒</span></el-form-item>
+        <el-form-item label="文件上限 / 深度">
+          <el-input-number v-model="form.data_max_files" :min="1" :max="2000" />
+          <el-input-number v-model="form.data_max_depth" :min="0" :max="8" style="margin-left:8px" />
+        </el-form-item>
+        <el-form-item label="数据库服务"><el-switch v-model="form.data_include_databases" active-text="登记本机监听的数据库服务" /></el-form-item>
         <el-form-item label="预检"><el-button :loading="preflightLoading" @click="runPreflight">执行预检</el-button></el-form-item>
       </el-form>
       <el-alert v-if="preflightResult" :title="`预检：${preflightResult.compatible ? '兼容' : '不兼容'} | OS ${preflightResult.os} | ${preflightResult.arch} | 分数 ${preflightResult.capability_score}`" :type="preflightResult.compatible ? 'success' : 'warning'" :closable="false" />

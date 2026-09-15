@@ -41,6 +41,19 @@ export function getProbeTasks(id: number): Promise<Task[]> {
   return apiGet(`/probes/${id}/tasks`)
 }
 
+export interface DataAssetCollectPayload {
+  paths: string[]
+  max_files?: number
+  max_depth?: number
+  include_databases?: boolean
+  timeout_seconds?: number
+}
+
+/** Queue a data-asset inventory on the probe host (it reports back on its next poll). */
+export function collectProbeDataAssets(id: number, payload: DataAssetCollectPayload): Promise<Task> {
+  return apiPost(`/probes/${id}/data-assets/jobs`, payload)
+}
+
 export interface ProbeMetrics {
   probe: Probe
   system: Record<string, unknown>

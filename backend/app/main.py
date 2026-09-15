@@ -39,7 +39,7 @@ PUBLIC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 def _is_probe_api(path: str) -> bool:
     return (
         path == "/api/v1/probes/register"
-        or (path.startswith("/api/v1/probes/") and any(path.endswith(s) for s in ('/heartbeat', '/scan', '/commands', '/inventory')))
+        or (path.startswith("/api/v1/probes/") and any(path.endswith(s) for s in ('/heartbeat', '/scan', '/commands', '/inventory', '/data-assets')))
         or path in {"/api/v1/pcaps/upload", "/api/v1/files/upload"}
         or path == "/api/v1/health"
     )

@@ -47,6 +47,13 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
         capture_enabled = "true"
         file_interval = 0
         paths = "[]"
+    data_config = deployment.data_config or {}
+    data_paths = [str(item) for item in (data_config.get("paths") or []) if str(item).strip()]
+    data_enabled = "true" if data_paths else "false"
+    data_interval = int(data_config.get("interval_seconds") or 3600)
+    data_max_files = int(data_config.get("max_files") or 200)
+    data_max_depth = int(data_config.get("max_depth") or 3)
+    data_databases = "true" if data_config.get("include_databases", True) else "false"
     return "\n".join(
         [
             "[server]",
@@ -76,6 +83,23 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
             f"paths = {paths}",
             "max_files = 50",
             "demo = false",
+            "",
+            "[scan]",
+            "# Platform-queued bounded TCP inventory runs on this probe host.",
+            "allow_remote = true",
+            "poll_seconds = 30",
+            "",
+            "[data]",
+            "# Data-asset inventory of this server: file identity, inferred columns and",
+            "# sensitive-data categories. Only aggregate evidence is uploaded.",
+            f"enabled = {data_enabled}",
+            f"interval_seconds = {data_interval}",
+            f"paths = {json.dumps(data_paths)}",
+            f"max_files = {data_max_files}",
+            f"max_depth = {data_max_depth}",
+            f"include_databases = {data_databases}",
+            "allow_remote = true",
+            "poll_seconds = 30",
             "",
         ]
     )

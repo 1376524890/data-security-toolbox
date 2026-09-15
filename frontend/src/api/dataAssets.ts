@@ -2,7 +2,17 @@ import { apiGet } from './client'
 import type { PageResult } from '../types/common'
 import type { DataAsset, DataAssetDetail } from '../types/dataAsset'
 
-export function listDataAssets(query: { search?: string; sensitivity?: string; asset_type?: string; source?: string; page: number; page_size: number }): Promise<PageResult<DataAsset>> {
+export interface DataAssetQuery {
+  search?: string
+  sensitivity?: string
+  asset_type?: string
+  source?: string
+  probe_id?: number
+  page: number
+  page_size: number
+}
+
+export function listDataAssets(query: DataAssetQuery): Promise<PageResult<DataAsset>> {
   return apiGet('/data/assets', query as unknown as Record<string, unknown>)
 }
 

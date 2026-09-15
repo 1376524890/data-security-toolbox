@@ -43,6 +43,11 @@ try:
 except ImportError:
     from scanner import scan_network
 
+try:
+    from .data_assets import discover_data_assets
+except ImportError:
+    from data_assets import discover_data_assets
+
 AGENT_VERSION = "3.2.1"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
@@ -76,6 +81,17 @@ DEFAULT_CONFIG = {
         "max_hosts": 256,
         "concurrency": 32,
         "connect_timeout": 0.5,
+        "timeout_seconds": 120,
+        "allow_remote": False,
+        "poll_seconds": 30,
+    },
+    "data": {
+        "enabled": False,
+        "interval_seconds": 3600,
+        "paths": [],
+        "max_files": 200,
+        "max_depth": 3,
+        "include_databases": True,
         "timeout_seconds": 120,
         "allow_remote": False,
         "poll_seconds": 30,
@@ -144,6 +160,10 @@ class Config:
     @property
     def scan(self) -> dict[str, Any]:
         return self.data["scan"]
+
+    @property
+    def data_assets(self) -> dict[str, Any]:
+        return self.data["data"]
 
     def base_url(self) -> str:
         return str(self.server["url"]).rstrip("/")
@@ -879,41 +899,80 @@ class ProbeAgent:
     def _default_targets(self) -> list[str]:
         return [str(t) for t in (self.config.scan.get('targets') or []) if str(t).strip()]
 
-    def scan_loop(self) -> None:
+    def _spool_report(self, state_dir: Path, name: str, report: dict[str, Any]) -> None:
+        """Write a report atomically so a crash cannot upload half a JSON file."""
+        target = state_dir / name
+        tmp = target.with_suffix('.tmp')
+        tmp.write_text(json.dumps(report), encoding='utf-8')
+        os.replace(tmp, target)
+
+    def _upload_pending(self, pending: Path, endpoint: str) -> None:
+        if not pending.exists():
+            return
+        report = json.loads(pending.read_text(encoding='utf-8'))
+        http_json(f'{self.config.base_url()}/api/v1/probes/{self.probe_id}/{endpoint}', report, self.headers(), self.config)
+        pending.unlink()
+
+    def _next_command(self) -> dict[str, Any] | None:
+        req = urllib.request.Request(f'{self.config.base_url()}/api/v1/probes/{self.probe_id}/commands', headers=self.headers())
+        with urllib.request.urlopen(req, context=ssl_context(self.config), timeout=30) as response:
+            commands = json.load(response).get('commands', [])
+        return commands[0] if commands else None
+
+    def _run_scan_job(self, state_dir: Path, config: dict[str, Any], task_id: int | None) -> None:
+        try:
+            report = scan_network(config, self.stop_event)
+        except Exception as exc:
+            report = {'assets': [], 'complete': False, 'error': str(exc)[:500]}
+        report.update(report_id=uuid.uuid4().hex, task_id=task_id)
+        self._spool_report(state_dir, 'inventory.pending.json', report)
+
+    def _run_data_asset_job(self, state_dir: Path, config: dict[str, Any], task_id: int | None) -> None:
+        merged = {**self.config.data_assets, **(config or {})}
+        try:
+            report = discover_data_assets(merged, self.stop_event)
+        except Exception as exc:
+            report = {'assets': [], 'databases': [], 'scanned_paths': [], 'complete': False,
+                      'error': str(exc)[:500], 'observed_at': now_iso(), 'scanner': 'probe-file-inventory'}
+        report.update(report_id=uuid.uuid4().hex, task_id=task_id)
+        self._spool_report(state_dir, 'data-assets.pending.json', report)
+
+    def inventory_loop(self) -> None:
+        """Run scheduled and platform-queued network scans / data asset collection."""
         scan_cfg = self.config.scan
-        if not scan_cfg.get('enabled') and not scan_cfg.get('allow_remote'):
+        data_cfg = self.config.data_assets
+        remote_allowed = bool(scan_cfg.get('allow_remote')) or bool(data_cfg.get('allow_remote'))
+        scheduled_scan = bool(scan_cfg.get('enabled'))
+        scheduled_data = bool(data_cfg.get('enabled'))
+        if not (remote_allowed or scheduled_scan or scheduled_data):
             return
         state_dir = self.config.spool_path() / 'agent-state'
         state_dir.mkdir(parents=True, exist_ok=True)
-        pending = state_dir / 'inventory.pending.json'
+        pending_scan = state_dir / 'inventory.pending.json'
+        pending_data = state_dir / 'data-assets.pending.json'
         next_scan = 0.0
+        next_data = 0.0
         while not self.stop_event.is_set():
             try:
-                if pending.exists():
-                    report = json.loads(pending.read_text(encoding='utf-8'))
-                    http_json(f'{self.config.base_url()}/api/v1/probes/{self.probe_id}/inventory', report, self.headers(), self.config)
-                    pending.unlink()
-                job = None
-                if scan_cfg.get('allow_remote'):
-                    req = urllib.request.Request(f'{self.config.base_url()}/api/v1/probes/{self.probe_id}/commands', headers=self.headers())
-                    with urllib.request.urlopen(req, context=ssl_context(self.config), timeout=30) as response:
-                        commands = json.load(response).get('commands', [])
-                    job = commands[0] if commands else None
-                if job or (scan_cfg.get('enabled') and time.monotonic() >= next_scan):
-                    config = job['config'] if job else scan_cfg
-                    try:
-                        report = scan_network(config, self.stop_event)
-                    except Exception as exc:
-                        report = {'assets': [], 'complete': False, 'error': str(exc)[:500]}
-                    report.update(report_id=uuid.uuid4().hex, task_id=job['id'] if job else None)
-                    tmp = pending.with_suffix('.tmp')
-                    tmp.write_text(json.dumps(report), encoding='utf-8')
-                    os.replace(tmp, pending)
+                self._upload_pending(pending_scan, 'inventory')
+                self._upload_pending(pending_data, 'data-assets')
+                if remote_allowed:
+                    job = self._next_command()
+                    if job:
+                        kind = job.get('kind')
+                        if kind == 'data_asset_scan':
+                            self._run_data_asset_job(state_dir, job.get('config') or {}, job.get('id'))
+                        elif kind == 'asset_scan':
+                            self._run_scan_job(state_dir, job.get('config') or {}, job.get('id'))
+                if scheduled_scan and time.monotonic() >= next_scan:
+                    self._run_scan_job(state_dir, scan_cfg, None)
                     next_scan = time.monotonic() + max(60, int(scan_cfg.get('interval_seconds', 3600)))
+                if scheduled_data and time.monotonic() >= next_data:
+                    self._run_data_asset_job(state_dir, {}, None)
+                    next_data = time.monotonic() + max(60, int(data_cfg.get('interval_seconds', 3600)))
             except Exception as exc:
                 print(f'probe inventory upload/scan retry: {type(exc).__name__}', file=sys.stderr)
-            self.stop_event.wait(max(2, int(scan_cfg.get('poll_seconds', 30))))
-
+            self.stop_event.wait(max(2, min(int(scan_cfg.get('poll_seconds', 30)), int(data_cfg.get('poll_seconds', 30)))))
 
     def run(self) -> int:
         self.config.ensure()
@@ -931,7 +990,7 @@ class ProbeAgent:
             threading.Thread(target=self.heartbeat_loop, name="heartbeat", daemon=True),
             threading.Thread(target=self.asset_loop, name="assets", daemon=True),
             threading.Thread(target=self.file_loop, name="files", daemon=True),
-            threading.Thread(target=self.scan_loop, name="scan", daemon=True),
+            threading.Thread(target=self.inventory_loop, name="inventory", daemon=True),
         ]
         for thread in threads:
             thread.start()
