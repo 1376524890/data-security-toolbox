@@ -21,6 +21,7 @@ export const menuGroups: MenuNode[] = [
     { path: '/assets', title: '资产中心', icon: 'Monitor' },
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },
     { path: '/sensitive', title: '敏感发现', icon: 'Search' },
+    { path: '/network/dlp', title: '网络防泄密', icon: 'Lock' },
     { path: '/files', title: '文件分析', icon: 'Document' },
   ]},
   { group: '威胁情报', items: [

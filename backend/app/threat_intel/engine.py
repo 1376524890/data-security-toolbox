@@ -74,6 +74,15 @@ class ThreatIntelEngine(DetectionEngine):
             if value:
                 iocs[value] = ioc_type
         observed: dict[str, set[str]] = {"ip": set(), "domain": set(), "url": set(), "hash": set()}
+        for key, values in context.data.get('transfer_observations', {}).items():
+            if key in observed:
+                observed[key].update(str(v).lower() for v in values)
+        for row in context.data.get('dns', {}).get('queries', []):
+            if row.get('name'):
+                observed['domain'].add(row['name'].rstrip('.').lower())
+        for row in context.data.get('tls', {}).get('handshakes', []):
+            if row.get('sni'):
+                observed['domain'].add(row['sni'].rstrip('.').lower())
         for flow in context.flows:
             for key, value in (("ip", flow.get("src_ip")), ("ip", flow.get("dst_ip")), ("domain", flow.get("dns_query")), ("url", flow.get("url"))):
                 if value:

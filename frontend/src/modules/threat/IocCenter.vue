@@ -11,6 +11,8 @@ import StatusBadge from '../../components/security/StatusBadge.vue'
 import EvidenceViewer from '../../components/evidence/EvidenceViewer.vue'
 import JsonViewer from '../../components/evidence/JsonViewer.vue'
 import { formatDateTime } from '../../utils/format'
+import IntelligenceSources from './IntelligenceSources.vue'
+import { apiPost } from '../../api/client'
 
 const loading = ref(true)
 const error = ref('')
@@ -51,14 +53,21 @@ async function open(row: Ioc): Promise<void> {
 
 function reset(): void { filters.page = 1; load() }
 
+async function toggle(row: Ioc) {
+  try { await apiPost(`/intelligence/${row.id}/toggle`, { enabled: row.metadata?.enabled === false }); await load() }
+  catch (e) { ElMessage.error(String(e)) }
+}
+
 onMounted(load)
 </script>
 
 <template>
   <div>
+    <IntelligenceSources @changed="load" />
     <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset" />
     <StateBox :loading="loading" :error="error" :empty="!items.length" @retry="load">
       <el-table :data="items" size="small" @row-click="open">
+        <el-table-column label="启用" width="80"><template #default="{row}"><el-switch :model-value="row.metadata?.enabled !== false" @click.stop @change="toggle(row)" /></template></el-table-column>
         <el-table-column prop="value" label="指标" min-width="200" show-overflow-tooltip />
         <el-table-column prop="type" label="类型" width="100" />
         <el-table-column prop="source" label="来源" width="110" />

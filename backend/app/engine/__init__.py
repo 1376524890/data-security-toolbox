@@ -10,6 +10,7 @@ from app.engine.traffic_engine.engine import TrafficEngine
 from app.integrations.engine import IntegrationAdapterEngine
 from app.integrations.registry import integration_registry
 from app.threat_intel.engine import ThreatIntelEngine
+from app.engine.dlp_engine import DlpEngine
 
 registry = EngineRegistry()
 registry.register(AssetEngine())
@@ -18,6 +19,7 @@ registry.register(TrafficEngine())
 registry.register(DataEngine())
 registry.register(SigmaLogEngine())
 registry.register(ComplianceEngine())
+registry.register(DlpEngine())
 registry.register(ThreatIntelEngine())
 for adapter in integration_registry.all():
     registry.register(IntegrationAdapterEngine(adapter))

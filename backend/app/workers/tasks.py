@@ -56,6 +56,27 @@ pipeline = DetectionPipeline(registry, RiskEngine())
 incident_engine = IncidentEngine()
 
 
+@celery_app.task(name='security_toolbox.sync_intelligence')
+def sync_intelligence_task(task_id: int):
+    from app.services.intelligence_service import sync_provider
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        if not task:
+            return
+        task.status, task.current_stage = 'Running', '同步威胁情报'
+        db.commit()
+        try:
+            result = sync_provider(db, task.payload['provider'])
+            task.result = result
+            task.status = 'Success' if result['status'] == 'success' else 'Failed'
+            task.error = result.get('error', '')
+        except Exception:
+            db.rollback()
+            task.status, task.error = 'Failed', 'Intelligence synchronization failed'
+        task.progress, task.finished_at = 100, datetime.now(UTC)
+        db.commit()
+
+
 def _recent_findings(db, probe_id: int | None, window_seconds: int = 3600, exclude_task_id: int | None = None) -> list[DetectionResult]:
     since = datetime.now(UTC) - timedelta(seconds=window_seconds)
     query = select(DetectionFinding).where(DetectionFinding.created_at >= since)
@@ -193,7 +214,12 @@ def run_pipeline(context: DetectionContext, task_id: int, db=None) -> list[tuple
         context.data["ioc_library"] = [
             {"value": item.value, "type": item.ioc_type, "source": item.source}
             for item in db.scalars(select(IOC)).all()
+            if (item.extra or {}).get('enabled', True)
         ]
+        from app.models import SystemSetting
+        from app.services.dlp_service import DEFAULT_POLICY
+        policy = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
+        context.data['dlp_policy'] = policy.value if policy else DEFAULT_POLICY
         context.data["local_cves"] = [
             {"cve_id": item.cve_id, "severity": item.severity, "cvss_score": item.cvss_score, "description": item.description}
             for item in db.scalars(select(LocalCve)).all()
@@ -539,6 +565,8 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
             "port_scan_ports_threshold": settings.port_scan_ports_threshold,
         })
         alerts = run_pipeline(context, task_id, db)
+        if context.data.get('dlp'):
+            db.add(AnalysisResult(task_id=task_id, module='dlp', content=context.data['dlp'], risk_level='High' if any(o['matches'] for o in context.data['dlp']['objects']) else 'Low'))
         db.add(AnalysisResult(
             task_id=task_id,
             module="protocol_details",
@@ -579,7 +607,7 @@ def asset_task(probe_id: int, task_id: int) -> None:
         payload = dict(probe.extra or {})
         payload.update({"hostname": probe.hostname, "ip": probe.ip_address})
         assets = classify_assets(payload)
-        db.execute(delete(Asset).where(Asset.probe_id == probe_id))
+        db.execute(delete(Asset).where(Asset.probe_id == probe_id, or_(Asset.extra['source'].as_string() != 'probe_scan', Asset.extra['source'].as_string().is_(None))))
         for item in assets:
             db.add(Asset(probe_id=probe_id, ip=item["ip"], hostname=item["hostname"], os=item["os"], port=item["port"], protocol=item["protocol"], service=item["service"], asset_type=item["asset_type"], risk_level=item["risk_level"], sensitive_categories=item["sensitive_categories"], extra=item["metadata"]))
         context = DetectionContext(target_type="probe", target_id=str(probe_id), assets=assets, data={"public_exposed": payload.get("public_exposed", False), "services": payload.get("services", []), "probe_id": probe_id})

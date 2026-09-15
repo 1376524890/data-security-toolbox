@@ -532,6 +532,8 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         queued = 0
         workers = 0
     oldest = db.scalar(select(func.min(Task.created_at)).where(Task.status.in_(["Pending", "Running"])))
+    if oldest and oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=UTC)
     oldest_age = max(0.0, (datetime.now(UTC) - oldest).total_seconds()) if oldest else 0.0
     storage_bytes = sum(path.stat().st_size for path in settings.storage_dir.rglob("*") if path.is_file())
     probes = db.scalars(select(Probe)).all()
@@ -1771,12 +1773,12 @@ def network_live(db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.get("/sensitive/findings")
 def sensitive_findings(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Aggregate sensitive-data findings by category plus hit details."""
-    findings = db.scalars(select(DetectionFinding).where(DetectionFinding.engine == "data_engine").order_by(DetectionFinding.risk_score.desc()).limit(500)).all()
+    findings = db.scalars(select(DetectionFinding).where(DetectionFinding.engine.in_(['data_engine', 'dlp_engine'])).order_by(DetectionFinding.risk_score.desc()).limit(500)).all()
     categories: dict[str, dict[str, Any]] = {}
     details: list[dict[str, Any]] = []
     for item in findings:
         rule_id = item.rule_id
-        cat = "secret" if rule_id == "DATA_SECRET_001" else "pii" if rule_id == "DATA_PII_001" else "yara"
+        cat = 'network_dlp' if item.engine == 'dlp_engine' else ("secret" if rule_id == "DATA_SECRET_001" else "pii" if rule_id == "DATA_PII_001" else "yara")
         entry = categories.setdefault(cat, {"category": cat, "count": 0, "severity": item.severity, "risk_score": 0})
         entry["count"] += 1
         entry["risk_score"] = max(entry["risk_score"], item.risk_score)
@@ -1786,7 +1788,7 @@ def sensitive_findings(db: Session = Depends(get_db)) -> dict[str, Any]:
             "rule_id": item.rule_id,
             "severity": item.severity,
             "risk_level": item.risk_level,
-            "file": evidence.get("file", ""),
+            "file": evidence.get("file", evidence.get('filename', '')),
             "target_id": item.target_id,
             "counts": evidence.get("regex", {}).get("counts", {}) if isinstance(evidence.get("regex"), dict) else {},
             "secret_count": evidence.get("secret_count", 0) if isinstance(evidence.get("secret_count"), int) else (evidence.get("regex", {}).get("secret_count", 0) if isinstance(evidence.get("regex"), dict) else 0),

@@ -30,6 +30,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/sensitive', component: () => import('../modules/data-security/SensitiveDiscovery.vue'), meta: { title: 'Sensitive Discovery', group: 'Asset & Data Security' } },
   { path: '/files', component: () => import('../modules/data-security/FileAnalysis.vue'), meta: { title: 'File Analysis', group: 'Asset & Data Security' } },
   // Threat Intelligence
+  { path: '/network/dlp', component: () => import('../modules/data-security/NetworkDlp.vue'), meta: { title: '网络防泄密', group: 'Asset & Data Security' } },
   { path: '/threat/ioc', component: () => import('../modules/threat/IocCenter.vue'), meta: { title: 'IOC', group: 'Threat Intelligence' } },
   { path: '/threat/cve', component: () => import('../modules/threat/CveCenter.vue'), meta: { title: 'CVE', group: 'Threat Intelligence' } },
   { path: '/threat/rules', component: () => import('../modules/threat/RulesCenter.vue'), meta: { title: 'Rules', group: 'Threat Intelligence' } },

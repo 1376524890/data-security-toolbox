@@ -17,7 +17,7 @@ if ! id dstprobe >/dev/null 2>&1; then
 fi
 
 mkdir -p "${APP_DIR}" "${PROBE_DIR}" "${CONFIG_DIR}" "${SPOOL_DIR}"
-cp probe.py requirements.txt "${PROBE_DIR}/"
+cp probe.py scanner.py requirements.txt "${PROBE_DIR}/"
 chmod 0755 "${PROBE_DIR}/probe.py"
 chown -R dstprobe:dstprobe "${PROBE_DIR}" "${SPOOL_DIR}"
 

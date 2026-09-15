@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.4.0（feature/v2.2-probe-intel-dlp）
+
+- 探针侧资产扫描改为受限、无特权的 TCP connect 扫描：必须显式配置目标，限制主机、端口、并发和总时长；支持管理员下发任务、断线暂存和幂等回传资产清单。
+- 新增威胁情报源管理：本地 JSON/CSV 导入导出、IOC 启停、Feodo Tracker、URLhaus 和自建情报源同步；同步任务限流并限制下载体积与记录数。
+- 新增旁路网络 DLP：有界 TCP 重组、明文 HTTP/表单/文件对象提取、敏感字段/关键词/SHA256 指纹检测、脱敏证据及覆盖范围说明。
+- 修复 `dpkt` 后备解析器将 IPv4 地址以二进制写入 JSON 证据的问题，并兼容 SQLite 无时区时间值的健康检查。
+- 更新探针示例、Compose 情报源变量，并新增探针扫描、IOC 规范化和 DLP 脱敏测试。
+
 ## v2.3.2（feature/nuclei-integration）
 
 - 修复 PCAP 解析 bug：`dns.resp.len` 等 tshark 字段返回逗号列表时 `int()` 抛

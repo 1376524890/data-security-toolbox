@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listProbes, registerProbe, analyzeProbe, getProbeTasks, type Probe } from '../../api/probes'
+import { listProbes, registerProbe, analyzeProbe, queueProbeScan, getProbeTasks, type Probe } from '../../api/probes'
 import type { Task } from '../../types/task'
 import StateBox from '../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../components/common/FilterBar.vue'
@@ -18,6 +18,10 @@ const tasks = ref<Task[]>([])
 const drawer = ref(false)
 const filters = reactive({ search: '', status: '', page: 1, page_size: 50 })
 const bootstrapToken = ref('')
+const scanDialog = ref(false)
+const scanProbe = ref<Probe | null>(null)
+const scanTargets = ref('')
+const scanPorts = ref('22,80,443,445,3306,5432,6379,8080')
 
 const filterFields: FilterField[] = [
   { key: 'search', label: '搜索名称/IP', placeholder: '搜索名称 / 主机 / IP', width: '240px' },
@@ -61,6 +65,24 @@ async function runAnalyze(row: Probe): Promise<void> {
   }
 }
 
+function openScan(row: Probe): void {
+  scanProbe.value = row
+  scanTargets.value = row.ip_address && row.ip_address !== '0.0.0.0' ? row.ip_address : ''
+  scanDialog.value = true
+}
+
+async function submitScan(): Promise<void> {
+  if (!scanProbe.value) return
+  const targets = scanTargets.value.split(/[\s,]+/).map(v => v.trim()).filter(Boolean)
+  const ports = [...new Set(scanPorts.value.split(/[\s,]+/).map(Number).filter(v => Number.isInteger(v) && v >= 1 && v <= 65535))]
+  if (!targets.length || !ports.length) { ElMessage.warning('请填写明确的 IP/CIDR 目标和端口'); return }
+  try {
+    const task = await queueProbeScan(scanProbe.value.id, { targets, ports })
+    ElMessage.success(`探针扫描任务 #${task.id} 已入队`)
+    scanDialog.value = false
+  } catch (err) { ElMessage.error(err instanceof Error ? err.message : String(err)) }
+}
+
 async function handleRegister(): Promise<void> {
   try {
     if (!bootstrapToken.value) {
@@ -95,7 +117,7 @@ onMounted(load)
         <el-table-column label="CPU" width="80"><template #default="{ row }">{{ cpu(row) }}</template></el-table-column>
         <el-table-column label="内存" width="90"><template #default="{ row }">{{ mem(row) }}</template></el-table-column>
         <el-table-column label="最近上报" width="160"><template #default="{ row }">{{ formatDateTime(row.last_seen) }}</template></el-table-column>
-        <el-table-column label="操作" width="120"><template #default="{ row }"><el-button size="small" @click.stop="runAnalyze(row)">分析</el-button><el-button size="small" type="primary" @click.stop="open(row)">详情</el-button></template></el-table-column>
+        <el-table-column label="操作" width="190"><template #default="{ row }"><el-button size="small" @click.stop="runAnalyze(row)">分析</el-button><el-button size="small" @click.stop="openScan(row)">扫描</el-button><el-button size="small" type="primary" @click.stop="open(row)">详情</el-button></template></el-table-column>
       </el-table>
       <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="filters.page_size" :current-page="filters.page" @current-change="(p: number) => { filters.page = p; load() }" />
     </StateBox>
@@ -124,6 +146,14 @@ onMounted(load)
         </el-table>
       </template>
     </DetailDrawer>
+    <el-dialog v-model="scanDialog" title="下发探针侧资产扫描" width="560px">
+      <el-alert title="扫描在探针所在主机执行。请仅填写已获授权的 IP 或 CIDR，单次最多 1024 台主机、256 个端口。" type="warning" :closable="false" />
+      <el-form label-width="90px" style="margin-top:16px">
+        <el-form-item label="目标"><el-input v-model="scanTargets" type="textarea" :rows="3" placeholder="192.168.1.10 或 192.168.1.0/24；多个目标用逗号或换行分隔" /></el-form-item>
+        <el-form-item label="TCP 端口"><el-input v-model="scanPorts" placeholder="22,80,443,3306" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="scanDialog=false">取消</el-button><el-button type="primary" @click="submitScan">下发扫描</el-button></template>
+    </el-dialog>
   </div>
 </template>
 

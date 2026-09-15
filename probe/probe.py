@@ -38,7 +38,12 @@ except ImportError:
     psutil = None
 
 
-AGENT_VERSION = "3.1.0"
+try:
+    from .scanner import scan_network
+except ImportError:
+    from scanner import scan_network
+
+AGENT_VERSION = "3.2.0"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
     "capture": {"interface": "eth0", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},
@@ -66,6 +71,13 @@ DEFAULT_CONFIG = {
         "top_ports": 1000,
         "nuclei": False,
         "nuclei_tags": "",
+        "ports": [22, 80, 443, 445, 3306, 5432, 6379, 8080],
+        "max_hosts": 256,
+        "concurrency": 32,
+        "connect_timeout": 0.5,
+        "timeout_seconds": 120,
+        "allow_remote": False,
+        "poll_seconds": 30,
     },
 }
 
@@ -634,6 +646,9 @@ class ProbeAgent:
             pass
 
     def capture_loop(self) -> None:
+        if not self.config.capture.get('enabled', True):
+            self.capture_status = 'disabled'
+            return
         while not self.stop_event.is_set():
             if spool_size_mb(self.config.spool_path()) >= int(self.config.spool["max_mb"]):
                 self.capture_status = "degraded"
@@ -768,7 +783,13 @@ class ProbeAgent:
         interval = int(self.config.agent["file_interval_seconds"])
         if interval <= 0 or not self.config.agent["paths"]:
             return
-        uploaded: set[str] = set()
+        state_dir = self.config.spool_path() / 'agent-state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        manifest = state_dir / 'uploaded-files.json'
+        try:
+            uploaded: set[str] = set(json.loads(manifest.read_text(encoding='utf-8')))
+        except (OSError, ValueError):
+            uploaded = set()
         while not self.stop_event.is_set():
             try:
                 files = file_records([Path(item) for item in self.config.agent["paths"]], int(self.config.agent["max_files"]))
@@ -787,6 +808,9 @@ class ProbeAgent:
                         }
                         result = http_upload_file(Path(record["path"]), meta, int(self.probe_id), self.token, self.config)
                         uploaded.add(record["sha256"])
+                        tmp = manifest.with_suffix('.tmp')
+                        tmp.write_text(json.dumps(sorted(uploaded)[-10000:]), encoding='utf-8')
+                        os.replace(tmp, manifest)
                         if result.get("id"):
                             self.uploaded_files.append(record["sha256"])
                     except Exception:
@@ -804,36 +828,42 @@ class ProbeAgent:
             self.stop_event.wait(interval)
 
     def _default_targets(self) -> list[str]:
-        targets = [str(t) for t in (self.config.scan.get("targets") or []) if str(t).strip()]
-        if targets:
-            return targets
-        ip = local_ip(self.config.capture["interface"])
-        if ip and "." in ip:
-            parts = ip.split(".")
-            return [".".join(parts[:3]) + ".0/24"]
-        return []
+        return [str(t) for t in (self.config.scan.get('targets') or []) if str(t).strip()]
 
     def scan_loop(self) -> None:
         scan_cfg = self.config.scan
-        if not scan_cfg.get("enabled"):
+        if not scan_cfg.get('enabled') and not scan_cfg.get('allow_remote'):
             return
-        interval = max(60, int(scan_cfg.get("interval_seconds") or 3600))
+        state_dir = self.config.spool_path() / 'agent-state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        pending = state_dir / 'inventory.pending.json'
+        next_scan = 0.0
         while not self.stop_event.is_set():
-            targets = self._default_targets()
-            if self.probe_id and targets:
-                try:
-                    payload = {
-                        "targets": targets,
-                        "discovery": bool(scan_cfg.get("discovery", True)),
-                        "top_ports": int(scan_cfg.get("top_ports") or 1000),
-                        "nuclei": bool(scan_cfg.get("nuclei", False)),
-                        "nuclei_tags": str(scan_cfg.get("nuclei_tags") or ""),
-                    }
-                    http_json(f"{self.config.base_url()}/api/v1/probes/{self.probe_id}/scan", payload, self.headers(), self.config)
-                    print(f"probe scan triggered for {targets}", file=sys.stderr)
-                except Exception as exc:
-                    print(f"probe scan trigger failed: {exc}", file=sys.stderr)
-            self.stop_event.wait(interval)
+            try:
+                if pending.exists():
+                    report = json.loads(pending.read_text(encoding='utf-8'))
+                    http_json(f'{self.config.base_url()}/api/v1/probes/{self.probe_id}/inventory', report, self.headers(), self.config)
+                    pending.unlink()
+                job = None
+                if scan_cfg.get('allow_remote'):
+                    req = urllib.request.Request(f'{self.config.base_url()}/api/v1/probes/{self.probe_id}/commands', headers=self.headers())
+                    with urllib.request.urlopen(req, context=ssl_context(self.config), timeout=30) as response:
+                        commands = json.load(response).get('commands', [])
+                    job = commands[0] if commands else None
+                if job or (scan_cfg.get('enabled') and time.monotonic() >= next_scan):
+                    config = job['config'] if job else scan_cfg
+                    try:
+                        report = scan_network(config, self.stop_event)
+                    except Exception as exc:
+                        report = {'assets': [], 'complete': False, 'error': str(exc)[:500]}
+                    report.update(report_id=uuid.uuid4().hex, task_id=job['id'] if job else None)
+                    tmp = pending.with_suffix('.tmp')
+                    tmp.write_text(json.dumps(report), encoding='utf-8')
+                    os.replace(tmp, pending)
+                    next_scan = time.monotonic() + max(60, int(scan_cfg.get('interval_seconds', 3600)))
+            except Exception as exc:
+                print(f'probe inventory upload/scan retry: {type(exc).__name__}', file=sys.stderr)
+            self.stop_event.wait(max(2, int(scan_cfg.get('poll_seconds', 30))))
 
 
     def run(self) -> int:

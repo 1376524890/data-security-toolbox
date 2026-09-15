@@ -33,6 +33,10 @@ export function analyzeProbe(id: number): Promise<Task> {
   return apiPost(`/probes/${id}/analyze`)
 }
 
+export function queueProbeScan(id: number, payload: { targets: string[]; ports: number[] }): Promise<Task> {
+  return apiPost(`/probes/${id}/scan-jobs`, payload)
+}
+
 export function getProbeTasks(id: number): Promise<Task[]> {
   return apiGet(`/probes/${id}/tasks`)
 }

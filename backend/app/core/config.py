@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     nuclei_templates_dir: str = "/app/data/nuclei-templates"
     misp_url: str = ""
     misp_api_key: str = ""
+    urlhaus_auth_key: str = ""
+    custom_intel_url: str = ""
+    custom_intel_token: str = ""
     wazuh_url: str = ""
     osquery_socket: str = ""
     max_upload_mb: int = 2048

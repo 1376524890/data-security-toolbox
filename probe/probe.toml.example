@@ -7,6 +7,7 @@ ca_file = "/etc/data-security-toolbox/ca.pem"
 interface = "eth0"
 segment_seconds = 30
 segment_max_mb = 64
+enabled = true
 
 [spool]
 path = "/var/lib/data-security-toolbox/spool"
@@ -26,15 +27,17 @@ paths = []
 max_files = 50
 demo = false
 
-# Automated network environment scan (nmap discovery + optional nuclei), triggered
-# by the probe against the backend's scan pipeline. Leave enabled=false to disable.
+# Bounded TCP-connect inventory performed locally by the unprivileged probe.
 [scan]
 enabled = false
 interval_seconds = 3600
-# targets: list of IP / CIDR / range. If empty, the probe auto-derives a /24 from
-# its own interface IP.
+# Explicit IP/CIDR targets are required. Keep the list narrow and authorized.
 targets = []
-discovery = true
-top_ports = 1000
-nuclei = false
-nuclei_tags = ""
+ports = [22, 80, 443, 445, 3306, 5432, 6379, 8080]
+max_hosts = 256
+concurrency = 32
+connect_timeout = 0.5
+timeout_seconds = 120
+# Allow an administrator to queue a bounded scan for this probe.
+allow_remote = false
+poll_seconds = 30

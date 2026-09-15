@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import json
+import socket
 import re
 import threading
 import time
@@ -159,7 +160,8 @@ def _dpkt_parse(path: Path, max_packets: int) -> tuple[list[dict[str, Any]], lis
             ip = eth.data if isinstance(eth.data, dpkt.ip.IP) else None
             if not ip:
                 continue
-            src, dst = ip.src, ip.dst
+            src = socket.inet_ntop(socket.AF_INET, ip.src)
+            dst = socket.inet_ntop(socket.AF_INET, ip.dst)
             src_port = dst_port = 0
             proto = "other"
             payload = ip.data
