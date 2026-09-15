@@ -21,6 +21,12 @@
   `[scan] allow_remote` 与 `[data]` 段；新增迁移 `0009_probe_data_assets`（`probe_deployments.data_config`）。
 - 新增测试：扫描引擎（区间展开、端口选择、TCP 探测、兜底、拦截自检）、探针数据资产采集、
   探针上报入库与任务下发/鉴权、探针部署数据资产配置持久化与 `probe.toml` 生成。
+- **版本**：平台升至 2.6.0，探针升至 3.3.0；探针部署包 `probe-3.3.0`（amd64 / arm64）已重建并附
+  SHA256 清单，打包清单与 `install.sh` 补齐 `data_assets.py`（缺失会导致探针启动即 ImportError）。
+- 已安装探针需升级到 3.3.0 才能使用探针侧扫描与数据资产采集；升级步骤见
+  `docs/network-scan-and-probe-data-assets.md`。
+- 修复探针部署包目录接口 `GET /probe-deployments/packages`：`list_packages()` 之前对每个历史版本都返回
+  当前版本的 SHA256（`find_package` 只按配置版本取包），现按目录版本分别校验并返回各自摘要。
 
 ## v2.5.0（feature/v2.2-probe-intel-dlp）
 

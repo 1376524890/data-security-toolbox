@@ -32,7 +32,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "${APP_DIR}" "${PROBE_DIR}" "${CONFIG_DIR}" "${SPOOL_DIR}"
-cp "${SCRIPT_DIR}/probe.py" "${SCRIPT_DIR}/scanner.py" "${SCRIPT_DIR}/requirements.txt" "${PROBE_DIR}/"
+cp "${SCRIPT_DIR}/probe.py" "${SCRIPT_DIR}/scanner.py" "${SCRIPT_DIR}/data_assets.py" "${SCRIPT_DIR}/requirements.txt" "${PROBE_DIR}/"
 chmod 0755 "${PROBE_DIR}/probe.py"
 chown -R dstprobe:dstprobe "${PROBE_DIR}" "${SPOOL_DIR}"
 

@@ -48,7 +48,7 @@ try:
 except ImportError:
     from data_assets import discover_data_assets
 
-AGENT_VERSION = "3.2.1"
+AGENT_VERSION = "3.3.0"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
     "capture": {"interface": "any", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},

@@ -31,15 +31,16 @@ def _normalize_arch(arch: str) -> str:
     raise PackageError(f"unsupported architecture: {arch}")
 
 
-def find_package(arch: str) -> dict[str, Any]:
+def find_package(arch: str, version: str | None = None) -> dict[str, Any]:
     """Return the verified package descriptor for ``arch``.
 
-    The archive digest in ``manifest.json`` is treated as trusted source; the
-    actual artifact is re-hashed here and compared to reject tampering or a
+    ``version`` defaults to the configured probe agent version. The archive
+    digest in ``manifest.json`` is treated as trusted source; the actual
+    artifact is re-hashed here and compared to reject tampering or a
     stale/partially-replaced package directory.
     """
     norm = _normalize_arch(arch)
-    version = settings.probe_agent_version
+    version = version or settings.probe_agent_version
     pkg_dir = settings.deployment_package_dir / f"probe-{version}" / norm
     manifest_path = pkg_dir / "manifest.json"
     if not manifest_path.is_file():
@@ -88,7 +89,7 @@ def list_packages() -> list[dict[str, Any]]:
             if not arch_dir.is_dir():
                 continue
             try:
-                info = find_package(arch_dir.name)
+                info = find_package(arch_dir.name, version)
                 items.append({"version": version, "arch": info["arch"], "sha256": info["sha256"]})
             except PackageError:
                 continue

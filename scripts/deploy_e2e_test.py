@@ -26,7 +26,7 @@ os.environ.setdefault("DEPLOYMENT_PACKAGE_DIR", str(ROOT / "probe_packages"))
 os.environ.setdefault("DEPLOYMENT_BACKEND_URL", "http://192.168.191.1:8000")
 os.environ.setdefault("DEPLOYMENT_VERIFY_HOST_KEY", "false")
 os.environ.setdefault("DEPLOYMENT_ALLOW_PASSWORD", "true")
-os.environ.setdefault("PROBE_AGENT_VERSION", "3.2.0")
+os.environ.setdefault("PROBE_AGENT_VERSION", "3.3.0")
 
 import httpx  # noqa: E402
 import uvicorn  # noqa: E402
