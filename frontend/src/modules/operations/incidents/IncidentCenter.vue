@@ -12,6 +12,7 @@ import StatusBadge from '../../../components/security/StatusBadge.vue'
 import RiskBadge from '../../../components/security/RiskBadge.vue'
 import EvidenceViewer from '../../../components/evidence/EvidenceViewer.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
+import RawViewer from '../../../components/evidence/RawViewer.vue'
 import { formatDateTime, formatRiskScore } from '../../../utils/format'
 
 const loading = ref(true)
@@ -193,7 +194,16 @@ onMounted(load)
           <div class="inv-section">
             <div class="sec-title">证据</div>
             <EvidenceViewer :evidence="(detail || selected)!.evidence" />
-            <JsonViewer :value="{ incident: detail || selected }" title="完整 JSON 事件" :height="260" />
+            <div v-if="findings.length" class="raw-findings">
+              <div class="raw-findings-title">关联检测的证据原文</div>
+              <div v-for="finding in findings" :key="finding.id" class="raw-finding">
+                <div class="mono raw-finding-label">#{{ finding.id }} · {{ finding.engine }} · {{ finding.rule_id }}</div>
+                <EvidenceViewer :evidence="finding.evidence" />
+                <RawViewer v-if="(finding.evidence as any)?.raw_text" :value="(finding.evidence as any).raw_text" language="plaintext" :height="260" title="证据原文" />
+                <JsonViewer :value="finding.evidence" title="原始证据 JSON" :height="220" />
+              </div>
+            </div>
+            <JsonViewer :value="{ incident: detail || selected, findings }" title="完整 JSON 事件" :height="360" />
           </div>
         </template>
       </StateBox>
@@ -250,5 +260,9 @@ onMounted(load)
 .related-item:hover { border-color: var(--soc-primary); }
 .ri-type { color: var(--soc-text-dim); font-size: 11px; display: block; }
 .ri-value { color: var(--soc-text); font-size: 12px; }
+.raw-findings { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.raw-findings-title { color: var(--soc-text-muted); font-size: 12px; font-weight: 700; }
+.raw-finding { border: 1px solid var(--soc-border); border-radius: 6px; padding: 10px; }
+.raw-finding-label { color: var(--soc-text-muted); font-size: 11px; margin-bottom: 8px; }
 :deep(.row-active) td { background: var(--soc-primary-dim) !important; }
 </style>

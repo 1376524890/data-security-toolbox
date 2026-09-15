@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, apiPost, apiUpload } from '../../api/client'
 import type { PageResult } from '../../types/common'
@@ -11,6 +11,11 @@ import SeverityTag from '../../components/security/SeverityTag.vue'
 import JsonViewer from '../../components/evidence/JsonViewer.vue'
 import RawViewer from '../../components/evidence/RawViewer.vue'
 import { formatBytes, formatDateTime } from '../../utils/format'
+import { downloadUrl } from '../../api/client'
+
+function downloadOriginal(id: number): void {
+  window.open(downloadUrl(`/files/${id}/download`), '_blank')
+}
 
 interface FileRecord { id: number; name: string; path: string; size: number; sha256: string; file_type: string; metadata_json: Record<string, unknown>; risk_level: string; created_at: string }
 interface FileDetail { file: FileRecord; findings: Array<Record<string, unknown>>; data_assets: Array<Record<string, unknown>> }
@@ -22,6 +27,8 @@ const total = ref(0)
 const detail = ref<FileDetail | null>(null)
 const drawer = ref(false)
 const uploading = ref(false)
+const hiddenInfo = computed(() => detail.value?.file.metadata_json.hidden_info as { hidden: boolean; findings: Array<{ kind: string; description: string; bytes?: number; preview?: string }> } | undefined)
+let refreshTimer: ReturnType<typeof setInterval> | undefined
 const filters = reactive({ search: '', file_type: '', risk_level: '', page: 1, page_size: 50 })
 
 const filterFields: FilterField[] = [
@@ -45,11 +52,12 @@ async function load(): Promise<void> {
 }
 
 async function handleUpload(file: File): Promise<void> {
+  if (!file) return
   uploading.value = true
   try {
     await apiUpload('/files/upload', file)
     ElMessage.success('文件已上传')
-    load()
+    await load()
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -77,14 +85,25 @@ async function reanalyze(row: FileRecord): Promise<void> {
 
 function reset(): void { filters.page = 1; load() }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  refreshTimer = setInterval(async () => {
+    if (!drawer.value || !detail.value) return
+    const id = detail.value.file.id
+    try {
+      const updated = await apiGet<FileDetail>(`/files/${id}`)
+      if (drawer.value && detail.value?.file.id === id) detail.value = updated
+    } catch { /* Manual refresh retains the normal error message. */ }
+  }, 4000)
+})
+onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
 </script>
 
 <template>
   <div>
     <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset">
       <template #actions>
-        <el-upload :auto-upload="false" :show-file-list="false" :on-change="(file: any) => handleUpload(file.raw as File)">
+        <el-upload accept="*/*" :auto-upload="false" :show-file-list="false" :on-change="(file: any) => handleUpload(file.raw as File)">
           <el-button :loading="uploading" type="primary">上传文件</el-button>
         </el-upload>
       </template>
@@ -111,9 +130,22 @@ onMounted(load)
           <el-descriptions-item label="风险"><RiskBadge :level="detail.file.risk_level" /></el-descriptions-item>
           <el-descriptions-item label="SHA256" :span="2"><span class="mono">{{ detail.file.sha256 }}</span></el-descriptions-item>
         </el-descriptions>
+        <div style="margin-top: 12px"><el-button size="small" @click="downloadOriginal(detail.file.id)">下载原文件</el-button></div>
 
         <div class="sec-title" style="margin-top: 14px">元数据 / EXIF / PDF / DOCX / YARA</div>
-        <JsonViewer :value="detail.file.metadata_json" title="文件元数据 JSON" :height="320" />
+        <el-alert v-if="!detail.file.metadata_json.metadata" title="尚无元数据分析结果，请点击分析；可在任务中心查看失败原因。" type="info" :closable="false" />
+        <pre v-else class="metadata-content">{{ JSON.stringify(detail.file.metadata_json.metadata, null, 2) }}</pre>
+        <div class="sec-title" style="margin-top: 14px">隐写 / 隐藏信息检查</div>
+        <template v-if="hiddenInfo">
+          <el-alert :title="hiddenInfo.hidden ? '发现隐藏信息线索' : '在已支持的检查范围内未发现隐藏信息'" :type="hiddenInfo.hidden ? 'warning' : 'info'" :closable="false" />
+          <div v-for="(finding, index) in hiddenInfo.findings" :key="index" class="hidden-finding">
+            <strong>{{ finding.description }}</strong><span v-if="finding.bytes">（{{ finding.bytes }} 字节）</span>
+            <pre v-if="finding.preview" class="metadata-content">{{ finding.preview }}</pre>
+          </div>
+          <p class="scope-note">检查范围：PNG/JPEG 尾部追加数据、DOCX 自定义属性、元数据敏感关键词；不覆盖所有像素隐写或加密载荷。</p>
+        </template>
+        <el-collapse><el-collapse-item title="完整分析结果 JSON"><JsonViewer :value="detail.file.metadata_json" title="文件元数据 JSON" :height="320" /></el-collapse-item></el-collapse>
+        <RawViewer v-if="(detail.file.metadata_json.metadata as any)?.preview" :value="(detail.file.metadata_json.metadata as any).preview" language="plaintext" :height="260" title="原文预览" />
 
         <div class="sec-title" style="margin-top: 14px">关联检测</div>
         <el-table :data="detail.findings" size="small">
@@ -135,4 +167,7 @@ onMounted(load)
 
 <style scoped>
 .sec-title { font-size: 12px; font-weight: 700; color: var(--soc-primary); margin-bottom: 8px; }
+.metadata-content { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--soc-bg); color: var(--soc-text); font-size: 12px; }
+.hidden-finding { margin-top: 12px; }
+.scope-note { font-size: 12px; color: var(--soc-text-dim); }
 </style>

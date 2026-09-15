@@ -44,6 +44,12 @@ def reassemble(path):
                     network = dpkt.ethernet.Ethernet(raw).data
                 elif linktype == 113:
                     network = dpkt.sll.SLL(raw).data
+                elif linktype == 276:
+                    # Linux any-interface captures can use cooked capture v2.
+                    protocol = int.from_bytes(raw[:2], 'big')
+                    if protocol not in (0x0800, 0x86dd):
+                        continue
+                    network = dpkt.ip6.IP6(raw[20:]) if protocol == 0x86dd else dpkt.ip.IP(raw[20:])
                 elif linktype in (101, 228, 229):
                     network = dpkt.ip6.IP6(raw) if raw[0] >> 4 == 6 else dpkt.ip.IP(raw)
                 else:
@@ -192,10 +198,14 @@ def inspect_content(body, config):
     digest = hashlib.sha256(body).hexdigest()
     if digest in config.get('fingerprints', []):
         hits.append({'kind': 'file_fingerprint', 'count': 1, 'samples': [digest]})
+    from app.services.rule_library import scan_managed
+    hits.extend(scan_managed(text, config.get('managed_rules', []), config.get('min_matches', 1), config.get('rule_timeouts')))
     return hits
 
 
 def analyze_capture(path, config):
+    from app.services.rule_library import managed_rules
+    config = {**config, 'managed_rules': managed_rules(), 'rule_timeouts': []}
     streams, coverage = reassemble(path)
     objects, observations, findings = [], {'domain': set(), 'url': set(), 'hash': set()}, []
     for key, data, incomplete in streams:
@@ -230,4 +240,5 @@ def analyze_capture(path, config):
                     'evidence': {**metadata, 'action': 'alert', 'mode': 'passive'},
                     'recommendation': '核查传输目的地和业务授权；对敏感内容脱敏、加密，必要时通过网关或终端策略阻断。',
                 })
+    coverage['rule_timeouts'] = sorted(set(config['rule_timeouts']))
     return {'objects': objects, 'coverage': coverage, 'mode': 'passive', 'tls_decryption': False}, observations, findings

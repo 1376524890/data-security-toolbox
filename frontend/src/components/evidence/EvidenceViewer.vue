@@ -5,9 +5,14 @@ import { isPasswordLikeKey, maskSensitiveValue } from '../../utils/mask'
 
 const props = defineProps<{ evidence?: Record<string, unknown> | null }>()
 const commonKeys = ['src_ip', 'dst_ip', 'dest_ip', 'ip', 'domain', 'url', 'uri', 'hash', 'protocol', 'filename', 'signature', 'entity_type', 'query', 'value', 'host', 'server_name', 'method', 'user_agent']
+function displayValue(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'object') return JSON.stringify(value, null, 2)
+  return String(value)
+}
 const common = computed(() => {
   const source = props.evidence || {}
-  return commonKeys.filter((key) => source[key] !== undefined && source[key] !== null && source[key] !== '').map((key) => ({ key, value: maskSensitiveValue(String(source[key])) }))
+  return commonKeys.filter((key) => source[key] !== undefined && source[key] !== null && source[key] !== '').map((key) => ({ key, value: maskSensitiveValue(displayValue(source[key])) }))
 })
 const raw = computed(() => {
   const source = props.evidence || {}

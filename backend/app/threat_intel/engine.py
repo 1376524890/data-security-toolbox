@@ -28,6 +28,17 @@ class ThreatIntelEngine(DetectionEngine):
             return []
 
     def _local_cve_lookup(self, keyword: str) -> list[dict[str, Any]]:
+        from sqlalchemy import or_, select
+        from app.core.database import SessionLocal
+        from app.models import LocalCve
+        with SessionLocal() as db:
+            rows = db.scalars(select(LocalCve).where(or_(
+                LocalCve.cve_id.ilike(f'%{keyword}%'),
+                LocalCve.description['text'].as_string().ilike(f'%{keyword}%'),
+            )).order_by(LocalCve.cvss_score.desc()).limit(10)).all()
+            if rows:
+                return [{'cve_id': row.cve_id, 'published': row.published, 'description': row.description.get('text', ''),
+                         'severity': row.severity, 'cvss_score': row.cvss_score, 'source': row.source} for row in rows]
         cve_dir = settings.integration_dir / "cves"
         if not cve_dir.exists():
             return []

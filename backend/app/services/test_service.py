@@ -43,6 +43,22 @@ def import_test_data(db) -> dict[str, Any]:
         db.commit()
         db.refresh(probe)
 
+    # Keep the demo pack useful for the asset center as well as the passive
+    # PCAP/file views.  These are explicitly labelled test assets and are
+    # removed together with the test probe.
+    if not db.scalar(select(Asset.id).where(Asset.probe_id == probe.id).limit(1)):
+        db.add_all([
+            Asset(probe_id=probe.id, ip="10.66.0.20", hostname="test-web-01", os="Linux",
+                  port=80, protocol="tcp", service="http", asset_type="server",
+                  risk_level="Medium", sensitive_categories=["web"],
+                  extra={"source": "test", "product": "nginx", "version": "1.24"}),
+            Asset(probe_id=probe.id, ip="10.66.0.30", hostname="test-workstation-01", os="Windows",
+                  port=445, protocol="tcp", service="microsoft-ds", asset_type="workstation",
+                  risk_level="High", sensitive_categories=["file_share"],
+                  extra={"source": "test", "product": "SMB", "version": "3.x"}),
+        ])
+        db.flush()
+
     files_added = 0
     for folder in ("sensitive_data", "files"):
         folder_path = TESTPACK_DIR / folder

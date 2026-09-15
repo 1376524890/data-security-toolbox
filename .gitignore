@@ -17,6 +17,8 @@ frontend/vite.config.js
 data/
 uploads/
 reports/
+!backend/app/templates/reports/
+!backend/app/templates/reports/report.html.j2
 *.db
 *.sqlite3
 .DS_Store
@@ -28,3 +30,5 @@ reports/
 dist-deploy/
 dist-deploy.zip
 dist-deploy.tar
+.local/
+probe_packages/

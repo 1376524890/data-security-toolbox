@@ -101,6 +101,7 @@ async function runAnalyze(row: PcapRecord): Promise<void> {
 }
 
 async function handleUpload(file: File): Promise<void> {
+  if (!file) return
   try {
     await uploadPcap(file)
     ElMessage.success('PCAP 已上传')
@@ -153,7 +154,7 @@ onMounted(load)
     <!-- Pcap selector / list -->
     <div v-if="!selected" class="wb-list">
       <div class="toolbar">
-        <el-upload :auto-upload="false" :show-file-list="false" :on-change="(file: any) => handleUpload(file.raw as File)">
+        <el-upload accept=".pcap,.pcapng,.cap" :auto-upload="false" :show-file-list="false" :on-change="(file: any) => handleUpload(file.raw as File)">
           <el-button type="primary">上传 PCAP/PCAPNG</el-button>
         </el-upload>
         <el-input v-model="filters.search" placeholder="搜索文件名" clearable @keyup.enter="reset" />

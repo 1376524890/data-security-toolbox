@@ -4,6 +4,23 @@ from app.engine.core.context import DetectionContext
 from app.integrations.misp.adapter import MISPAdapter
 from app.integrations.misp.client import extract_iocs
 from app.integrations.misp.store import MISPStore
+from app.integrations.engine import IntegrationAdapterEngine
+
+
+def test_binary_file_uses_ioc_library(tmp_path: Path) -> None:
+    path = tmp_path / "image.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    iocs = [{"type": "hash", "value": "abc"}]
+    context = DetectionContext(target_type="file", path=path, data={"ioc_library": iocs, "hashes": ["abc"]})
+    findings = IntegrationAdapterEngine(MISPAdapter()).analyze(context)
+    assert len(findings) == 1
+
+
+def test_json_target_is_not_an_ioc_library(tmp_path: Path) -> None:
+    path = tmp_path / "file.json"
+    path.write_text('[1, 2, 3]', encoding="utf-8")
+    context = DetectionContext(target_type="file", path=path, data={"ioc_library": [{"type": "hash", "value": "abc"}]})
+    assert IntegrationAdapterEngine(MISPAdapter()).analyze(context) == []
 
 
 def test_misp_offline_import(tmp_path: Path) -> None:

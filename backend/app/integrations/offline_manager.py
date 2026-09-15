@@ -175,9 +175,14 @@ def _import_cves(db: Session, records: list[dict[str, Any]]) -> tuple[int, int]:
         if isinstance(description, list):
             description = " ".join(str(item.get("value", item)) for item in description if isinstance(item, dict))
         severity = str(record.get("severity") or cve_obj.get("severity") or "Medium")
-        cvss_score = float(record.get("cvss_score") or record.get("cvss") or cve_obj.get("cvssScore") or cve_obj.get("metrics", {}).get("cvssMetricV31", [{}])[0].get("cvssData", {}).get("baseScore", 0) if isinstance(cve_obj.get("metrics"), dict) else 0)
+        metrics = cve_obj.get('metrics') or {}
+        metric_score = (metrics.get('cvssMetricV31') or [{}])[0].get('cvssData', {}).get('baseScore', 0)
+        cvss_score = float(record.get('cvss_score') or record.get('cvss') or cve_obj.get('cvssScore') or metric_score)
+        if not re.fullmatch(r'CVE-\d{4}-\d{4,}', cve_id) or not 0 <= cvss_score <= 10:
+            raise ValueError('CVE ID 或 CVSS 分数无效')
         existing = db.scalar(select(LocalCve).where(LocalCve.cve_id == cve_id))
         if existing:
+            existing.source = str(record.get('source') or 'offline')
             existing.severity = severity
             existing.cvss_score = cvss_score
             existing.description = {"text": description} if isinstance(description, str) else description
@@ -228,6 +233,12 @@ def _import_rules(db: Session, path: Path, name: str, version: str) -> tuple[int
     valid, errors = validate_suricata_rules(path)
     if not valid:
         raise ValueError(f"invalid suricata rules: {'; '.join(errors)}")
+    incoming_sids = {rule['sid'] for rule in rules}
+    for existing_path in _resource_dir('suricata_rules').glob('*.rules'):
+        if existing_path.read_bytes() == path.read_bytes():
+            raise ValueError('An identical Suricata rule file is already active')
+        if incoming_sids & {rule['sid'] for rule in parse_rule_file(existing_path)}:
+            raise ValueError('Suricata SID conflicts with an existing active rule')
     target = _save_imported_file(path, "suricata_rules", name, version)
     existing = db.scalar(select(OfflineResource).where(OfflineResource.resource_type == "suricata_rules", OfflineResource.name == name, OfflineResource.version == version))
     if existing:
@@ -271,15 +282,22 @@ def validate_suricata_rules(path: Path) -> tuple[bool, list[str]]:
     errors: list[str] = []
     if not rules:
         return False, ["no valid rules parsed"]
-    if not any(str(rule.get("sid") or "").isdigit() for rule in rules):
+    active_lines = [line for line in path.read_text(encoding='utf-8').splitlines() if line.strip() and not line.lstrip().startswith('#')]
+    if len(rules) != len(active_lines):
+        return False, ['one or more rule lines could not be parsed']
+    if not all(str(rule.get("sid") or "").isdigit() for rule in rules):
         return False, ["rules missing numeric sid"]
+    if len({rule['sid'] for rule in rules}) != len(rules):
+        return False, ['duplicate sid in rule file']
     import shutil
     import subprocess
+    import tempfile
 
     suricata = shutil.which("suricata")
     if suricata:
         try:
-            result = subprocess.run([suricata, "-T", "-S", str(path)], capture_output=True, text=True, timeout=60, check=False)
+            with tempfile.TemporaryDirectory(prefix='suricata-validate-') as log_dir:
+                result = subprocess.run([suricata, "-T", "-l", log_dir, "-S", str(path)], capture_output=True, text=True, timeout=60, check=False)
         except Exception as exc:
             return False, [f"suricata validation error: {exc}"]
         if result.returncode != 0:

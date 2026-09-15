@@ -28,10 +28,29 @@ class Settings(BaseSettings):
     custom_intel_url: str = ""
     custom_intel_token: str = ""
     wazuh_url: str = ""
+    wazuh_user: str = ""
+    wazuh_password: str = ""
+    wazuh_verify_tls: bool = True
+    wazuh_poll_seconds: int = 60
+    wazuh_alert_limit: int = 200
     osquery_socket: str = ""
     max_upload_mb: int = 2048
     probe_token: str = ""
     probe_bootstrap_token: str = ""
+    deployment_secret_key: str = ""
+    deployment_key_id: str = "k1"
+    deployment_package_dir: Path = Path("./probe_packages")
+    deployment_backend_url: str = ""
+    deployment_ca_file: str = ""
+    deployment_known_hosts: str = ""
+    deployment_ssh_timeout: int = 20
+    deployment_callback_timeout_seconds: int = 300
+    deployment_worker_queue: str = "deployment"
+    deployment_credential_ttl_seconds: int = 3600
+    deployment_allow_password: bool = True
+    deployment_default_profile: str = "standard"
+    deployment_verify_host_key: bool = True
+    probe_agent_version: str = "3.2.1"
     pcap_index_limit: int = 10000
     pcap_retention_days: int = 7
     pcap_storage_max_gb: int = 100
@@ -68,6 +87,7 @@ class Settings(BaseSettings):
         self.external_engine_dir.mkdir(parents=True, exist_ok=True)
         self.integration_dir.mkdir(parents=True, exist_ok=True)
         self.offline_dir.mkdir(parents=True, exist_ok=True)
+        self.deployment_package_dir.mkdir(parents=True, exist_ok=True)
 
     def validate_production(self) -> None:
         if self.app_env != "production":
@@ -88,6 +108,8 @@ class Settings(BaseSettings):
                 raise RuntimeError(f"production requires strong non-default {name}")
             if name == "SECRET_KEY" and len(str(value)) < 32:
                 raise RuntimeError("production requires SECRET_KEY with at least 32 characters")
+        if self.deployment_secret_key and len(self.deployment_secret_key) < 32:
+            raise RuntimeError("production requires DEPLOYMENT_SECRET_KEY with at least 32 characters")
 
 
 @lru_cache

@@ -20,7 +20,8 @@ def load_sigma_rules(path: Path) -> list[SigmaRule]:
     if not path.exists():
         return []
     rules = []
-    for file_path in sorted(path.glob("*.yaml")) if path.is_dir() else []:
+    paths = list(path.glob("*.yaml")) + list(path.glob("*.yml")) if path.is_dir() else []
+    for file_path in sorted(paths):
         document = yaml.safe_load(file_path.read_text(encoding="utf-8"))
         if not isinstance(document, list):
             document = [document]

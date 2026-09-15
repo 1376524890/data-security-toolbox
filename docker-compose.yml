@@ -38,6 +38,13 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
       PROBE_BOOTSTRAP_TOKEN: ${PROBE_BOOTSTRAP_TOKEN:?PROBE_BOOTSTRAP_TOKEN is required}
+      DEPLOYMENT_SECRET_KEY: ${DEPLOYMENT_SECRET_KEY:-}
+      DEPLOYMENT_PACKAGE_DIR: /app/probe_packages
+      DEPLOYMENT_BACKEND_URL: ${DEPLOYMENT_BACKEND_URL:-}
+      DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
+      DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
+      DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.2.1}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -69,11 +76,18 @@ services:
       CUSTOM_INTEL_URL: ${CUSTOM_INTEL_URL:-}
       CUSTOM_INTEL_TOKEN: ${CUSTOM_INTEL_TOKEN:-}
       WAZUH_URL: ${WAZUH_URL:-}
+      WAZUH_USER: ${WAZUH_USER:-}
+      WAZUH_PASSWORD: ${WAZUH_PASSWORD:-}
+      WAZUH_VERIFY_TLS: ${WAZUH_VERIFY_TLS:-true}
+      WAZUH_POLL_SECONDS: ${WAZUH_POLL_SECONDS:-60}
+      WAZUH_ALERT_LIMIT: ${WAZUH_ALERT_LIMIT:-200}
       OSQUERY_SOCKET: ${OSQUERY_SOCKET:-}
       COOKIE_SECURE: "false"
     volumes:
       - backend_data:/app/data
       - ./data_security_toolbox_manual_testpack:/app/data_security_toolbox_manual_testpack:ro
+      - ./probe_packages:/app/probe_packages:ro
+      - ./.local/deployment:/app/deployment:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -102,6 +116,13 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
       PROBE_BOOTSTRAP_TOKEN: ${PROBE_BOOTSTRAP_TOKEN:?PROBE_BOOTSTRAP_TOKEN is required}
+      DEPLOYMENT_SECRET_KEY: ${DEPLOYMENT_SECRET_KEY:-}
+      DEPLOYMENT_PACKAGE_DIR: /app/probe_packages
+      DEPLOYMENT_BACKEND_URL: ${DEPLOYMENT_BACKEND_URL:-}
+      DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
+      DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
+      DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.2.1}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -118,6 +139,11 @@ services:
       CUSTOM_INTEL_URL: ${CUSTOM_INTEL_URL:-}
       CUSTOM_INTEL_TOKEN: ${CUSTOM_INTEL_TOKEN:-}
       WAZUH_URL: ${WAZUH_URL:-}
+      WAZUH_USER: ${WAZUH_USER:-}
+      WAZUH_PASSWORD: ${WAZUH_PASSWORD:-}
+      WAZUH_VERIFY_TLS: ${WAZUH_VERIFY_TLS:-true}
+      WAZUH_POLL_SECONDS: ${WAZUH_POLL_SECONDS:-60}
+      WAZUH_ALERT_LIMIT: ${WAZUH_ALERT_LIMIT:-200}
       OSQUERY_SOCKET: ${OSQUERY_SOCKET:-}
       WEBHOOK_URL: ${WEBHOOK_URL:-}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
@@ -129,6 +155,8 @@ services:
       SMTP_TO: ${SMTP_TO:-}
     volumes:
       - backend_data:/app/data
+      - ./probe_packages:/app/probe_packages:ro
+      - ./.local/deployment:/app/deployment:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,6 +175,13 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
       PROBE_BOOTSTRAP_TOKEN: ${PROBE_BOOTSTRAP_TOKEN:?PROBE_BOOTSTRAP_TOKEN is required}
+      DEPLOYMENT_SECRET_KEY: ${DEPLOYMENT_SECRET_KEY:-}
+      DEPLOYMENT_PACKAGE_DIR: /app/probe_packages
+      DEPLOYMENT_BACKEND_URL: ${DEPLOYMENT_BACKEND_URL:-}
+      DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
+      DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
+      DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.2.1}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -160,6 +195,47 @@ services:
       PCAP_RETENTION_DAYS: ${PCAP_RETENTION_DAYS:-7}
     volumes:
       - backend_data:/app/data
+      - ./probe_packages:/app/probe_packages:ro
+      - ./.local/deployment:/app/deployment:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  deployment-worker:
+    build:
+      context: ./backend
+      target: analysis-worker
+    command: ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "-Q", "deployment", "--concurrency=2"]
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      PROBE_BOOTSTRAP_TOKEN: ${PROBE_BOOTSTRAP_TOKEN:?PROBE_BOOTSTRAP_TOKEN is required}
+      DEPLOYMENT_SECRET_KEY: ${DEPLOYMENT_SECRET_KEY:?DEPLOYMENT_SECRET_KEY is required}
+      DEPLOYMENT_PACKAGE_DIR: /app/probe_packages
+      DEPLOYMENT_BACKEND_URL: ${DEPLOYMENT_BACKEND_URL:-}
+      DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
+      DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
+      DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.2.1}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      STORAGE_DIR: /app/data/storage
+      REPORT_DIR: /app/data/reports
+      EXTERNAL_ENGINE_DIR: /app/data/external
+      INTEGRATION_DIR: /app/data/integrations
+      OFFLINE_DIR: /app/app/integrations/offline_data
+      PRESIDIO_ENABLED: "false"
+    volumes:
+      - backend_data:/app/data
+      - ./probe_packages:/app/probe_packages:ro
+      - ./.local/deployment:/app/deployment:ro
     depends_on:
       postgres:
         condition: service_healthy

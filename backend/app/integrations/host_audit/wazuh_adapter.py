@@ -7,19 +7,24 @@ from app.core.config import settings
 from app.engine.core.context import DetectionContext
 from app.integrations.base import AdapterResult, IntegrationAdapter, finding, severity_map
 from app.integrations.host_audit.parsers import parse_payload
+from app.integrations.host_audit.wazuh_client import WazuhClient
 
 
 class WazuhAdapter(IntegrationAdapter):
     name = "wazuh"
-    version = "2.1.0"
+    version = "2.2.0"
     supported_types = ("alert", "asset", "process", "user", "config", "log")
-    capabilities = ("alert", "asset", "process", "user", "config", "log")
+    capabilities = ("alert", "asset", "process", "user", "config", "log", "api-sync")
+
+    @property
+    def configured(self) -> bool:
+        return bool(settings.wazuh_url and settings.wazuh_user and settings.wazuh_password)
 
     def supports(self, context: DetectionContext | None = None) -> bool:
         return bool(context and context.target_type in {"host", "audit", "asset", "log"} or (context and context.data.get("wazuh")))
 
     def health(self) -> dict[str, Any]:
-        configured = bool(settings.wazuh_url)
+        configured = self.configured
         return {
             "name": self.name,
             "adapter_version": self.version,
@@ -37,8 +42,20 @@ class WazuhAdapter(IntegrationAdapter):
     def parse(self, payload: Any) -> list[dict[str, Any]]:
         return parse_payload(payload, "wazuh")
 
+    def fetch(self, limit: int = 0, start: str = "") -> list[dict[str, Any]]:
+        """Pull the most recent alerts from the configured Wazuh API."""
+        if not self.configured:
+            return []
+        client = WazuhClient(settings.wazuh_url, settings.wazuh_user, settings.wazuh_password, bool(settings.wazuh_verify_tls))
+        return client.fetch_alerts(limit or settings.wazuh_alert_limit, start)
+
     def adapt(self, payload: Any, context: DetectionContext | None = None) -> AdapterResult:
-        records = self.parse(payload)
+        if isinstance(payload, dict) and payload.get("sync"):
+            limit = int(payload.get("limit") or settings.wazuh_alert_limit)
+            start = str(payload.get("start") or "")
+            records = self.fetch(limit, start)
+        else:
+            records = self.parse(payload)
         findings: list[Any] = []
         for record in records:
             rule = record.get("rule") or {}

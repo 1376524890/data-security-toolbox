@@ -123,11 +123,13 @@ def yara_scan(path: Path, rule_dir: Path) -> list[dict[str, Any]]:
         import yara
     except ImportError:
         return []
+    from app.core.config import settings
     rule_files = sorted(rule_dir.glob("*.yar")) if rule_dir.exists() else []
+    rule_files += sorted((settings.integration_dir / 'yara_rules').glob('*.yar'))
     if not rule_files:
         return []
-    compiled = yara.compile(filepaths={file.stem: str(file) for file in rule_files})
-    matches = compiled.match(str(path))
+    compiled = yara.compile(filepaths={f'rule_{index}': str(file) for index, file in enumerate(rule_files)}, includes=False)
+    matches = compiled.match(str(path), timeout=10)
     return [{"rule": item.rule, "tags": item.tags, "meta": item.meta} for item in matches]
 
 

@@ -7,10 +7,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, Response, status
+from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.database import get_db
 from app.models import AdminSession, Probe, User
 
 PBKDF2_ITERATIONS = 210_000
@@ -103,6 +105,19 @@ def require_admin(request: Request, db: Session) -> User:
     return user
 
 
+def require_active_admin(request: Request, db: Session = Depends(get_db)) -> User:
+    """Strict admin-only guard for deployment APIs in every environment.
+
+    Unlike ``require_admin`` it never accepts the ``operator`` role and, in
+    production, it requires a live, active session rather than falling back to
+    the development convenience user.
+    """
+    user = get_session_user(db, request) if settings.app_env == "production" else ensure_admin(db)
+    if not user or not user.is_active or user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="admin authentication required")
+    return user
+
+
 def require_probe(db: Session, probe_id: int | None, token: str | None) -> Probe:
     if settings.app_env != "production" and not token:
         # Development convenience for existing tests and local UI uploads.
@@ -140,7 +155,7 @@ def mask_secret(value: str | None) -> str:
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
         result = dict(value)
-        for key in ("token", "password", "secret", "api_key", "webhook_secret", "probe_token", "misp_api_key"):
+        for key in ("token", "password", "secret", "api_key", "webhook_secret", "probe_token", "misp_api_key", "private_key", "key_passphrase", "bootstrap_token"):
             if key in result:
                 result[key] = mask_secret(str(result[key]))
             elif key in {k.lower() for k in result}:

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { listProbes, registerProbe, analyzeProbe, queueProbeScan, getProbeTasks, type Probe } from '../../api/probes'
+import { listProbes, analyzeProbe, queueProbeScan, getProbeTasks, type Probe } from '../../api/probes'
 import type { Task } from '../../types/task'
 import StateBox from '../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../components/common/FilterBar.vue'
@@ -17,7 +18,7 @@ const detail = ref<Probe | null>(null)
 const tasks = ref<Task[]>([])
 const drawer = ref(false)
 const filters = reactive({ search: '', status: '', page: 1, page_size: 50 })
-const bootstrapToken = ref('')
+const router = useRouter()
 const scanDialog = ref(false)
 const scanProbe = ref<Probe | null>(null)
 const scanTargets = ref('')
@@ -30,6 +31,9 @@ const filterFields: FilterField[] = [
 
 function metadata(probe: Probe): Record<string, unknown> {
   return (probe.metadata as Record<string, unknown>) || {}
+}
+function interfaces(probe: Probe): {name:string; is_up:boolean; addresses:{address:string; family:string}[]}[] {
+  return (metadata(probe).interfaces as {name:string; is_up:boolean; addresses:{address:string; family:string}[]}[]) || []
 }
 function cpu(probe: Probe): string { return String(metadata(probe).cpu_percent ?? '—') + '%' }
 function mem(probe: Probe): string { const m = metadata(probe).memory_percent; return m != null ? String(m) + '%' : '—' }
@@ -83,21 +87,6 @@ async function submitScan(): Promise<void> {
   } catch (err) { ElMessage.error(err instanceof Error ? err.message : String(err)) }
 }
 
-async function handleRegister(): Promise<void> {
-  try {
-    if (!bootstrapToken.value) {
-      ElMessage.warning('生产环境需填写探针引导令牌（PROBE_BOOTSTRAP_TOKEN）')
-      return
-    }
-    const res = await registerProbe({ name: `probe-${Date.now()}`, hostname: 'manual', ip_address: '0.0.0.0' }, bootstrapToken.value)
-    ElMessage.success(`探针已注册 #${res.id}（token 见响应）`)
-    bootstrapToken.value = ''
-    load()
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : String(err))
-  }
-}
-
 function reset(): void { filters.page = 1; load() }
 
 onMounted(load)
@@ -106,13 +95,14 @@ onMounted(load)
 <template>
   <div>
     <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset">
-      <template #actions><el-input v-model="bootstrapToken" placeholder="探针引导令牌（生产必填）" style="width: 220px; margin-right: 8px" show-password clearable /><el-button type="primary" @click="handleRegister">注册探针</el-button></template>
+      <template #actions><el-button @click="router.push('/probe-deployments')">下发记录</el-button><el-button type="primary" @click="router.push({ path: '/probe-deployments', query: { register: '1' } })">注册探针</el-button></template>
     </FilterBar>
     <StateBox :loading="loading" :error="error" :empty="!items.length" @retry="load">
       <el-table :data="items" size="small" @row-click="open">
         <el-table-column prop="name" label="名称" min-width="150" />
         <el-table-column prop="hostname" label="主机" min-width="120" />
         <el-table-column prop="ip_address" label="IP" width="140" />
+        <el-table-column label="网卡 / 地址" min-width="220"><template #default="{row}"><div v-for="nic in interfaces(row)" :key="nic.name">{{nic.name}}：{{nic.addresses.map(a=>a.address).join(', ') || '无 IP'}} {{nic.is_up ? '' : '（未启用）'}}</div><span v-if="!interfaces(row).length">等待探针上报</span></template></el-table-column>
         <el-table-column label="状态" width="100"><template #default="{ row }"><StatusBadge :value="row.status" /></template></el-table-column>
         <el-table-column label="CPU" width="80"><template #default="{ row }">{{ cpu(row) }}</template></el-table-column>
         <el-table-column label="内存" width="90"><template #default="{ row }">{{ mem(row) }}</template></el-table-column>

@@ -52,7 +52,7 @@ def event_records(records: list[dict[str, Any]], event_type: str | None = None) 
     return [item for item in records if item.get("event_type", "").lower() == event_type.lower()]
 
 
-RULES_RE = re.compile(r"^\s*alert\s+(\S+)\s+(\S+)\s+(\S+)\s+.*?\(([^)]*)\)", re.IGNORECASE)
+RULES_RE = re.compile(r'^\s*(alert|drop|pass|reject|rejectsrc|rejectdst|rejectboth)\s+(\S+)\s+(.+?)\s+(?:->|<>)\s+(.+?)\s*\((.*)\)\s*$', re.IGNORECASE)
 
 
 def parse_rule_file(path: Path) -> list[dict[str, Any]]:
@@ -64,7 +64,7 @@ def parse_rule_file(path: Path) -> list[dict[str, Any]]:
         match = RULES_RE.match(line)
         if not match:
             continue
-        options_text = match.group(4)
+        options_text = match.group(5)
         options: dict[str, Any] = {}
         for key, value in re.findall(r"([A-Za-z0-9_]+)\s*:\s*([^;]+)", options_text):
             options[key] = value.strip().strip('"')

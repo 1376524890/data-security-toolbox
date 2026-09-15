@@ -39,6 +39,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/engines/:name', component: () => import('../modules/engines/EngineDetail.vue'), meta: { title: 'Engine', group: 'Security Engines' } },
   // Operations
   { path: '/probes', component: () => import('../modules/operations-admin/ProbeCenter.vue'), meta: { title: 'Probe', group: 'Operations' } },
+  { path: '/probe-deployments', component: () => import('../modules/operations-admin/ProbeDeployment.vue'), meta: { title: 'Probe Deployment', group: 'Operations' } },
   { path: '/tasks', component: () => import('../modules/operations-admin/TaskCenter.vue'), meta: { title: 'Tasks', group: 'Operations' } },
   { path: '/health', component: () => import('../modules/operations-admin/HealthCenter.vue'), meta: { title: 'Health', group: 'Operations' } },
   { path: '/reports', component: () => import('../modules/operations-admin/ReportCenter.vue'), meta: { title: 'Reports', group: 'Operations' } },

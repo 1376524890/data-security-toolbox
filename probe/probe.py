@@ -43,10 +43,10 @@ try:
 except ImportError:
     from scanner import scan_network
 
-AGENT_VERSION = "3.2.0"
+AGENT_VERSION = "3.2.1"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
-    "capture": {"interface": "eth0", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},
+    "capture": {"interface": "any", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},
     "spool": {"path": "/var/lib/data-security-toolbox/spool", "max_mb": 2048, "retention_seconds": 86400},
     "agent": {
         "heartbeat_seconds": 30,
@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
         "upload_interval_seconds": 2,
         "upload_max_interval_seconds": 60,
         "bootstrap_token": "",
+        "deployment_id": 0,
         "identity_path": "/etc/data-security-toolbox/probe.identity.json",
         "token_path": "/etc/data-security-toolbox/probe.token",
         "allow_auto_reenroll": False,
@@ -162,6 +163,17 @@ class Config:
         except OSError:
             pass
 
+    def clear_bootstrap(self) -> None:
+        """Remove the one-time enrollment/bootstrap token from the config file."""
+        if not self.path.exists():
+            return
+        text = self.path.read_text(encoding="utf-8")
+        text = re.sub(r"^(bootstrap_token\s*=\s*).*$", r'\1""', text, flags=re.MULTILINE)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(self.path)
+        self.data = _merge(json.loads(json.dumps(DEFAULT_CONFIG)), self._load(self.path))
+
 
 class ProbeIdentity:
     """Persistent probe identity stored atomically with 0600 permissions."""
@@ -217,12 +229,40 @@ class ProbeIdentity:
         self.data = {}
 
 
+def network_interfaces() -> list[dict[str, Any]]:
+    """Report every NIC and all IPv4/IPv6 addresses, including down interfaces."""
+    if not psutil:
+        return []
+    try:
+        stats = psutil.net_if_stats()
+        return [{'name': name, 'is_up': bool(stats.get(name) and stats[name].isup),
+                 'addresses': [{'address': addr.address, 'family': 'IPv4' if addr.family == socket.AF_INET else 'IPv6',
+                                'netmask': addr.netmask} for addr in values if addr.family in (socket.AF_INET, socket.AF_INET6)]}
+                for name, values in psutil.net_if_addrs().items()]
+    except Exception:
+        return []
+
+
+def capture_interfaces(value) -> list[str]:
+    """Accept any/all/*, a single NIC, comma-separated names, or a TOML array."""
+    names = value if isinstance(value, list) else str(value).split(',')
+    names = list(dict.fromkeys(str(name).strip() for name in names if str(name).strip()))
+    if not names or any(name.lower() in {'any', 'all', '*'} for name in names):
+        if platform.system() == 'Linux':
+            return ['any']  # Linux cooked capture follows newly added interfaces too.
+        names = [item['name'] for item in network_interfaces() if item['is_up']]
+        if not names:
+            raise ValueError('No active capture interfaces found')
+    return names
+
+
 def local_ip(interface: str = "") -> str:
     if psutil:
         try:
             addresses = psutil.net_if_addrs()
             if interface:
-                for addr in addresses.get(interface, []):
+                selected = interface if isinstance(interface, list) else str(interface).split(',')
+                for addr in [addr for name in selected for addr in addresses.get(name.strip(), [])]:
                     if addr.family == socket.AF_INET:
                         return addr.address
             for values in addresses.values():
@@ -374,15 +414,18 @@ def detect_capture_tool(config: Config) -> tuple[str, str]:
 
 def capture_command(config: Config, partial: Path) -> tuple[str, str, list[str]]:
     """Return (tool, extension, command). dumpcap -> pcapng, tcpdump -> pcap."""
-    interface = config.capture["interface"]
+    interfaces = capture_interfaces(config.capture['interface'])
     duration = int(config.capture["segment_seconds"])
     max_mb = int(config.capture["segment_max_mb"])
     dumpcap = shutil.which("dumpcap")
     if dumpcap:
-        return "dumpcap", ".pcapng", [dumpcap, "-i", interface, "-a", f"duration:{duration}", "-a", f"filesize:{max_mb * 1024}", "-w", str(partial), "-q"]
+        args = [arg for interface in interfaces for arg in ('-i', interface)]
+        return "dumpcap", ".pcapng", [dumpcap, *args, "-a", f"duration:{duration}", "-a", f"filesize:{max_mb * 1024}", "-w", str(partial), "-q"]
     tcpdump = shutil.which("tcpdump")
     if tcpdump:
-        return "tcpdump", ".pcap", [tcpdump, "-i", interface, "-w", str(partial), "-U"]
+        if len(interfaces) > 1:
+            raise ValueError('Multiple selected interfaces require dumpcap; use any on Linux for tcpdump')
+        return "tcpdump", ".pcap", [tcpdump, "-i", interfaces[0], "-w", str(partial), "-U"]
     return "", "", []
 
 
@@ -600,8 +643,11 @@ class ProbeAgent:
             "name": socket.gethostname(),
             "hostname": socket.gethostname(),
             "ip_address": local_ip(self.config.capture["interface"]),
-            "metadata": {"system": system_metrics(), "agent_version": AGENT_VERSION, "interface": self.config.capture["interface"]},
+            "metadata": {"system": system_metrics(), "agent_version": AGENT_VERSION, "interface": self.config.capture["interface"], "interfaces": network_interfaces()},
         }
+        deployment_id = int(self.config.agent.get("deployment_id") or 0)
+        if deployment_id:
+            info["deployment_id"] = deployment_id
         result = http_json(f"{self.config.base_url()}/api/v1/probes/register", info, headers, self.config)
         probe_id = int(result["id"])
         token = result.get("token") or self.token
@@ -611,6 +657,8 @@ class ProbeAgent:
         self.probe_id = probe_id
         self.token = token
         self.auth_error = False
+        if deployment_id:
+            self.config.clear_bootstrap()
 
     def heartbeat_once(self) -> None:
         if not self.probe_id:
@@ -620,6 +668,7 @@ class ProbeAgent:
         metrics = system_metrics()
         metadata = {
             "system": metrics,
+            "interfaces": network_interfaces(),
             "agent_version": AGENT_VERSION,
             "interface": self.config.capture["interface"],
             "spool_size_mb": round(spool_size_mb(spool), 2),

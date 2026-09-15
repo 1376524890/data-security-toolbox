@@ -1,6 +1,8 @@
 import hashlib
 import re
 import zipfile
+import csv
+import json
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -105,13 +107,58 @@ def _docx_metadata(path: Path) -> dict[str, Any]:
     }
 
 
+def _text_metadata(path: Path) -> dict[str, Any]:
+    """Return bounded, searchable original text for common upload formats."""
+    raw = path.read_bytes()[:2 * 1024 * 1024]
+    text = raw.decode("utf-8-sig", "replace")
+    result: dict[str, Any] = {
+        "encoding": "utf-8-sig",
+        "preview": text[:20000],
+        "line_count": text.count("\n") + (1 if text else 0),
+        "truncated": len(path.read_bytes()) > len(raw),
+    }
+    suffix = path.suffix.lower()
+    if suffix in {".json", ".jsonl"}:
+        try:
+            result["json"] = json.loads(text)
+        except (ValueError, TypeError):
+            result["json_valid"] = False
+    if suffix in {".csv", ".tsv"}:
+        delimiter = "\t" if suffix == ".tsv" else ","
+        rows = list(csv.reader(text.splitlines(), delimiter=delimiter))
+        result["columns"] = rows[0] if rows else []
+        result["row_count"] = max(0, len(rows) - 1)
+    return result
+
+
 def hidden_info(path: Path, file_type: str, metadata: dict[str, Any]) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
+    if file_type == "image/png":
+        data = path.read_bytes()
+        offset = 8
+        # Walk chunks: an IEND byte sequence inside compressed pixels is not EOF.
+        while offset + 12 <= len(data):
+            length = int.from_bytes(data[offset:offset + 4], "big")
+            end = offset + 12 + length
+            if end > len(data):
+                break
+            if data[offset + 4:offset + 8] == b"IEND" and length == 0:
+                extra = data[end:]
+                if extra:
+                    try:
+                        preview = extra[:512].decode("utf-8")
+                        encoding = "utf-8"
+                    except UnicodeDecodeError:
+                        preview = extra[:512].decode("gb18030", errors="replace")
+                        encoding = "gb18030 (best effort)"
+                    findings.append({"kind": "trailing_data", "description": "PNG IEND 结束块后存在追加数据", "bytes": len(extra), "offset": end, "preview": preview, "preview_encoding": encoding, "hex_preview": extra[:128].hex(), "truncated": len(extra) > 512})
+                break
+            offset = end
     if file_type == "image/jpeg":
         data = path.read_bytes()
         eoi = data.rfind(b"\xff\xd9")
         trailing = len(data) - eoi - 2 if eoi >= 0 else 0
-        if trailing > 16:
+        if trailing > 0:
             findings.append({"kind": "trailing_data", "description": "JPEG 文件末尾存在额外数据", "bytes": trailing})
     if file_type.startswith("application/vnd.openxmlformats") and metadata.get("custom_properties"):
         findings.append({"kind": "custom_properties", "description": "DOCX 包含自定义属性", "count": len(metadata["custom_properties"])})
@@ -131,6 +178,8 @@ def extract_metadata(path: Path) -> dict[str, Any]:
         metadata = _pdf_metadata(path)
     elif file_type.startswith("application/vnd.openxmlformats"):
         metadata = _docx_metadata(path)
+    elif path.suffix.lower() in {".txt", ".log", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".yaml", ".yml", ".sql", ".conf", ".ini", ".env"}:
+        metadata = _text_metadata(path)
     else:
         metadata = {"unsupported": True}
     return {

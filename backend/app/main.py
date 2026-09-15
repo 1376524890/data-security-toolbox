@@ -5,7 +5,9 @@ from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 from app.api.v1 import router
+from app.api.deployments import router as deployments_router
 from app.api.extensions import router as extensions_router
+from app.api.libraries import router as libraries_router
 from app.core.config import settings
 from app.core.database import SessionLocal, engine
 from app.core.logging import configure_logging
@@ -23,10 +25,12 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.app_name, version="2.4.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.5.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
+app.include_router(deployments_router)
 app.include_router(extensions_router)
+app.include_router(libraries_router)
 
 
 PUBLIC_PREFIXES = ("/docs", "/openapi.json", "/redoc")

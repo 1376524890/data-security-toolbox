@@ -40,6 +40,7 @@ export const menuGroups: MenuNode[] = [
   ]},
   { group: '运维管理', items: [
     { path: '/probes', title: '探针管理', icon: 'Connection' },
+    { path: '/probe-deployments', title: '探针部署', icon: 'Position' },
     { path: '/tasks', title: '任务中心', icon: 'List' },
     { path: '/health', title: '健康状态', icon: 'Odometer' },
     { path: '/reports', title: '报告中心', icon: 'Document' },

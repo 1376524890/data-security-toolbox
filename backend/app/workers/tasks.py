@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -220,11 +220,9 @@ def run_pipeline(context: DetectionContext, task_id: int, db=None) -> list[tuple
         from app.services.dlp_service import DEFAULT_POLICY
         policy = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
         context.data['dlp_policy'] = policy.value if policy else DEFAULT_POLICY
-        context.data["local_cves"] = [
-            {"cve_id": item.cve_id, "severity": item.severity, "cvss_score": item.cvss_score, "description": item.description}
-            for item in db.scalars(select(LocalCve)).all()
-        ]
-        if context.data.get("local_cves"):
+        # Grype contains hundreds of thousands of CVEs. Query per service in
+        # ThreatIntelEngine rather than loading the whole catalog per packet task.
+        if db.scalar(select(LocalCve.id).limit(1)) is not None:
             context.data["cve_lookup_enabled"] = True
         from app.integrations.offline_manager import resolve_active_suricata_rules_dir
         context.data["suricata_rules_dir"] = resolve_active_suricata_rules_dir(db)
@@ -754,3 +752,69 @@ def cleanup_pcap_retention_task() -> dict[str, int]:
             removed += 1
         db.commit()
     return {"removed": removed}
+
+
+@celery_app.task(name="security_toolbox.sync_wazuh_alerts")
+def wazuh_alerts_task() -> dict[str, Any]:
+    """Periodically pull alerts from the configured Wazuh API and ingest findings.
+
+    Degrades to a no-op when Wazuh is not configured, and reports an error
+    object when the API is reachable but fails (so operators can see why).
+    """
+    from app.integrations.host_audit.wazuh_adapter import WazuhAdapter
+    from app.integrations.runner import run_adapter
+
+    adapter = WazuhAdapter()
+    if not adapter.configured:
+        return {"status": "skipped", "reason": "Wazuh API not configured"}
+    try:
+        records = adapter.fetch()
+    except Exception as exc:  # noqa: BLE001 - surface any client/network error
+        return {"status": "error", "error": str(exc)[:300]}
+    if not records:
+        return {"status": "ok", "records": 0, "findings": 0}
+    context = DetectionContext(target_type="integration", target_id="wazuh", data={})
+    result = run_adapter(adapter, records, context, RiskEngine())
+    alerts: list[tuple[Alert, bool]] = []
+    with SessionLocal() as db:
+        # Skip findings already persisted for the same engine+rule+timestamp.
+        sigs = [(item.engine, item.rule_id, str(item.timestamp)) for item in result.findings]
+        existing = set()
+        if sigs:
+            sig_conditions = [
+                and_(DetectionFinding.engine == e, DetectionFinding.rule_id == r, DetectionFinding.timestamp == ts)
+                for e, r, ts in sigs
+            ]
+            rows = db.execute(select(DetectionFinding.engine, DetectionFinding.rule_id, DetectionFinding.timestamp).where(or_(*sig_conditions))).all()
+            existing = {(row[0], row[1], str(row[2])) for row in rows}
+        for item in result.findings:
+            sig = (item.engine, item.rule_id, str(item.timestamp))
+            if sig in existing:
+                continue
+            finding_row = DetectionFinding(
+                target_type="integration",
+                target_id="wazuh",
+                engine=item.engine,
+                rule_id=item.rule_id,
+                severity=item.severity,
+                confidence=item.confidence,
+                evidence=item.evidence,
+                recommendation=item.recommendation,
+                risk_score=item.risk_score,
+                risk_level=item.risk_level,
+                timestamp=item.timestamp,
+            )
+            db.add(finding_row)
+            db.flush()
+            alert, created = create_finding_alert(db, finding_row)
+            if alert:
+                alerts.append((alert, created))
+        for incident in incident_engine.correlate(result.findings):
+            row = _upsert_incident(db, incident, None)
+            alert, created = create_incident_alert(db, row)
+            if alert:
+                alerts.append((alert, created))
+        db.commit()
+    for alert, created in alerts:
+        publish_alert(alert.id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
+    return {"status": "ok", "records": len(records), "findings": len(result.findings), "alerts": len(alerts)}

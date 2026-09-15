@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.5.0（feature/v2.2-probe-intel-dlp）
+
+- 探针采集支持所有网卡：Linux 默认 `capture.interface = "any"`，注册/心跳上报各网卡 IPv4/IPv6 及启用状态；部署表单可填写平台任一可达网卡作为回连地址。
+- 网络防泄密规则库：展示内置/Presidio/手工规则并可逐条启停；从官方 PyPI 下载并校验 SHA256 导入 Presidio 静态正则（不含 NLP/上下文评分/Python 校验器）；支持手工添加名称、敏感类别与正则，历史 PCAP 可重新分析。
+- CVE 漏洞库：支持下载/更新官方 Grype DB v6 与离线导入（`.tar.zst`/`.tar.gz`/tar/SQLite）；在线校验 SHA256、检查 schema、流式分批写入并事务回滚；按 CVE 去重、计算 CVSS 2/3/4 分数，保留手工记录；大库后台导入并显示进度。
+- 检查规则中心：支持添加/导入 Suricata 与 YARA 规则；Suricata 校验行、SID 完整性及冲突（运行时可用时执行 `suricata -T`）；YARA 经 yara-python 编译、禁用 include。
+- 修复与适配：前端代理上传限制提升至 2 GB（解压 12 GB）以支持 Grype 大文件；探针版本升至 3.2.1，提供 amd64 / arm64 部署包与 SHA256 清单。
+
 ## v2.4.0（feature/v2.2-probe-intel-dlp）
 
 - 探针侧资产扫描改为受限、无特权的 TCP connect 扫描：必须显式配置目标，限制主机、端口、并发和总时长；支持管理员下发任务、断线暂存和幂等回传资产清单。

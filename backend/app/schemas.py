@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Any
-from pydantic import BaseModel, Field
+from typing import Any, Literal
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProbeRegister(BaseModel):
@@ -8,6 +8,7 @@ class ProbeRegister(BaseModel):
     hostname: str = ""
     ip_address: str = ""
     metadata: dict[str, Any] = {}
+    deployment_id: int | None = None
 
 
 class LoginRequest(BaseModel):
@@ -120,3 +121,78 @@ class GenerateReportRequest(BaseModel):
 class TaskCreate(BaseModel):
     kind: str
     payload: dict[str, Any] = {}
+
+
+class ProbeDeploymentPreflightRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=128)
+    auth_type: Literal["password", "private_key"] = "password"
+    password: str | None = None
+    private_key: str | None = None
+    key_passphrase: str | None = None
+    profile: Literal["lite", "standard", "sensor"] = "standard"
+    backend_url: str = Field(default='', max_length=1024)
+
+    @model_validator(mode="after")
+    def credential_exclusive(self) -> "ProbeDeploymentPreflightRequest":
+        if self.backend_url:
+            from urllib.parse import urlsplit
+            parsed = urlsplit(self.backend_url)
+            if parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or any(ord(c) < 32 for c in self.backend_url):
+                raise ValueError('回连地址必须是有效 HTTP/HTTPS 平台地址，不含账号、查询参数或控制字符')
+            self.backend_url = self.backend_url.rstrip('/')
+        if self.auth_type == "password":
+            if not self.password:
+                raise ValueError("password is required for password auth")
+            if self.private_key:
+                raise ValueError("private_key and password are mutually exclusive")
+        else:
+            if not self.private_key:
+                raise ValueError("private_key is required for key auth")
+            if self.password:
+                raise ValueError("private_key and password are mutually exclusive")
+        return self
+
+
+class ProbeDeploymentCreate(ProbeDeploymentPreflightRequest):
+    name: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class ProbeDeploymentOut(BaseModel):
+    id: int
+    name: str
+    host: str
+    port: int
+    username: str
+    auth_type: str
+    profile: str
+    status: str
+    progress: int
+    current_stage: str
+    error_code: str
+    error_message: str
+    probe_id: int | None
+    package_version: str
+    created_by: str
+    credential_destroyed: bool
+    callback_deadline: datetime | None
+    registered_at: datetime | None
+    first_heartbeat_at: datetime | None
+    preflight_result: dict[str, Any]
+    result: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProbeDeploymentEventOut(BaseModel):
+    id: int
+    seq: int
+    stage: str
+    message: str
+    created_at: datetime
+
+
+class ProbeDeploymentDetail(ProbeDeploymentOut):
+    events: list[ProbeDeploymentEventOut] = Field(default_factory=list)

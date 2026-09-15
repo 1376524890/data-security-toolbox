@@ -39,6 +39,7 @@ from app.core.security import (
     verify_token,
 )
 from app.core.storage import safe_path, stream_to_storage
+from app.deployment.enrollment import EnrollmentError, consume_enrollment
 from app.engine import registry
 from app.engine.core.context import DetectionContext
 from app.engine.core.pipeline import DetectionPipeline
@@ -69,6 +70,8 @@ from app.models import (
     PacketRecord,
     PcapRecord,
     Probe,
+    ProbeDeployment,
+    ProbeEnrollment,
     OfflineResource,
     Report,
     Task,
@@ -200,6 +203,29 @@ def _serialize_detection(item: DetectionFinding) -> dict[str, Any]:
 
 
 def _serialize_incident(item: Incident) -> dict[str, Any]:
+    findings = item.findings or {}
+    if isinstance(findings, dict) and isinstance(findings.get("items"), list):
+        enriched_items: list[Any] = []
+        uploads_root = (settings.storage_dir / "uploads").resolve()
+        for finding in findings["items"]:
+            if not isinstance(finding, dict):
+                enriched_items.append(finding)
+                continue
+            evidence = finding.get("evidence")
+            if not isinstance(evidence, dict) or not isinstance(evidence.get("file"), str):
+                enriched_items.append(finding)
+                continue
+            evidence_copy = dict(evidence)
+            try:
+                evidence_path = Path(evidence["file"]).resolve()
+                if evidence_path.is_relative_to(uploads_root) and evidence_path.is_file():
+                    raw = evidence_path.read_bytes()[:20000]
+                    evidence_copy["raw_text"] = raw.decode("utf-8-sig", "replace")
+                    evidence_copy["raw_text_truncated"] = evidence_path.stat().st_size > len(raw)
+            except (OSError, ValueError):
+                pass
+            enriched_items.append({**finding, "evidence": evidence_copy})
+        findings = {**findings, "items": enriched_items}
     return {
         "id": item.id,
         "fingerprint": item.fingerprint,
@@ -209,7 +235,7 @@ def _serialize_incident(item: Incident) -> dict[str, Any]:
         "severity": item.severity,
         "confidence": item.confidence,
         "status": item.status,
-        "findings": item.findings,
+        "findings": findings,
         "evidence": item.evidence,
         "risk_score": item.risk_score,
         "risk_level": item.risk_level,
@@ -328,9 +354,17 @@ def _serialize_file(item: FileRecord) -> dict[str, Any]:
     }
 
 
-def _aware(value: datetime | None) -> datetime | None:
+def _aware(value: datetime | str | None) -> datetime | str | None:
     if value is None:
         return None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value
@@ -346,6 +380,10 @@ def _serialize_probe(item: Probe) -> dict[str, Any]:
             status = "offline"
         elif status != "degraded" and age < 90:
             status = "online"
+    else:
+        # Registration alone is not proof that the daemon is running.  A
+        # probe must send a heartbeat before it can be shown as online.
+        status = "offline"
     return {
         "id": item.id,
         "name": item.name,
@@ -571,6 +609,40 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @router.post("/probes/register")
 def register_probe(payload: ProbeRegister, x_probe_bootstrap_token: str | None = Header(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+    if payload.deployment_id:
+        deployment = db.get(ProbeDeployment, payload.deployment_id)
+        if not deployment:
+            raise HTTPException(404, "deployment not found")
+        probe = db.scalar(select(Probe).where(Probe.deployment_id == deployment.id))
+        if not probe:
+            name = deployment.name
+            if db.scalar(select(Probe).where(Probe.name == name)):
+                name = f"{name}-{deployment.id}"
+            probe = Probe(
+                name=name,
+                hostname=payload.hostname,
+                ip_address=payload.ip_address,
+                extra=payload.metadata,
+                status="offline",
+                deployment_id=deployment.id,
+            )
+            db.add(probe)
+            db.flush()
+        try:
+            consume_enrollment(db, deployment.id, x_probe_bootstrap_token or "", probe.id)
+        except EnrollmentError as exc:
+            raise HTTPException(401, str(exc))
+        token = secrets.token_urlsafe(32)
+        probe.token = ""
+        probe.token_hash = hash_token(token)
+        probe.status = "online"
+        probe.last_seen = datetime.now(UTC)
+        deployment.probe_id = probe.id
+        deployment.registered_at = datetime.now(UTC)
+        deployment.status = "REGISTERED"
+        deployment.current_stage = "REGISTERED"
+        db.commit()
+        return {"id": probe.id, "name": probe.name, "token": token, "deployment_id": deployment.id}
     if settings.app_env == "production":
         if not settings.probe_bootstrap_token or not x_probe_bootstrap_token:
             raise HTTPException(401, "probe bootstrap token required")
@@ -610,6 +682,13 @@ def heartbeat(probe_id: int, payload: Heartbeat, request: Request, db: Session =
     probe.status = "degraded" if capture_status == "degraded" else payload.status
     probe.extra = _merge_metadata(probe.extra or {}, metadata)
     probe.last_seen = datetime.now(UTC)
+    if probe.deployment_id:
+        deployment = db.get(ProbeDeployment, probe.deployment_id)
+        if deployment and deployment.status in {"WAIT_CALLBACK", "REGISTERED"}:
+            deployment.first_heartbeat_at = datetime.now(UTC)
+            deployment.status = "ONLINE"
+            deployment.current_stage = "ONLINE"
+            deployment.progress = 100
     db.commit()
     return {"status": "ok"}
 
@@ -777,7 +856,12 @@ async def upload_file(request: Request, file: UploadFile = File(...), probe_id: 
             raise HTTPException(413, "file too large") from exc
         raise
     path = Path(stored["path"])
-    meta = json.loads(metadata_json) if metadata_json else {}
+    try:
+        meta = json.loads(metadata_json) if metadata_json else {}
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(422, "metadata_json must be valid JSON") from exc
+    if not isinstance(meta, dict):
+        raise HTTPException(422, "metadata_json must be a JSON object")
     # Probe already reports md5/sha256 for target files; fall back to computing
     # the digests from the stored bytes so the hash is always persisted.
     md5 = str(meta.get("md5") or "") if isinstance(meta, dict) else ""
@@ -825,6 +909,14 @@ def file_detail(file_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"file": _serialize_file(item), "findings": [_serialize_detection(item) for item in findings], "data_assets": [_serialize_data_asset(item) for item in data_assets]}
 
 
+@router.get("/files/{file_id}/download")
+def file_download(file_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    item = db.get(FileRecord, file_id)
+    if not item or not Path(item.path).is_file():
+        raise HTTPException(404, "file not found")
+    return FileResponse(item.path, filename=item.name, media_type="application/octet-stream")
+
+
 @router.post("/files/{file_id}/analyze")
 def analyze_file(file_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     task = create_task(db, "metadata", {"file_id": file_id})
@@ -836,7 +928,12 @@ def analyze_file(file_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 async def upload_pcap(request: Request, file: UploadFile = File(...), probe_id: int | None = Form(None), metadata_json: str | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
     probe_id = _upload_probe_id(request, db, probe_id)
     _queue_backpressure(db)
-    meta: dict[str, Any] = json.loads(metadata_json) if metadata_json else {}
+    try:
+        meta: dict[str, Any] = json.loads(metadata_json) if metadata_json else {}
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(422, "metadata_json must be valid JSON") from exc
+    if not isinstance(meta, dict):
+        raise HTTPException(422, "metadata_json must be a JSON object")
     try:
         stored = await stream_to_storage(file, file.filename or "capture.pcap", subdir="pcaps", max_bytes=settings.max_upload_mb * 1024 * 1024)
     except ValueError as exc:
@@ -1842,6 +1939,10 @@ def list_rules(rule_type: str | None = Query(None), db: Session = Depends(get_db
         _add(path, "sigma")
     for path in sorted((base / "data").glob("*.yar")):
         _add(path, "yara")
+    for path in sorted((settings.integration_dir / 'yara_rules').glob('*.yar')):
+        _add(path, 'yara')
+    for path in sorted((base / 'logs').glob('*.yml')):
+        _add(path, 'sigma')
     for path in sorted((base / "data").glob("*.yaml")):
         _add(path, "sigma")
     for path in sorted((base / "network").glob("*.yaml")):
@@ -1859,6 +1960,7 @@ def list_rules(rule_type: str | None = Query(None), db: Session = Depends(get_db
                 _add(rule_file, "suricata")
     if rule_type:
         items = [item for item in items if item["type"] == rule_type]
+    items = list({item['path']: item for item in items}.values())
     return {"items": items, "total": len(items)}
 
 

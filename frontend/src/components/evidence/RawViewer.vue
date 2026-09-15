@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { MonacoLanguage, MonacoTheme } from './monaco'
 
 const props = withDefaults(defineProps<{
@@ -14,22 +14,22 @@ const props = withDefaults(defineProps<{
 const container = ref<HTMLElement | null>(null)
 let editor: any = null
 let monacoMod: any = null
-let fallback = false
+const fallback = ref(false)
 
 async function loadMonaco(): Promise<void> {
-  if (monacoMod || fallback) return
+  if (monacoMod || fallback.value) return
   try {
     monacoMod = await import('./monaco')
   } catch {
-    fallback = true
+    fallback.value = true
   }
 }
 
 async function render(): Promise<void> {
-  if (fallback || !container.value) return
+  if (fallback.value || !container.value) return
   if (!monacoMod) {
     await loadMonaco()
-    if (fallback || !monacoMod || !container.value) return
+    if (fallback.value || !monacoMod || !container.value) return
   }
   const monaco = monacoMod.monaco
   try {
@@ -51,11 +51,12 @@ async function render(): Promise<void> {
     monaco.editor.setModelLanguage(editor.getModel(), props.language)
     monaco.editor.setTheme(props.theme)
   } catch {
-    fallback = true
+    fallback.value = true
   }
 }
 
 watch(() => [props.value, props.language, props.theme], () => { render() })
+onMounted(() => { render() })
 onBeforeUnmount(() => { editor?.dispose() })
 </script>
 

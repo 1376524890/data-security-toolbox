@@ -20,7 +20,8 @@ if (DEMO_MODE) {
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    const message = error?.response?.data?.detail || error?.message || '请求失败'
+    const detail = error?.response?.data?.detail
+    const message = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : error?.message || '请求失败'
     return Promise.reject(new Error(message))
   },
 )
@@ -40,11 +41,11 @@ export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
   return response.data
 }
 
-export async function apiUpload<T>(path: string, file: File, fields?: Record<string, string | number | boolean>): Promise<T> {
+export async function apiUpload<T>(path: string, file: File, fields?: Record<string, string | number | boolean>, config?: AxiosRequestConfig): Promise<T> {
   const form = new FormData()
   form.append('file', file)
   Object.entries(fields || {}).forEach(([key, value]) => form.append(key, String(value)))
-  const response = await client.post<T>(path, form)
+  const response = await client.post<T>(path, form, { ...config, headers: { ...config?.headers, 'Content-Type': undefined } })
   return response.data
 }
 

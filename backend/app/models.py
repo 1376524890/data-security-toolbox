@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Any
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -47,6 +47,7 @@ class Probe(TimestampMixin, Base):
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     assets: Mapped[list["Asset"]] = relationship(back_populates="probe")
+    deployment_id: Mapped[int | None] = mapped_column(ForeignKey("probe_deployments.id", ondelete="SET NULL"), nullable=True, index=True)
 
 
 class Asset(TimestampMixin, Base):
@@ -369,3 +370,80 @@ class LocalCve(TimestampMixin, Base):
     published: Mapped[str] = mapped_column(String(64), default="")
     modified: Mapped[str] = mapped_column(String(64), default="")
     description: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class ProbeDeployment(TimestampMixin, Base):
+    """A server-initiated push deployment of a Probe to a target host."""
+
+    __tablename__ = "probe_deployments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    host: Mapped[str] = mapped_column(String(255), index=True)
+    port: Mapped[int] = mapped_column(Integer, default=22)
+    username: Mapped[str] = mapped_column(String(128), default="root")
+    auth_type: Mapped[str] = mapped_column(String(32), default="password")
+    profile: Mapped[str] = mapped_column(String(32), default="standard")
+    status: Mapped[str] = mapped_column(String(32), default="CREATED", index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    current_stage: Mapped[str] = mapped_column(String(255), default="queued")
+    error_code: Mapped[str] = mapped_column(String(64), default="")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(128), default="")
+    task_id: Mapped[str] = mapped_column(String(128), default="")
+    package_version: Mapped[str] = mapped_column(String(64), default="")
+    package_digest: Mapped[str] = mapped_column(String(64), default="")
+    backend_url: Mapped[str] = mapped_column(String(512), default="")
+    callback_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    credential_destroyed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    probe_id: Mapped[int | None] = mapped_column(ForeignKey("probes.id", ondelete="SET NULL"), nullable=True, index=True)
+    preflight_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    credential: Mapped["ProbeDeploymentCredential | None"] = relationship(back_populates="deployment", uselist=False, cascade="all, delete-orphan")
+    enrollment: Mapped["ProbeEnrollment | None"] = relationship(back_populates="deployment", uselist=False, cascade="all, delete-orphan")
+    events: Mapped[list["ProbeDeploymentEvent"]] = relationship(back_populates="deployment", cascade="all, delete-orphan", order_by="ProbeDeploymentEvent.seq")
+
+
+class ProbeDeploymentCredential(Base):
+    """AES-GCM encrypted SSH credential bound to a single deployment."""
+
+    __tablename__ = "probe_deployment_credentials"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    deployment_id: Mapped[int] = mapped_column(ForeignKey("probe_deployments.id", ondelete="CASCADE"), unique=True, index=True)
+    encrypted_secret: Mapped[bytes] = mapped_column(LargeBinary)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary)
+    key_id: Mapped[str] = mapped_column(String(64), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    deployment: Mapped[ProbeDeployment] = relationship(back_populates="credential")
+
+
+class ProbeEnrollment(Base):
+    """One-time enrollment token consumed atomically at Probe registration."""
+
+    __tablename__ = "probe_enrollments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    deployment_id: Mapped[int] = mapped_column(ForeignKey("probe_deployments.id", ondelete="CASCADE"), unique=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    probe_id: Mapped[int | None] = mapped_column(ForeignKey("probes.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    deployment: Mapped[ProbeDeployment] = relationship(back_populates="enrollment")
+
+
+class ProbeDeploymentEvent(Base):
+    """Append-only, sanitized progress event for a deployment."""
+
+    __tablename__ = "probe_deployment_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    deployment_id: Mapped[int] = mapped_column(ForeignKey("probe_deployments.id", ondelete="CASCADE"), index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=1)
+    stage: Mapped[str] = mapped_column(String(64), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    deployment: Mapped[ProbeDeployment] = relationship(back_populates="events")

@@ -26,7 +26,10 @@ class IntegrationAdapterEngine(DetectionEngine):
             return []
         payload = context.data.get(self.payload_key, {})
         workspace: Path | None = None
-        if context.target_type == "pcap" and context.path and context.path.exists():
+        if self.adapter.name == "misp" and not payload:
+            # The target file is evidence, never an IOC library (even JSON).
+            payload = {"iocs": context.data.get("ioc_library") or context.data.get("iocs") or []}
+        elif context.target_type == "pcap" and context.path and context.path.exists():
             # Per-analysis workspace so concurrent workers never share the same
             # /integrations/zeek or /integrations/suricata directory.
             analysis_run_id = uuid.uuid4().hex

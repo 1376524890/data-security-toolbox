@@ -3,9 +3,23 @@ set -euo pipefail
 
 APP_DIR="/opt/data-security-toolbox"
 PROBE_DIR="${APP_DIR}/probe"
+VENV_DIR="${APP_DIR}/venv"
 CONFIG_DIR="/etc/data-security-toolbox"
 SPOOL_DIR="/var/lib/data-security-toolbox/spool"
 SERVICE="data-security-toolbox-probe"
+INSTALL_ONLY=0
+CONFIG_SRC=""
+CA_SRC=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install-only) INSTALL_ONLY=1; shift ;;
+    --config) CONFIG_SRC="$2"; shift 2 ;;
+    --ca) CA_SRC="$2"; shift 2 ;;
+    --skip-deps) SKIP_DEPS=1; shift ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "run as root" >&2
@@ -16,13 +30,70 @@ if ! id dstprobe >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin dstprobe
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "${APP_DIR}" "${PROBE_DIR}" "${CONFIG_DIR}" "${SPOOL_DIR}"
-cp probe.py scanner.py requirements.txt "${PROBE_DIR}/"
+cp "${SCRIPT_DIR}/probe.py" "${SCRIPT_DIR}/scanner.py" "${SCRIPT_DIR}/requirements.txt" "${PROBE_DIR}/"
 chmod 0755 "${PROBE_DIR}/probe.py"
 chown -R dstprobe:dstprobe "${PROBE_DIR}" "${SPOOL_DIR}"
 
-if [[ ! -f "${CONFIG_DIR}/probe.toml" ]]; then
-  cat > "${CONFIG_DIR}/probe.toml" <<'EOF'
+# Capture tool provisioning: prefer a bundled binary, then a distro package.
+CAPTURE_TOOL=""
+if command -v dumpcap >/dev/null 2>&1; then
+  CAPTURE_TOOL="dumpcap"
+elif command -v tcpdump >/dev/null 2>&1; then
+  CAPTURE_TOOL="tcpdump"
+elif [[ -x "${SCRIPT_DIR}/bin/dumpcap" ]]; then
+  install -m 0755 "${SCRIPT_DIR}/bin/dumpcap" /usr/local/bin/dumpcap
+  CAPTURE_TOOL="dumpcap"
+elif [[ -x "${SCRIPT_DIR}/bin/tcpdump" ]]; then
+  install -m 0755 "${SCRIPT_DIR}/bin/tcpdump" /usr/local/bin/tcpdump
+  CAPTURE_TOOL="tcpdump"
+else
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tcpdump >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y tcpdump >/dev/null 2>&1 || true
+  fi
+  if command -v dumpcap >/dev/null 2>&1; then CAPTURE_TOOL="dumpcap"
+  elif command -v tcpdump >/dev/null 2>&1; then CAPTURE_TOOL="tcpdump"
+  fi
+fi
+if [[ -n "${CAPTURE_TOOL}" ]]; then
+  BIN_PATH="$(command -v "${CAPTURE_TOOL}")"
+  setcap cap_net_raw,cap_net_admin+eip "${BIN_PATH}" 2>/dev/null || true
+  echo "capture tool: ${CAPTURE_TOOL} (${BIN_PATH})"
+else
+  echo "warning: no capture tool available; probe will run in Lite mode" >&2
+fi
+
+# Prepare an isolated venv with the required runtime dependencies.
+PYTHON="${PYTHON:-python3}"
+if [[ "${SKIP_DEPS:-0}" -ne 1 ]]; then
+  if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+    "${PYTHON}" -m venv "${VENV_DIR}"
+  fi
+  "${VENV_DIR}/bin/pip" install --upgrade pip >/dev/null 2>&1 || true
+  if [[ -d "${SCRIPT_DIR}/wheels" ]]; then
+    "${VENV_DIR}/bin/pip" install --no-index --find-links "${SCRIPT_DIR}/wheels" -r "${PROBE_DIR}/requirements.txt" || \
+      "${VENV_DIR}/bin/pip" install -r "${PROBE_DIR}/requirements.txt"
+  else
+    "${VENV_DIR}/bin/pip" install -r "${PROBE_DIR}/requirements.txt"
+  fi
+  chown -R dstprobe:dstprobe "${VENV_DIR}"
+else
+  VENV_DIR=""
+fi
+
+# Atomically install the config: write to a temp file then move into place.
+if [[ -n "${CONFIG_SRC}" && -f "${CONFIG_SRC}" ]]; then
+  TMP_CONFIG="${CONFIG_DIR}/probe.toml.tmp"
+  cp "${CONFIG_SRC}" "${TMP_CONFIG}"
+  mv "${TMP_CONFIG}" "${CONFIG_DIR}/probe.toml"
+else
+  if [[ ! -f "${CONFIG_DIR}/probe.toml" ]]; then
+    TMP_CONFIG="${CONFIG_DIR}/probe.toml.tmp"
+    cat > "${TMP_CONFIG}" <<'EOF'
 [server]
 url = "https://security-platform.local"
 verify_tls = true
@@ -32,6 +103,7 @@ ca_file = "/etc/data-security-toolbox/ca.pem"
 interface = "eth0"
 segment_seconds = 30
 segment_max_mb = 64
+enabled = true
 
 [spool]
 path = "/var/lib/data-security-toolbox/spool"
@@ -49,11 +121,25 @@ paths = []
 max_files = 50
 demo = false
 EOF
+    mv "${TMP_CONFIG}" "${CONFIG_DIR}/probe.toml"
+  fi
 fi
 chown dstprobe:dstprobe "${CONFIG_DIR}/probe.toml"
 chmod 0600 "${CONFIG_DIR}/probe.toml"
 chown dstprobe:dstprobe "${CONFIG_DIR}"
 chmod 0700 "${CONFIG_DIR}"
+
+if [[ -n "${CA_SRC}" && -f "${CA_SRC}" ]]; then
+  cp "${CA_SRC}" "${CONFIG_DIR}/ca.pem"
+  chown dstprobe:dstprobe "${CONFIG_DIR}/ca.pem"
+  chmod 0644 "${CONFIG_DIR}/ca.pem"
+fi
+
+if [[ -n "${VENV_DIR}" ]]; then
+  PY_BIN="${VENV_DIR}/bin/python"
+else
+  PY_BIN="/usr/bin/python3"
+fi
 
 cat > "/etc/systemd/system/${SERVICE}.service" <<EOF
 [Unit]
@@ -65,7 +151,7 @@ Wants=network-online.target
 Type=simple
 User=dstprobe
 Group=dstprobe
-ExecStart=/usr/bin/python3 ${PROBE_DIR}/probe.py --config ${CONFIG_DIR}/probe.toml
+ExecStart=${PY_BIN} ${PROBE_DIR}/probe.py --config ${CONFIG_DIR}/probe.toml
 Restart=always
 RestartSec=5
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
@@ -82,5 +168,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable "${SERVICE}"
-systemctl restart "${SERVICE}"
+if [[ "${INSTALL_ONLY}" -eq 0 ]]; then
+  systemctl restart "${SERVICE}"
+fi
 echo "installed ${SERVICE}"
