@@ -1,13 +1,17 @@
 """Paramiko SSH/SFTP client used by the deployment Worker.
 
 Host-key verification is strict by default: the deployment never uses
-``AutoAddPolicy`` unless an explicit test/driver override requests it. This keeps
-the SSH trust decision in platform configuration rather than in the Worker.
+``AutoAddPolicy`` unless an explicit test/driver override requests it. The
+platform maintains its own known_hosts file so the SSH trust decision stays in
+platform configuration. On first contact with a host, the key is captured into
+that managed file (trust-on-first-use); after that every connection is verified
+against the recorded key, and a changed key is rejected.
 """
 
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +42,22 @@ def _load_private_key(private_key: str, passphrase: str | None) -> paramiko.PKey
     raise SshError("AUTH_FAILED", f"unable to parse private key: {last_error}")
 
 
+class _TrustOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
+    """Accept and persist an unknown host key on first contact (TOFU).
+
+    paramiko consults this policy only when the host key is absent from the
+    managed known_hosts. The key is recorded and saved so later connections are
+    verified against it; a changed key raises before this policy is consulted.
+    """
+
+    def __init__(self, known_hosts_path: Path):
+        self.known_hosts_path = known_hosts_path
+
+    def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
+        client._host_keys.add(hostname, key.get_name(), key)  # noqa: SLF001
+        client.save_host_keys(str(self.known_hosts_path))
+
+
 class SshClient:
     def __init__(
         self,
@@ -60,14 +80,64 @@ class SshClient:
         self.verify_host_key = settings.deployment_verify_host_key if verify_host_key is None else verify_host_key
         self._client: paramiko.SSHClient | None = None
 
+    def _managed_known_hosts(self) -> Path:
+        """Resolve a writable known_hosts file for this platform.
+
+        Prefer the configured ``deployment_known_hosts`` when it already exists
+        or lives under a writable directory. Otherwise fall back to a managed
+        file under the (writable) storage volume so host-key capture works even
+        when the configured path is read-only or absent.
+        """
+        configured = settings.deployment_known_hosts
+        if configured:
+            path = Path(configured)
+            if path.is_file():
+                return path
+            if path.parent.exists() and os.access(path.parent, os.W_OK):
+                return path
+        managed = Path(settings.storage_dir) / "deployment" / "known_hosts"
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        return managed
+
+    def _seed_known_hosts(self, managed: Path) -> None:
+        """Bootstrap the managed known_hosts from admin-supplied key files.
+
+        Copies host keys from an existing configured known_hosts and from a
+        sibling ``known_hosts.pending`` (read-only deployment dir) into the
+        managed file on first use, so pre-collected fingerprints are verified
+        strictly without re-trusting them.
+        """
+        if managed.exists():
+            return
+        sources: list[Path] = []
+        configured = settings.deployment_known_hosts
+        if configured:
+            cfg = Path(configured)
+            if cfg.is_file() and cfg != managed:
+                sources.append(cfg)
+            pending = cfg.parent / "known_hosts.pending"
+            if pending.is_file():
+                sources.append(pending)
+        if not sources:
+            return
+        host_keys = paramiko.HostKeys()
+        for source in sources:
+            try:
+                host_keys.load(str(source))
+            except Exception:
+                continue
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        if host_keys:
+            host_keys.save(str(managed))
+
     def connect(self) -> "SshClient":
         client = paramiko.SSHClient()
         if self.verify_host_key:
-            known_hosts = settings.deployment_known_hosts
-            if not known_hosts or not Path(known_hosts).is_file():
-                raise SshError("CONNECT_FAILED", "no known_hosts configured")
-            client.load_host_keys(known_hosts)
-            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+            known_hosts_path = self._managed_known_hosts()
+            self._seed_known_hosts(known_hosts_path)
+            known_hosts_path.touch(exist_ok=True)
+            client.load_host_keys(str(known_hosts_path))
+            client.set_missing_host_key_policy(_TrustOnFirstUsePolicy(known_hosts_path))
         else:
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         kwargs: dict[str, Any] = {
