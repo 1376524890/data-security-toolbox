@@ -241,9 +241,51 @@ export const engineRegistry = [
 export const probes = Array.from({ length: 6 }, (_, i) => ({
   id: 1 + i, name: `probe-edge-${i + 1}`, hostname: `edge-${i + 1}.internal`, ip_address: `10.0.0.${10 + i}`,
   status: ['online', 'online', 'online', 'degraded', 'online', 'offline'][i], last_seen: ago(5 + i * 2),
-  metadata: { cpu_percent: 22 + i * 7, memory_percent: 48 + i * 5, capture_status: 'online', interface: 'eth0' },
+  metadata: {
+    cpu_percent: 22 + i * 7, memory_percent: 48 + i * 5, capture_status: 'online', interface: 'eth0',
+    // Rule version reporting: one probe is deliberately behind and one carries a
+    // failed hot-update reason so the demo shows the real states, not a happy path.
+    current_ruleset_version: i === 5 ? '' : i === 3 ? 'builtin-1.0.0' : 'builtin-1',
+    ruleset_source: i === 3 || i === 5 ? 'builtin' : 'server',
+    engine_version: '1.0.0',
+    capabilities: { ruleset_hot_update: i !== 5, sensitive_detection_v2: true, regex_timeout: true },
+    ruleset_last_error: i === 3 ? 'SHA256 不匹配: 期望 630eb7dfe508 实际 0011223344ff' : '',
+  },
   created_at: ago(5000),
 }))
+
+export const ruleSets = {
+  items: [{
+    id: 1, name: 'default', description: '内置与人工维护的检测规则',
+    active_version: {
+      id: 2, version: 'builtin-1', status: 'published', rule_count: 146,
+      sha256: '630eb7dfe508f0a1c1d3f3e6a0f5b3d6c9a4b2e8f7c1d0a9b8e7f6d5c4b3a291',
+      schema_version: '1.0', engine_version: '1.0.0', min_agent_version: '', origin_version: '',
+      changelog: '内置规则基线快照（随包发布的初始版本）', published_by: 'system', created_at: ago(90000),
+    },
+    working_rule_count: 146,
+    capabilities: { rulesets: true, schema_version: '1.0', engine_version: '1.0.0', max_pack_bytes: 2097152, digest: 'sha256' },
+  }],
+  total: 1,
+}
+
+export const ruleSetVersions = {
+  items: [
+    {
+      id: 3, version: 'builtin-1.rollback', status: 'published', rule_count: 146,
+      sha256: '630eb7dfe508f0a1c1d3f3e6a0f5b3d6c9a4b2e8f7c1d0a9b8e7f6d5c4b3a291',
+      schema_version: '1.0', engine_version: '1.0.0', min_agent_version: '', origin_version: 'builtin-1',
+      changelog: '回滚到 builtin-1', published_by: 'admin', created_at: ago(1200),
+    },
+    {
+      id: 2, version: 'builtin-1', status: 'superseded', rule_count: 146,
+      sha256: '630eb7dfe508f0a1c1d3f3e6a0f5b3d6c9a4b2e8f7c1d0a9b8e7f6d5c4b3a291',
+      schema_version: '1.0', engine_version: '1.0.0', min_agent_version: '', origin_version: '',
+      changelog: '内置规则基线快照（随包发布的初始版本）', published_by: 'system', created_at: ago(90000),
+    },
+  ],
+  total: 2, active_version: 'builtin-1.rollback',
+}
 
 export const tasks = Array.from({ length: 15 }, (_, i) => ({
   id: 100 + i, kind: ['pcap', 'assets', 'metadata'][i % 3], status: ['Success', 'Running', 'Pending', 'Failed'][i % 4],

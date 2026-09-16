@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.8.0（探针 3.4.0）
+
+- **统一敏感数据引擎**：`shared/sensitive_detection` 成为平台与探针唯一的检测实现，文件引擎、
+  网络 DLP 文本阶段和探针侧采集对同一取值给出一致的类目、级别与置信度；报告清洗
+  （`report_guard`）同时约束两条上报通道，只输出规则、识别器、字段与计数。
+- **共享扫描预算与采样**：`shared/scanning` 提供 ScanBudget、分段指纹、Magic 探测、增量缓存
+  与 XLSX/CSV/TSV/JSONL/SQL 解析；XLSX 在探针本地解析，证据带工作表与列信息。
+- **中央 RuleSet 与热更新**：新增规则集与不可变发布版本（迁移 `0010_rule_sets`），探针按
+  manifest 比对后拉取整包，规则更新不需要重启探针，且一个任务只使用一个规则版本快照。
+- **ScanProfile 与增量扫描**：新增版本化扫描配置（迁移 `0011_scan_profiles`），任务下发时
+  固化配置快照；文件、引擎与规则版本未变化时复用缓存结果，不重复读取内容。
+  `exclude_paths`（支持绝对子树与裸目录名）和 `file_types` 白名单现由探针实际执行，
+  并在 `coverage.scope_filter` 中回报过滤计数。
+- **对象/实例/检测模型**：新增 `data_objects` / `asset_instances` / `detections` /
+  `detection_evidence`（迁移 `0012_asset_objects`），数据类型中心、对象详情、实例详情与
+  证据查询接口（`/data-types`、`/data-objects`、`/asset-instances`、`/detections/{id}/evidence`）；
+  完整 Hash 才能声明"确认副本"，部分指纹只作为带标记的"疑似副本"候选，作用域内身份单独标注。
+- **采集进度与生命周期**：探针按聚合计数上报进度，进度永远不会改变任务状态；完整作用域才
+  允许把未见到的实例置为 `NOT_OBSERVED`，取消、Partial、失败与迟到报告都不会回滚当前视图。
+- 新增前端页面：数据类型中心、数据类型详情、数据对象详情、资产实例详情、扫描配置、
+  采集任务；旧「数据资产」页面与路由保留。
+- 修复端到端验收发现的三个缺陷：
+  1. 探针计算了分段指纹却从未上报摘要值，导致大文件永远只能退化为作用域内身份，
+     "疑似副本"路径实际上是死代码；现按 `Fingerprint.as_evidence()` 上报摘要与布局，
+     并只接受十六进制摘要，避免脱敏占位符变成对象主键。
+  2. 会话关闭了 `autoflush`，`recount_object` 统计不到同一事务中刚被清扫的实例，
+     对象在改名/删除后会继续虚报活跃副本数；现于重算前刷新。
+  3. 数据资产任务拒绝旧探针时提示的最小版本写死为 3.3.1，改为读取配置中的当前探针版本。
+- **版本**：平台升至 2.8.0，探针升至 3.4.0；探针包含 `shared/scanning` 与
+  `shared/sensitive_detection`，新增 `regex`、`openpyxl` 依赖（缺失时降级能力并如实上报，
+  不阻止探针启动）。探针包 `probe_packages/probe-3.4.0`（amd64 / arm64）已重建并校验 SHA256。
+- 已安装探针需升级到 3.4.0 才能使用共享引擎、规则热更新与本地 XLSX 识别；
+  升级使用 `install.sh` 原地替换，保留 `probe.identity.json`（probe_id/token）、`probe.toml`
+  与 spool 中待上传报告。
+
 ## v2.7.0（探针 3.3.1）
 
 - 修复「网络防泄密」把 Docker / 容器主机的全部明文 TCP 出站流量判为告警：规则新增置信度，

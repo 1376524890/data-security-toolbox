@@ -44,11 +44,37 @@ except ImportError:
     from scanner import scan_network
 
 try:
-    from .data_assets import discover_data_assets
+    from .data_assets import discover_data_assets, guard_report, use_engine
 except ImportError:
-    from data_assets import discover_data_assets
+    from data_assets import discover_data_assets, guard_report, use_engine
 
-AGENT_VERSION = "3.3.1"
+try:
+    from .ruleset_client import RuleSetClient
+except ImportError:
+    from ruleset_client import RuleSetClient
+
+# The documented scan budgets live in the shared package so the probe, the
+# platform and the docs cannot drift apart. `data_assets.discover_data_assets`
+# reads exactly these names out of the `[data]` config block.
+try:
+    from shared.scanning.budget import DEFAULT_LIMITS as _SCAN_LIMITS
+except ImportError:  # pragma: no cover - the probe package always ships shared/
+    _SCAN_LIMITS = {}
+
+SCAN_BUDGET_KEYS = (
+    "max_files", "max_depth", "max_dirs", "max_bytes_read", "max_single_file_size",
+    "max_full_hash_size", "sample_block_size", "max_sample_rows", "max_cpu_seconds",
+    "max_rss_mb", "xlsx_max_entries", "xlsx_max_uncompressed_bytes",
+    "xlsx_max_compression_ratio", "xlsx_max_shared_strings", "xlsx_max_sheets",
+    "xlsx_max_columns", "xlsx_max_rows",
+)
+
+
+def _scan_budget_defaults() -> dict[str, Any]:
+    return {key: _SCAN_LIMITS[key] for key in SCAN_BUDGET_KEYS if key in _SCAN_LIMITS}
+
+
+AGENT_VERSION = "3.4.0"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
     "capture": {"interface": "any", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},
@@ -85,16 +111,35 @@ DEFAULT_CONFIG = {
         "allow_remote": False,
         "poll_seconds": 30,
     },
+    "ruleset": {
+        # Hot update is on by default: the server is the only place rules are
+        # managed, and the probe keeps working with its in-package pack offline.
+        "enabled": True,
+        "dir": "/var/lib/data-security-toolbox/rules",
+        "max_pack_bytes": 2097152,
+        "self_test_timeout_seconds": 2.0,
+        "poll_seconds": 900,
+    },
     "data": {
         "enabled": False,
         "interval_seconds": 3600,
         "paths": [],
-        "max_files": 200,
-        "max_depth": 3,
+        # Excludes are scope, not budget: a bare name filters that directory
+        # anywhere, an absolute path excludes exactly that subtree. ``file_types``
+        # is an allow-list of extensions; empty means every type is in scope.
+        "exclude_paths": [],
+        "file_types": [],
         "include_databases": True,
+        # Wall-clock ceiling for one inventory run; separate from the network
+        # scan timeout so the two jobs can be tuned independently.
         "timeout_seconds": 120,
+        # Unchanged files are reused without re-reading their content, as long as
+        # size/mtime/inode and the engine/rules/profile versions all match.
+        "cache_enabled": True,
+        "cache_path": "/var/lib/data-security-toolbox/cache/analysis.sqlite",
         "allow_remote": False,
         "poll_seconds": 30,
+        **_scan_budget_defaults(),
     },
 }
 
@@ -164,6 +209,10 @@ class Config:
     @property
     def data_assets(self) -> dict[str, Any]:
         return self.data["data"]
+
+    @property
+    def ruleset(self) -> dict[str, Any]:
+        return self.data["ruleset"]
 
     def base_url(self) -> str:
         return str(self.server["url"]).rstrip("/")
@@ -559,6 +608,32 @@ def http_json(url: str, payload: dict[str, Any], headers: dict[str, str], config
         return json.loads(response.read().decode())
 
 
+def http_get_json(url: str, headers: dict[str, str], config: Config, timeout: int = 30) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout, context=ssl_context(config)) as response:
+        return json.loads(response.read().decode())
+
+
+def http_get_bounded(url: str, headers: dict[str, str], config: Config, limit: int, timeout: int = 60) -> bytes:
+    """Read at most ``limit`` bytes so a wrong or hostile response cannot fill memory."""
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    chunks: list[bytes] = []
+    total = 0
+    with urllib.request.urlopen(request, timeout=timeout, context=ssl_context(config)) as response:
+        declared = response.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > limit:
+            raise ValueError(f"规则包声明大小 {declared} 超过上限 {limit}")
+        while True:
+            chunk = response.read(min(65536, limit - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise ValueError(f"规则包超过上限 {limit} 字节")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def http_upload(path: Path, metadata: dict[str, Any], probe_id: int, token: str, config: Config, timeout: int = 120, url_path: str = "/api/v1/pcaps/upload") -> dict[str, Any]:
     boundary = f"----dst{os.getpid()}{int(time.time() * 1000)}"
     fields = [("probe_id", str(probe_id)), ("metadata_json", json.dumps(metadata, ensure_ascii=False))]
@@ -628,6 +703,25 @@ class ProbeAgent:
         self.upload_failures = 0
         self.uploaded_files: list[str] = []
         self.lock = threading.Lock()
+        ruleset_config = config.ruleset
+        self.ruleset = RuleSetClient(
+            directory=Path(str(ruleset_config["dir"])).expanduser(),
+            fetch_json=lambda url: self._ruleset_json(url),
+            fetch_bytes=lambda url, limit: self._ruleset_bytes(url, limit),
+            manifest_url=lambda current: f"{config.base_url()}/api/v1/probes/{self.probe_id}/ruleset/manifest?current={current}",
+            download_url=lambda version: f"{config.base_url()}/api/v1/probes/{self.probe_id}/ruleset?version={version}",
+            agent_version=AGENT_VERSION,
+            max_pack_bytes=int(ruleset_config["max_pack_bytes"]),
+            self_test_timeout=float(ruleset_config["self_test_timeout_seconds"]),
+            enabled=bool(ruleset_config.get("enabled", True)),
+        )
+        self.ruleset.load_usable()
+
+    def _ruleset_json(self, url: str) -> dict[str, Any]:
+        return http_get_json(url, {**self.headers(), "X-Agent-Version": AGENT_VERSION}, self.config)
+
+    def _ruleset_bytes(self, url: str, limit: int) -> bytes:
+        return http_get_bounded(url, {**self.headers(), "X-Agent-Version": AGENT_VERSION}, self.config, limit)
 
     def _restore_sequence(self) -> int:
         """Best-effort monotonic sequence restored from existing spool manifests."""
@@ -702,7 +796,10 @@ class ProbeAgent:
             "cpu_percent": metrics.get("cpu_percent"),
             "drop_rate": None,
             "capture_tool": "dumpcap" if shutil.which("dumpcap") else ("tcpdump" if shutil.which("tcpdump") else ""),
-            "agent_version": AGENT_VERSION,
+            # Rule version and capability negotiation. Older platforms ignore the
+            # extra keys; older probes simply do not send them.
+            **self.ruleset.status.to_dict(),
+            "capabilities": {**self.ruleset.capabilities(), "data_asset_scan": True, "ruleset_download": True},
         }
         try:
             http_json(f"{self.config.base_url()}/api/v1/probes/{self.probe_id}/heartbeat", {"status": "online", "metadata": metadata}, self.headers(), self.config)
@@ -957,13 +1054,51 @@ class ProbeAgent:
         merged = {**self.config.data_assets, **(config or {})}
         if not merged.get('paths'):
             merged['paths'] = self.config.data_assets.get('paths') or []
+        # Pin the rule/engine snapshot for this whole task: a hot update published
+        # while the scan runs applies to the next task, so one report never mixes
+        # two rule versions.
+        use_engine(self.ruleset.engine_snapshot())
+        # The cache key includes the rule version, so pinning it here is what makes
+        # an unchanged file a hit until the rules actually change.
+        merged['ruleset_version'] = self.ruleset.snapshot_version()
+        # One scan_id per job, carried into the spooled report so a retry after an
+        # ACK loss re-sends the same identity instead of inventing a second scan.
+        merged['scan_id'] = uuid.uuid4().hex
+        if task_id:
+            merged['profile_version'] = str(merged.get('profile_version') or '')
         try:
-            report = discover_data_assets(merged, self._job_stop_event(task_id))
+            report = discover_data_assets(
+                merged, self._job_stop_event(task_id),
+                on_progress=lambda coverage, path: self._report_progress(
+                    task_id, merged['scan_id'], coverage, path))
         except Exception as exc:
             report = {'assets': [], 'databases': [], 'scanned_paths': [], 'complete': False,
                       'error': str(exc)[:500], 'observed_at': now_iso(), 'scanner': 'probe-file-inventory'}
-        report.update(report_id=uuid.uuid4().hex, task_id=task_id)
-        self._spool_report(state_dir, 'data-assets.pending.json', report)
+        report.update(report_id=uuid.uuid4().hex, task_id=task_id,
+                      scan_id=merged['scan_id'],
+                      ruleset_version=self.ruleset.snapshot_version(),
+                      engine_version=self.ruleset.status.engine_version)
+        self._spool_report(state_dir, 'data-assets.pending.json', guard_report(report))
+
+    def _report_progress(self, task_id: int | None, scan_id: str, coverage: dict[str, Any] | None,
+                         current_path: str = '') -> None:
+        """Push aggregated progress for one running job; failure is never fatal.
+
+        Progress is a convenience for the operator: it can never fail the scan and
+        it can never move a task into a terminal state. The platform applies the
+        same rule on its side.
+        """
+        if not task_id:
+            return
+        payload: dict[str, Any] = {'task_id': task_id, 'scan_id': scan_id,
+                                   'current_path': str(current_path or '')[:1024]}
+        if coverage:
+            payload['coverage'] = coverage
+        try:
+            http_json(f'{self.config.base_url()}/api/v1/probes/{self.probe_id}/data-assets/progress',
+                      payload, self.headers(), self.config, timeout=5)
+        except Exception:
+            pass
 
     def inventory_loop(self) -> None:
         """Run scheduled and platform-queued network scans / data asset collection."""
@@ -980,10 +1115,15 @@ class ProbeAgent:
         pending_data = state_dir / 'data-assets.pending.json'
         next_scan = 0.0
         next_data = 0.0
+        next_ruleset = 0.0
+        ruleset_config = self.config.ruleset
         while not self.stop_event.is_set():
             try:
                 self._upload_pending(pending_scan, 'inventory')
                 self._upload_pending(pending_data, 'data-assets')
+                if time.monotonic() >= next_ruleset:
+                    self.ruleset.sync()
+                    next_ruleset = time.monotonic() + max(60, int(ruleset_config.get('poll_seconds', 900)))
                 if remote_allowed:
                     job = self._next_command()
                     if job:

@@ -1,3 +1,8 @@
 requests==2.32.3
 psutil==6.1.1
+# Real timeouts for untrusted rule-pack regexes (shared/sensitive_detection/matching.py).
+regex==2026.9.10
+# Bounded streaming XLSX parsing (stage 3). Optional at runtime: a missing wheel
+# degrades the capability and is reported, it does not stop the agent.
+openpyxl==3.1.5
 

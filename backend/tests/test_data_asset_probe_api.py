@@ -66,6 +66,29 @@ def test_queued_data_asset_job_is_delivered_to_probe() -> None:
         assert client.post(f"/api/v1/probes/{probe_id}/data-assets/jobs", json={"paths": ["/srv/data"]}).status_code == 409
 
 
+def test_queued_job_carries_scope_filters_to_the_probe() -> None:
+    """Excludes and the type allow-list must reach the probe, not stop at the form."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "data-asset-scope-probe")
+        queued = client.post(f"/api/v1/probes/{probe_id}/data-assets/jobs", json={
+            "paths": ["/srv/data"],
+            "exclude_paths": ["/srv/data/tmp", "node_modules"],
+            "file_types": ["csv", ".xlsx"],
+        })
+        assert queued.status_code == 200
+        config = client.get(f"/api/v1/probes/{probe_id}/commands",
+                            headers=_headers(probe_id, token)).json()["commands"][0]["config"]
+        assert config["exclude_paths"] == ["/srv/data/tmp", "node_modules"]
+        assert config["file_types"] == [".csv", ".xlsx"]
+
+
+def test_queued_job_rejects_parent_traversal_in_excludes() -> None:
+    with TestClient(app) as client:
+        probe_id, _ = _register_probe(client, "data-asset-exclude-probe")
+        response = client.post(f"/api/v1/probes/{probe_id}/data-assets/jobs",
+                               json={"paths": ["/srv/data"], "exclude_paths": ["/srv/../etc"]})
+        assert response.status_code == 422
+
 def test_queued_job_rejects_relative_or_parent_paths() -> None:
     with TestClient(app) as client:
         probe_id, _ = _register_probe(client, "data-asset-path-probe")

@@ -22,14 +22,31 @@ router = APIRouter(prefix='/api/v1', tags=['rule-libraries'])
 
 @router.get('/dlp/rules')
 def list_dlp_rules(db: Session = Depends(get_db)):
-    from app.engine.data_engine.engine import REGEX_RULES
-    from app.services.dlp_service import BUILTIN_CONFIDENCE, DEFAULT_CONFIDENCE, normalize_policy
+    from app.services import sensitive_engine
+    from app.services.dlp_service import normalize_policy
     policy = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
     effective = normalize_policy(policy.value if policy else {})
     active, threshold = effective['categories'], effective['min_confidence']
-    builtins = [{'id': name, 'name': name, 'entity': name, 'pattern': pattern.pattern, 'source': 'builtin', 'mode': 'regex',
-                 'enabled': name in active, 'confidence': BUILTIN_CONFIDENCE.get(name, DEFAULT_CONFIDENCE), 'sensitive': True}
-                for name, pattern in REGEX_RULES.items()]
+    # Built-ins are read from the shared rule pack, so the list, the stored policy
+    # and the engine that runs on the probe all describe the same rules.
+    builtins_by_id: dict[str, dict] = {}
+    for rule in sensitive_engine.get_engine().rules:
+        if not rule.get('pattern'):
+            continue
+        name = sensitive_engine.legacy_name(rule['entity']) or str(rule['entity']).lower()
+        entry = {
+            'id': name, 'rule_id': rule['rule_id'], 'name': rule['name'], 'entity': name,
+            'canonical_entity': rule['entity'], 'pattern': rule['pattern'],
+            'source': rule.get('rule_source') or 'builtin', 'mode': 'regex',
+            'level': rule.get('level') or sensitive_engine.level_of(rule['entity']),
+            'severity': sensitive_engine.severity_of(rule['entity']),
+            'enabled': name in active, 'confidence': rule['confidence'],
+            'sensitive': not sensitive_engine.is_structural(rule['entity']),
+        }
+        kept = builtins_by_id.get(name)
+        if kept is None or (not kept['pattern'] and entry['pattern']):
+            builtins_by_id[name] = entry
+    builtins = list(builtins_by_id.values())
     # Legacy stores may predate the confidence field, so report the effective value.
     managed = [{**rule, 'confidence': rule_confidence(rule), 'sensitive': sensitive_entity(rule)} for rule in managed_rules()]
     rules = builtins + managed

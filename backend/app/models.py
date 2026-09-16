@@ -1,6 +1,18 @@
 from datetime import datetime, timezone
 from typing import Any
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -289,6 +301,251 @@ class DataAsset(TimestampMixin, Base):
     sensitivity: Mapped[str] = mapped_column(String(32), index=True)
     source: Mapped[str] = mapped_column(String(128), default="file")
     columns: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+# --- central rule sets -------------------------------------------------------
+# The server is the single source of truth for detection rules. `rules` is the
+# editable working copy of a rule set; `rule_set_versions` holds the immutable
+# published bytes a probe downloads, so editing never changes what an already
+# published version contains and a rollback is a new version, not an overwrite.
+class RuleSet(TimestampMixin, Base):
+    __tablename__ = "rule_sets"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str] = mapped_column(String(512), default="")
+    active_version_id: Mapped[int] = mapped_column(ForeignKey("rule_set_versions.id"), nullable=True)
+
+
+class Rule(TimestampMixin, Base):
+    __tablename__ = "rules"
+    __table_args__ = (UniqueConstraint("rule_set_id", "rule_id", name="uq_rules_set_rule_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rule_set_id: Mapped[int] = mapped_column(ForeignKey("rule_sets.id"), index=True)
+    rule_id: Mapped[str] = mapped_column(String(128), index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    entity: Mapped[str] = mapped_column(String(64), index=True)
+    pattern: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    validator: Mapped[str] = mapped_column(String(64), default="")
+    field_hints: Mapped[list[str]] = mapped_column(JSON, default=list)
+    keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    source: Mapped[str] = mapped_column(String(32), default="builtin")
+    description: Mapped[str] = mapped_column(Text, default="")
+
+
+class RuleSetVersion(TimestampMixin, Base):
+    __tablename__ = "rule_set_versions"
+    __table_args__ = (UniqueConstraint("rule_set_id", "version", name="uq_ruleset_version"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rule_set_id: Mapped[int] = mapped_column(ForeignKey("rule_sets.id"), index=True)
+    version: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="published", index=True)
+    schema_version: Mapped[str] = mapped_column(String(16), default="1.0")
+    engine_version: Mapped[str] = mapped_column(String(32), default="")
+    min_agent_version: Mapped[str] = mapped_column(String(32), default="")
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    rule_count: Mapped[int] = mapped_column(Integer, default=0)
+    origin_version: Mapped[str] = mapped_column(String(64), default="")
+    changelog: Mapped[str] = mapped_column(String(512), default="")
+    published_by: Mapped[str] = mapped_column(String(128), default="")
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    package: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
+
+class ScanProfile(TimestampMixin, Base):
+    """A versioned, reusable scan configuration.
+
+    A task snapshots the profile it ran with, so editing a profile never changes
+    the effective scope of a job that has already been handed to a probe. The
+    defaults mirror the shipped 3.3.1 behaviour exactly, so an absent profile and
+    an unconfigured scan behave the same.
+    """
+
+    __tablename__ = "scan_profiles"
+    __table_args__ = (UniqueConstraint("name", "version", name="uq_scan_profile_version"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    description: Mapped[str] = mapped_column(String(512), default="")
+    # Scope
+    include_paths: Mapped[list[str]] = mapped_column(JSON, default=list)
+    exclude_paths: Mapped[list[str]] = mapped_column(JSON, default=list)
+    file_types: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Bounds
+    max_files: Mapped[int] = mapped_column(Integer, default=200)
+    max_dirs: Mapped[int] = mapped_column(Integer, default=500)
+    max_depth: Mapped[int] = mapped_column(Integer, default=3)
+    max_runtime_seconds: Mapped[int] = mapped_column(Integer, default=120)
+    max_bytes_read: Mapped[int] = mapped_column(BigInteger, default=512 * 1024 * 1024)
+    max_single_file_size: Mapped[int] = mapped_column(BigInteger, default=2 * 1024 * 1024)
+    max_full_hash_size: Mapped[int] = mapped_column(BigInteger, default=8 * 1024 * 1024)
+    # Sampling
+    large_file_sampling: Mapped[bool] = mapped_column(Boolean, default=True)
+    sample_block_size: Mapped[int] = mapped_column(Integer, default=64 * 1024)
+    max_sample_rows: Mapped[int] = mapped_column(Integer, default=25)
+    # Soft resource limits: throttle/abort signals, not OS-enforced isolation.
+    max_cpu_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    max_rss_mb: Mapped[float] = mapped_column(Float, default=0.0)
+    # XLSX is the one container that is parsed; bound it explicitly.
+    xlsx_max_entries: Mapped[int] = mapped_column(Integer, default=512)
+    xlsx_max_uncompressed_bytes: Mapped[int] = mapped_column(BigInteger, default=64 * 1024 * 1024)
+    xlsx_max_compression_ratio: Mapped[float] = mapped_column(Float, default=200.0)
+    xlsx_max_shared_strings: Mapped[int] = mapped_column(Integer, default=200_000)
+    xlsx_max_sheets: Mapped[int] = mapped_column(Integer, default=32)
+    xlsx_max_columns: Mapped[int] = mapped_column(Integer, default=256)
+    xlsx_max_rows: Mapped[int] = mapped_column(Integer, default=200)
+    # Scheduled collection stays off unless an operator turns it on.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    scheduled: Mapped[bool] = mapped_column(Boolean, default=False)
+    interval_seconds: Mapped[int] = mapped_column(Integer, default=3600)
+    created_by: Mapped[str] = mapped_column(String(128), default="")
+
+
+# --- data objects, instances and detections ----------------------------------
+# Three levels instead of one flat row. A `DataObject` is the logical identity of
+# the content, an `AssetInstance` is one physical copy on one probe, and a
+# `Detection` is one sensitive category observed on one instance. Equal full
+# SHA256 is the only thing that may aggregate two files into one object; a partial
+# fingerprint can only ever produce a clearly labelled candidate. `data_assets`
+# stays as a derived compatibility projection for the legacy pages, so nothing old
+# breaks and a divergence can be rebuilt instead of being unrecoverable.
+class DataObject(TimestampMixin, Base):
+    __tablename__ = "data_objects"
+    __table_args__ = (UniqueConstraint("object_key", name="uq_data_object_key"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: Deterministic identity key. Never a bare filename or size, which would
+    #: silently merge unrelated files.
+    object_key: Mapped[str] = mapped_column(String(192), index=True)
+    object_type: Mapped[str] = mapped_column(String(64), index=True)
+    #: Empty when no reliable hash exists. A missing hash is never fabricated.
+    content_hash: Mapped[str] = mapped_column(String(128), default="", index=True)
+    #: full_sha256 | partial_fingerprint | scoped
+    hash_type: Mapped[str] = mapped_column(String(32), default="scoped", index=True)
+    #: 1.0 means "the complete content hash matches". It does not mean the two
+    #: objects are the same business record, and it is not a detection score.
+    identity_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    #: Versioned partial-fingerprint parameters, kept so an old candidate can be
+    #: explained (and invalidated) after the algorithm changes.
+    partial_version: Mapped[str] = mapped_column(String(32), default="")
+    partial_layout: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    size: Mapped[int] = mapped_column(BigInteger, default=0)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    instance_count: Mapped[int] = mapped_column(Integer, default=0)
+    active_instance_count: Mapped[int] = mapped_column(Integer, default=0)
+    categories: Mapped[list[str]] = mapped_column(JSON, default=list)
+    sensitivity: Mapped[str] = mapped_column(String(16), default="Unknown", index=True)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class AssetInstance(TimestampMixin, Base):
+    """One physical copy of an object on one probe.
+
+    Identity is (probe_id, normalised absolute path). Renaming a file therefore
+    creates a new instance and leaves the old one for the scope-aware
+    ACTIVE/NOT_OBSERVED decision - it is never silently re-pointed.
+    """
+
+    __tablename__ = "asset_instances"
+    __table_args__ = (UniqueConstraint("probe_id", "path", name="uq_asset_instance_probe_path"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    object_id: Mapped[int] = mapped_column(ForeignKey("data_objects.id"), index=True)
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), index=True)
+    path: Mapped[str] = mapped_column(String(1024), default="")
+    name: Mapped[str] = mapped_column(String(512), default="")
+    #: file | directory | database_service
+    instance_type: Mapped[str] = mapped_column(String(32), default="file", index=True)
+    size: Mapped[int] = mapped_column(BigInteger, default=0)
+    inode: Mapped[int] = mapped_column(BigInteger, nullable=True)
+    device: Mapped[int] = mapped_column(BigInteger, nullable=True)
+    mtime_ns: Mapped[int] = mapped_column(BigInteger, nullable=True)
+    owner: Mapped[str] = mapped_column(String(64), default="")
+    group: Mapped[str] = mapped_column(String(64), default="")
+    permission: Mapped[str] = mapped_column(String(16), default="")
+    content_hash: Mapped[str] = mapped_column(String(128), default="")
+    hash_type: Mapped[str] = mapped_column(String(32), default="scoped")
+    #: ACTIVE | NOT_OBSERVED. STALE/DISAPPEARED are reserved and are never
+    #: inferred, because "not observed" is not proof of deletion.
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_scan_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_scan_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    #: The scope this instance was last successfully confirmed in. Only an
+    #: identical scope may later turn it into NOT_OBSERVED.
+    scope_key: Mapped[str] = mapped_column(String(256), default="", index=True)
+    coverage: Mapped[str] = mapped_column(String(16), default="complete")
+    termination_reason: Mapped[str] = mapped_column(String(64), default="complete")
+    ruleset_version: Mapped[str] = mapped_column(String(64), default="")
+    engine_version: Mapped[str] = mapped_column(String(64), default="")
+    profile_version: Mapped[str] = mapped_column(String(64), default="")
+    sensitivity: Mapped[str] = mapped_column(String(16), default="Unknown", index=True)
+    categories: Mapped[list[str]] = mapped_column(JSON, default=list)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class Detection(TimestampMixin, Base):
+    """One sensitive category on one instance for one object.
+
+    `UNIQUE(instance_id, category, object_id)` is what makes "one instance, one
+    row per category and object, many evidence rows" hold under concurrent
+    uploads, while keeping the storage boundary honest: when the content at a
+    path changes, the instance points at a new object and new detections, and the
+    previous object keeps its own detections instead of being overwritten. The
+    current view is `object_id == instance.object_id`.
+    """
+
+    __tablename__ = "detections"
+    __table_args__ = (UniqueConstraint("instance_id", "category", "object_id",
+                                       name="uq_detection_instance_category_object"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    object_id: Mapped[int] = mapped_column(ForeignKey("data_objects.id"), index=True)
+    instance_id: Mapped[int] = mapped_column(ForeignKey("asset_instances.id"), index=True)
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), index=True)
+    scan_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    category: Mapped[str] = mapped_column(String(64), index=True)
+    subcategory: Mapped[str] = mapped_column(String(64), default="")
+    #: L1..L4 classification, a different axis from the legacy risk severity.
+    sensitivity_level: Mapped[str] = mapped_column(String(16), default="L1", index=True)
+    #: The existing Critical/High/Medium/Low vocabulary, kept as a derived value.
+    severity: Mapped[str] = mapped_column(String(16), default="Low", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    sample_hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    engine_version: Mapped[str] = mapped_column(String(64), default="")
+    ruleset_version: Mapped[str] = mapped_column(String(64), default="")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class DetectionEvidence(TimestampMixin, Base):
+    """Why a detection fired. Never carries a matched value."""
+
+    __tablename__ = "detection_evidence"
+    __table_args__ = (UniqueConstraint("detection_id", "evidence_key", name="uq_detection_evidence_key"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    detection_id: Mapped[int] = mapped_column(ForeignKey("detections.id"), index=True)
+    #: Dedupe key: several recognisers agreeing on one fragment collapse into one
+    #: row instead of inflating the count.
+    evidence_key: Mapped[str] = mapped_column(String(200), default="")
+    rule_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    rule_name: Mapped[str] = mapped_column(String(255), default="")
+    #: builtin | manual | imported | presidio_static | presidio_runtime
+    rule_source: Mapped[str] = mapped_column(String(32), default="")
+    recognizer: Mapped[str] = mapped_column(String(64), default="")
+    #: regex | keyword | field_name | context | validator
+    evidence_type: Mapped[str] = mapped_column(String(32), default="")
+    field_name: Mapped[str] = mapped_column(String(128), default="")
+    sheet_name: Mapped[str] = mapped_column(String(128), default="")
+    column_index: Mapped[int] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    engine_version: Mapped[str] = mapped_column(String(64), default="")
+    ruleset_version: Mapped[str] = mapped_column(String(64), default="")
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 

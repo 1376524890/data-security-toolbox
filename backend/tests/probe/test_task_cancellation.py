@@ -26,12 +26,25 @@ def test_remote_stop_is_checked_and_cached(monkeypatch):
     assert len(calls) == 1 and 'task_id=12' in calls[0]
 
 
+def _ruleset_client(tmp_path):
+    """A real client with no network: it falls back to the in-package pack."""
+    client = probe.RuleSetClient(directory=tmp_path / 'rules', fetch_json=lambda url: {},
+                                 fetch_bytes=lambda url, limit: b'', manifest_url=lambda current: '',
+                                 download_url=lambda version: '', agent_version='test')
+    client.load_usable()
+    return client
+
+
 def test_empty_remote_paths_use_local_configuration(tmp_path, monkeypatch):
     agent = object.__new__(probe.ProbeAgent)
     agent.stop_event = threading.Event()
     agent.config = SimpleNamespace(data_assets={'paths': ['/srv/data']})
+    # A data-asset job now pins the rule snapshot for the whole task.
+    agent.ruleset = _ruleset_client(tmp_path)
     configs = []
-    def discover(config, stop):
+    # `on_progress` was added in 3.4.0; the stub keeps the old two-argument
+    # shape working so the assertion below still tests the merge, not progress.
+    def discover(config, stop, on_progress=None):
         configs.append(config)
         return {'assets': [], 'complete': True}
     monkeypatch.setattr(probe, 'discover_data_assets', discover)

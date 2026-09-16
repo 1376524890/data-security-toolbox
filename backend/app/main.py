@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,9 @@ from app.api.v1 import router
 from app.api.deployments import router as deployments_router
 from app.api.extensions import router as extensions_router
 from app.api.libraries import router as libraries_router
+from app.api.profiles import router as profiles_router
+from app.api.data_catalog import router as data_catalog_router
+from app.api.rulesets import router as rulesets_router
 from app.core.config import settings
 from app.core.database import SessionLocal, engine
 from app.core.logging import configure_logging
@@ -22,15 +26,29 @@ async def lifespan(app: FastAPI):
         Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         ensure_admin(db)
+        try:
+            # Publish the built-in rule baseline on first boot so a probe always
+            # has something to negotiate against. Failure is reported, not hidden:
+            # the rule set endpoints retry and surface the real error.
+            from app.services.ruleset_service import ensure_baseline
+
+            ensure_baseline(db)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logging.getLogger(__name__).exception("rule set baseline could not be published at startup")
     yield
 
 
-app = FastAPI(title=settings.app_name, version="2.7.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.8.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
 app.include_router(deployments_router)
 app.include_router(extensions_router)
 app.include_router(libraries_router)
+app.include_router(rulesets_router)
+app.include_router(profiles_router)
+app.include_router(data_catalog_router)
 
 
 PUBLIC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
@@ -39,7 +57,11 @@ PUBLIC_PREFIXES = ("/docs", "/openapi.json", "/redoc")
 def _is_probe_api(path: str) -> bool:
     return (
         path == "/api/v1/probes/register"
-        or (path.startswith("/api/v1/probes/") and any(path.endswith(s) for s in ('/heartbeat', '/scan', '/commands', '/inventory', '/data-assets', '/command-status')))
+        or (path.startswith("/api/v1/probes/") and any(path.endswith(s) for s in (
+            '/heartbeat', '/scan', '/commands', '/inventory', '/data-assets', '/command-status',
+            # Rule downloads still require a probe token in the handler; this only
+            # exempts them from the admin-session check.
+            '/ruleset', '/ruleset/manifest')))
         or path in {"/api/v1/pcaps/upload", "/api/v1/files/upload"}
         or path == "/api/v1/health"
     )

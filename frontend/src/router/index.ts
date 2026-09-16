@@ -29,6 +29,14 @@ const routes: RouteRecordRaw[] = [
   { path: '/data-assets', component: () => import('../modules/data-security/DataAsset.vue'), meta: { title: 'Data Asset', group: 'Asset & Data Security' } },
   { path: '/sensitive', component: () => import('../modules/data-security/SensitiveDiscovery.vue'), meta: { title: 'Sensitive Discovery', group: 'Asset & Data Security' } },
   { path: '/files', component: () => import('../modules/data-security/FileAnalysis.vue'), meta: { title: 'File Analysis', group: 'Asset & Data Security' } },
+  { path: '/rule-versions', component: () => import('../modules/data-security/RuleVersions.vue'), meta: { title: 'Rule Versions', group: 'Asset & Data Security' } },
+  // Data-type-centric P0 view: the object model, not the legacy projection.
+  { path: '/data-types', component: () => import('../modules/data-security/DataTypeCenter.vue'), meta: { title: 'DataType Center', group: 'Asset & Data Security' } },
+  { path: '/data-types/:category', component: () => import('../modules/data-security/DataTypeDetail.vue'), meta: { title: 'DataType Detail', group: 'Asset & Data Security' } },
+  { path: '/data-objects/:id', component: () => import('../modules/data-security/DataObjectDetail.vue'), meta: { title: 'DataObject Detail', group: 'Asset & Data Security' } },
+  { path: '/asset-instances/:id', component: () => import('../modules/data-security/AssetInstanceDetail.vue'), meta: { title: 'AssetInstance Detail', group: 'Asset & Data Security' } },
+  { path: '/scan-profiles', component: () => import('../modules/data-security/ScanProfiles.vue'), meta: { title: 'Scan Profiles', group: 'Asset & Data Security' } },
+  { path: '/data-asset-jobs', component: () => import('../modules/data-security/DataAssetJobs.vue'), meta: { title: 'Data Asset Jobs', group: 'Asset & Data Security' } },
   // Threat Intelligence
   { path: '/network/dlp', component: () => import('../modules/data-security/NetworkDlp.vue'), meta: { title: '网络防泄密', group: 'Asset & Data Security' } },
   { path: '/threat/ioc', component: () => import('../modules/threat/IocCenter.vue'), meta: { title: 'IOC', group: 'Threat Intelligence' } },

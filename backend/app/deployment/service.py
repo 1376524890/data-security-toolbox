@@ -95,6 +95,7 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
             f"enabled = {data_enabled}",
             f"interval_seconds = {data_interval}",
             f"paths = {json.dumps(data_paths)}",
+            f"exclude_paths = {json.dumps([str(item) for item in (data_config.get('exclude_paths') or []) if str(item).strip()])}",
             f"max_files = {data_max_files}",
             f"max_depth = {data_max_depth}",
             f"include_databases = {data_databases}",

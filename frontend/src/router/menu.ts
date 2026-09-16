@@ -20,9 +20,13 @@ export const menuGroups: MenuNode[] = [
   { group: '资产与数据安全', items: [
     { path: '/assets', title: '资产中心', icon: 'Monitor' },
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },
+    { path: '/data-types', title: '数据类型中心', icon: 'Grid' },
+    { path: '/scan-profiles', title: '扫描配置', icon: 'Setting' },
+    { path: '/data-asset-jobs', title: '采集任务', icon: 'Upload' },
     { path: '/sensitive', title: '敏感发现', icon: 'Search' },
     { path: '/network/dlp', title: '网络防泄密', icon: 'Lock' },
     { path: '/files', title: '文件分析', icon: 'Document' },
+    { path: '/rule-versions', title: '规则版本', icon: 'Tickets' },
   ]},
   { group: '威胁情报', items: [
     { path: '/threat/ioc', title: 'IOC 情报', icon: 'Aim' },

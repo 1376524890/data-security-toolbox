@@ -1,0 +1,33 @@
+# The backend images build from the repository root (context: .) so that the
+# shared detection package is inside the build context. Only backend/, shared/
+# and the frontend build are ever copied, so keep everything else out: without
+# this file the context would include .venv, node_modules and local data.
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/htmlcov
+.git
+.gitignore
+.venv
+venv
+node_modules
+*.log
+*.tsbuildinfo
+data
+*.db
+*.sqlite3
+.DS_Store
+.env
+dist
+dist-offline
+dist-deploy
+dist-deploy.zip
+dist-deploy.tar
+offline
+local
+probe_packages
+uploads
+reports

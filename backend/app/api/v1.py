@@ -97,6 +97,7 @@ from app.services.alert_service import (
     publish_alert,
     serialize_alert,
 )
+from app.services import data_object_service
 from app.services.asset_service import asset_relations
 from app.services.audit_service import audit_summary, log_analysis
 from app.services.crypto_profile import build_crypto_profile
@@ -701,7 +702,20 @@ def heartbeat(probe_id: int, payload: Heartbeat, request: Request, db: Session =
             deployment.current_stage = "ONLINE"
             deployment.progress = 100
     db.commit()
-    return {"status": "ok"}
+    # Tells the probe which rule version to expect on the next sync. Older probes
+    # ignore the extra key, so the heartbeat stays backward compatible.
+    return {"status": "ok", "latest_ruleset_version": _latest_ruleset_version(db)}
+
+
+def _latest_ruleset_version(db: Session) -> str:
+    """Active rule version, or "" when rule sets are not available yet."""
+    try:
+        from app.services.ruleset_service import active_version, get_or_create_rule_set
+
+        row = active_version(db, get_or_create_rule_set(db))
+        return row.version if row else ""
+    except Exception:
+        return ""
 
 
 @router.get("/probes")
@@ -735,6 +749,11 @@ def delete_probe(probe_id: int, db: Session = Depends(get_db)) -> dict[str, str]
     # Preserve collected records and deployment history, clearing foreign keys.
     for model in (Asset, FileRecord, PcapRecord, Incident, Alert, ProbeDeployment, ProbeEnrollment):
         db.execute(update(model).where(model.probe_id == probe_id).values(probe_id=None))
+    # The object model is a different case: an instance identity *is*
+    # (probe_id, normalised path), so it cannot survive as a detached row.
+    # Its own observation state is removed while the logical objects, the
+    # legacy data_assets projection and every other collected record stay.
+    data_object_service.forget_probe(db, probe_id)
     if probe.deployment_id:
         db.execute(update(ProbeEnrollment).where(
             ProbeEnrollment.deployment_id == probe.deployment_id,

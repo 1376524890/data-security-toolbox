@@ -7,6 +7,7 @@ from typing import Any
 from app.engine.core.context import DetectionContext
 from app.integrations.base import AdapterResult, IntegrationAdapter, finding
 from app.integrations.presidio.recognizers import fallback_scan, presidio_scan
+from app.services.sensitive_engine import engine_metadata
 
 ENTITY_RULES = {
     "CN_ID_CARD": ("DATA_PRESIDIO_ID_CARD_001", "High", 0.9, "身份证号属于个人敏感信息，应加密、脱敏并限制访问。"),
@@ -95,6 +96,10 @@ class PresidioAdapter(IntegrationAdapter):
             if not rule:
                 continue
             rule_id, severity, confidence, recommendation = rule
+            # Count how many values matched without keeping any of them. A static
+            # pattern hit is evidence that a pattern exists, not a copy of the data.
+            count = sum(int(item.get("count") or 1) for item in items)
+            sources = sorted({str(item.get("rule_source")) for item in items if item.get("rule_source")})
             findings.append(finding(
                 self.name,
                 rule_id,
@@ -102,9 +107,10 @@ class PresidioAdapter(IntegrationAdapter):
                 confidence,
                 {
                     "entity_type": entity,
-                    "count": len(items),
-                    "samples": [item.get("text", "") for item in items[:10]],
-                    "source": "presidio" if records and records != fallback_scan(text) else "regex-fallback",
+                    "count": count,
+                    "rule_source": sources[0] if sources else "presidio_runtime",
+                    "rule_sources": sources,
+                    "engine": engine_metadata()["engine_version"],
                 },
                 recommendation,
             ))

@@ -28,6 +28,22 @@ Redis RESP 报文等）会被逐条识别为敏感数据并产生 High 告警，
 - **宽松模式校验**：Presidio 邮箱模式只要求 `@`，会把 `postgresql://security@172.18.0.2:5432` 判为邮箱；
   现要求域名以 2 位以上字母顶级域结尾。
 
+## 工具箱自身通信（不再告警）
+
+旁路抓包会看到微服务、平台与探针之间的管理流量：探针上传 PCAP/文件（`POST /api/v1/pcaps/upload`）、
+管理台浏览器会话、平台调用其他自有工具的 API。这些流量的载荷天然包含 IP、时间戳、令牌等，会被当成
+数据外发，因此现在一律排除，并计入 `coverage.excluded_own_traffic`。排除依据有两层：
+
+- **自有端点**：平台自己的 URL（取自 `DEPLOYMENT_BACKEND_URL`，即探针上传地址）自动排除；`host`、
+  `host:port`、`CIDR`（可带端口）形式的补充条目通过 `DLP_SELF_ENDPOINTS` 环境变量或
+  「检测策略」的 `self_endpoints` 配置，用于同一主机上的兄弟工具（编排器、攻击模拟平台等）。
+  按 IP 匹配流方向，按 HTTP `Host` 头匹配域名寻址，两种寻址方式都能覆盖。
+- **自有认证标识**：流中出现 `X-Probe-ID` / `X-Probe-Token` / `X-Probe-Bootstrap-Token` 或管理台
+  Cookie（`COOKIE_NAME`，默认 `dst_admin_session`）即判为自身流量，因此 DHCP 变更、容器重建、
+  IP 与主机名混用等场景下依然生效，不依赖地址清单。
+
+`DLP_IGNORE_OWN_TRAFFIC=false` 可整体关闭该排除（用于验证排除范围）；查询串与凭据仍不落库。
+
 ## 策略配置
 
 「数据安全 → 网络防泄密 → 检测策略」：
@@ -35,6 +51,8 @@ Redis RESP 报文等）会被逐条识别为敏感数据并产生 High 告警，
 - `min_confidence`（告警最低置信度，默认 0.6）：低于该值的规则只在传输证据中显示"（仅证据）"。
 - `exclude_cidrs`（忽略网段）：每行一个 CIDR，如 `169.254.0.0/16`；回环、链路本地与组播始终忽略。
 - `min_matches`（最少命中次数）：命中次数下限，与置信度无关。
+- `self_endpoints`（自有端点）：每行一个 `host`、`host:port` 或 CIDR，与平台 URL 一起排除；
+  也可用 `DLP_SELF_ENDPOINTS` 环境变量按环境预置（逗号、分号或空格分隔）。
 
 规则库表格新增「置信度」与「可告警」列，可据此判断某条规则是否会产生告警；重新导入 Presidio 会按官方
 `score` 刷新各规则置信度，并只默认启用可告警的规则。

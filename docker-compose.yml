@@ -28,7 +28,8 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: api
     ports:
       - "8000:8000"
@@ -44,7 +45,7 @@ services:
       DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
       DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
       DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
-      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.3.1}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.4.0}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -55,6 +56,8 @@ services:
       INTEGRATION_DIR: /app/data/integrations
       OFFLINE_DIR: /app/app/integrations/offline_data
       PRESIDIO_ENABLED: "false"
+      DLP_IGNORE_OWN_TRAFFIC: ${DLP_IGNORE_OWN_TRAFFIC:-true}
+      DLP_SELF_ENDPOINTS: ${DLP_SELF_ENDPOINTS:-}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
       PCAP_INDEX_LIMIT: ${PCAP_INDEX_LIMIT:-10000}
       PCAP_RETENTION_DAYS: ${PCAP_RETENTION_DAYS:-7}
@@ -102,7 +105,8 @@ services:
 
   worker:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: analysis-worker
     command: ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
     healthcheck:
@@ -122,7 +126,7 @@ services:
       DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
       DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
       DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
-      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.3.1}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.4.0}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -133,6 +137,8 @@ services:
       INTEGRATION_DIR: /app/data/integrations
       OFFLINE_DIR: /app/app/integrations/offline_data
       PRESIDIO_ENABLED: "false"
+      DLP_IGNORE_OWN_TRAFFIC: ${DLP_IGNORE_OWN_TRAFFIC:-true}
+      DLP_SELF_ENDPOINTS: ${DLP_SELF_ENDPOINTS:-}
       MISP_URL: ${MISP_URL:-}
       MISP_API_KEY: ${MISP_API_KEY:-}
       URLHAUS_AUTH_KEY: ${URLHAUS_AUTH_KEY:-}
@@ -166,7 +172,8 @@ services:
 
   beat:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: analysis-worker
     command: ["celery", "-A", "app.workers.celery_app.celery_app", "beat", "--loglevel=info"]
     environment:
@@ -181,7 +188,7 @@ services:
       DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
       DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
       DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
-      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.3.1}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.4.0}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -192,6 +199,8 @@ services:
       INTEGRATION_DIR: /app/data/integrations
       OFFLINE_DIR: /app/app/integrations/offline_data
       PRESIDIO_ENABLED: "false"
+      DLP_IGNORE_OWN_TRAFFIC: ${DLP_IGNORE_OWN_TRAFFIC:-true}
+      DLP_SELF_ENDPOINTS: ${DLP_SELF_ENDPOINTS:-}
       PCAP_RETENTION_DAYS: ${PCAP_RETENTION_DAYS:-7}
     volumes:
       - backend_data:/app/data
@@ -206,7 +215,8 @@ services:
 
   deployment-worker:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: analysis-worker
     command: ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "-Q", "deployment", "--concurrency=2"]
     environment:
@@ -221,7 +231,7 @@ services:
       DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
       DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
       DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
-      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.3.1}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.4.0}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -232,6 +242,8 @@ services:
       INTEGRATION_DIR: /app/data/integrations
       OFFLINE_DIR: /app/app/integrations/offline_data
       PRESIDIO_ENABLED: "false"
+      DLP_IGNORE_OWN_TRAFFIC: ${DLP_IGNORE_OWN_TRAFFIC:-true}
+      DLP_SELF_ENDPOINTS: ${DLP_SELF_ENDPOINTS:-}
     volumes:
       - backend_data:/app/data
       - ./probe_packages:/app/probe_packages:ro

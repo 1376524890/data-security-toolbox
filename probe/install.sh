@@ -3,9 +3,12 @@ set -euo pipefail
 
 APP_DIR="/opt/data-security-toolbox"
 PROBE_DIR="${APP_DIR}/probe"
+SHARED_DIR="${APP_DIR}/shared"
 VENV_DIR="${APP_DIR}/venv"
 CONFIG_DIR="/etc/data-security-toolbox"
 SPOOL_DIR="/var/lib/data-security-toolbox/spool"
+RULES_DIR="/var/lib/data-security-toolbox/rules"
+CACHE_DIR="/var/lib/data-security-toolbox/cache"
 SERVICE="data-security-toolbox-probe"
 INSTALL_ONLY=0
 CONFIG_SRC=""
@@ -31,10 +34,33 @@ if ! id dstprobe >/dev/null 2>&1; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-mkdir -p "${APP_DIR}" "${PROBE_DIR}" "${CONFIG_DIR}" "${SPOOL_DIR}"
-cp "${SCRIPT_DIR}/probe.py" "${SCRIPT_DIR}/scanner.py" "${SCRIPT_DIR}/data_assets.py" "${SCRIPT_DIR}/requirements.txt" "${PROBE_DIR}/"
+mkdir -p "${APP_DIR}" "${PROBE_DIR}" "${SHARED_DIR}" "${CONFIG_DIR}" "${SPOOL_DIR}" "${RULES_DIR}" "${CACHE_DIR}"
+cp "${SCRIPT_DIR}/probe.py" "${SCRIPT_DIR}/scanner.py" "${SCRIPT_DIR}/data_assets.py" "${SCRIPT_DIR}/ruleset_client.py" "${SCRIPT_DIR}/requirements.txt" "${PROBE_DIR}/"
+
+# The detection engine is shared with the platform, so it ships as its own
+# package next to `probe/`: probe.py resolves `shared.sensitive_detection` from
+# its parent directory. A package without it cannot detect anything, so this is
+# a hard failure instead of a silently degraded install.
+if [[ ! -d "${SCRIPT_DIR}/shared/sensitive_detection" ]]; then
+  echo "error: probe package is missing shared/sensitive_detection" >&2
+  exit 1
+fi
+# The scan budgets, fingerprints, samplers and parsers are shared too. Without
+# them the inventory job fails at import time, so treat it as a hard failure.
+if [[ ! -d "${SCRIPT_DIR}/shared/scanning" ]]; then
+  echo "error: probe package is missing shared/scanning" >&2
+  exit 1
+fi
+rm -rf "${SHARED_DIR}/sensitive_detection" "${SHARED_DIR}/scanning"
+cp -R "${SCRIPT_DIR}/shared/sensitive_detection" "${SCRIPT_DIR}/shared/scanning" "${SHARED_DIR}/"
+find "${SHARED_DIR}" -name '__pycache__' -type d -prune -exec rm -rf {} +
+if [[ -f "${SCRIPT_DIR}/shared/__init__.py" ]]; then
+  cp "${SCRIPT_DIR}/shared/__init__.py" "${SHARED_DIR}/__init__.py"
+fi
+
 chmod 0755 "${PROBE_DIR}/probe.py"
-chown -R dstprobe:dstprobe "${PROBE_DIR}" "${SPOOL_DIR}"
+chown -R dstprobe:dstprobe "${PROBE_DIR}" "${SHARED_DIR}" "${SPOOL_DIR}" "${RULES_DIR}" "${CACHE_DIR}"
+chmod 0700 "${RULES_DIR}" "${CACHE_DIR}"
 
 # Capture tool provisioning: prefer a bundled binary, then a distro package.
 CAPTURE_TOOL=""
@@ -159,7 +185,7 @@ CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=${SPOOL_DIR} ${CONFIG_DIR}
+ReadWritePaths=${SPOOL_DIR} ${RULES_DIR} ${CACHE_DIR} ${CONFIG_DIR}
 PrivateTmp=true
 
 [Install]

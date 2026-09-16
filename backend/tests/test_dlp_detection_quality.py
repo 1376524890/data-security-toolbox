@@ -128,3 +128,45 @@ def test_policy_defaults_cover_stored_documents_without_new_keys():
     policy = normalize_policy({'categories': ['phone'], 'min_matches': 1})
     assert policy['min_confidence'] == DEFAULT_POLICY['min_confidence']
     assert policy['exclude_cidrs'] == DEFAULT_POLICY['exclude_cidrs']
+    assert policy['self_endpoints'] == [] and policy['ignore_own_traffic'] is True
+
+
+UPLOAD_BODY = 'phone=13800138000&id_card=110101199003071234'
+
+
+def probe_upload(host, dst, dport=8088, headers=b'X-Probe-ID: 6\r\nX-Probe-Token: abc\r\n'):
+    return ('192.168.191.128', 51000, dst, dport,
+            b'POST /api/v1/pcaps/upload HTTP/1.1\r\nHost: ' + host.encode() + b'\r\n' + headers
+            + b'Content-Length: ' + str(len(UPLOAD_BODY)).encode() + b'\r\n\r\n' + UPLOAD_BODY.encode())
+
+
+def test_platform_endpoint_is_never_reported_as_data_loss(presidio_rules, tmp_path, monkeypatch):
+    """The URL our own probes upload to is by definition us, whatever it carries."""
+    monkeypatch.setattr(settings, 'deployment_backend_url', 'http://192.168.191.1:8088')
+    streams = [probe_upload('192.168.191.1:8088', '192.168.191.1', headers=b'')]
+    result, _, findings = analyze_capture(capture(tmp_path / 'platform.pcap', streams), BASE_POLICY)
+    assert findings == [] and result['objects'] == []
+    assert result['coverage']['excluded_own_traffic'] == 1
+
+
+def test_own_auth_headers_exclude_traffic_regardless_of_address(presidio_rules, tmp_path, monkeypatch):
+    """Address lists go stale (DHCP, containers); our own credentials do not."""
+    monkeypatch.setattr(settings, 'deployment_backend_url', '')
+    streams = [probe_upload('10.9.9.9:8088', '10.9.9.9')]
+    result, _, findings = analyze_capture(capture(tmp_path / 'agent.pcap', streams), BASE_POLICY)
+    assert findings == [] and result['coverage']['excluded_own_traffic'] == 1
+
+
+def test_own_hostname_endpoint_matches_by_host_header(presidio_rules, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, 'deployment_backend_url', 'http://security-platform.local:8088')
+    streams = [probe_upload('security-platform.local:8088', '192.168.191.1', headers=b'')]
+    result, _, findings = analyze_capture(capture(tmp_path / 'hostname.pcap', streams), BASE_POLICY)
+    assert findings == [] and result['coverage']['excluded_own_traffic'] == 1
+
+
+def test_own_traffic_exclusion_can_be_disabled(presidio_rules, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, 'deployment_backend_url', 'http://192.168.191.1:8088')
+    policy = {**BASE_POLICY, 'ignore_own_traffic': False, 'self_endpoints': []}
+    streams = [probe_upload('192.168.191.1:8088', '192.168.191.1')]
+    result, _, findings = analyze_capture(capture(tmp_path / 'audit.pcap', streams), policy)
+    assert len(findings) == 1 and result['coverage']['excluded_own_traffic'] == 0

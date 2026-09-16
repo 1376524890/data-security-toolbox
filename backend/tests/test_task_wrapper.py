@@ -6,17 +6,49 @@ import pytest
 from sqlalchemy import delete, func, select
 
 from app.core.database import SessionLocal
-from app.models import Alert, DetectionFinding, Flow, PcapRecord, Task
+from app.models import (Alert, AlertDelivery, AnalysisResult, Anomaly, DetectionFinding, Flow,
+                       PacketRecord, PcapRecord, Task)
 from app.workers.tasks import analyze_pcap_task, create_task
 from tests.fixtures.generate_scan_pcap import write_scan_pcap
 
 
 def _cleanup() -> None:
+    """Remove everything this module created, children before parents.
+
+    The pcap analysis writes `Flow`, `PacketRecord`, `Anomaly`, `DetectionFinding`,
+    `Alert` and `AnalysisResult` rows all pointing at one `PcapRecord`/`Task`, so
+    a partial cleanup leaves a dangling reference and the next delete fails.
+
+    These rows are named explicitly instead of relying on foreign keys being
+    off: `test_probe_delete.py` turns `PRAGMA foreign_keys=ON` on for a pooled
+    SQLite connection and never turns it back off, so whether the constraint
+    bites here depends on which connection this test happens to borrow.
+    """
+    def task_ids():
+        return select(Task.id).where(Task.payload["pcap_id"].as_integer().in_(
+            select(PcapRecord.id).where(PcapRecord.segment_id.like("taskwrapper-%"))))
+
+    def pcap_ids():
+        return select(PcapRecord.id).where(PcapRecord.segment_id.like("taskwrapper-%"))
+
+    def finding_ids():
+        return select(DetectionFinding.id).where(
+            DetectionFinding.target_type == "pcap",
+            DetectionFinding.target_id.in_(pcap_ids()))
+
+    def alert_ids():
+        return select(Alert.id).where(Alert.finding_id.in_(finding_ids()))
+
     with SessionLocal() as db:
-        db.execute(delete(Flow).where(Flow.pcap_id.in_(select(PcapRecord.id).where(PcapRecord.segment_id.like("taskwrapper-%")))))
-        db.execute(delete(Alert).where(Alert.finding_id.in_(select(DetectionFinding.id).where(DetectionFinding.target_type == "pcap", DetectionFinding.target_id.in_(select(PcapRecord.id).where(PcapRecord.segment_id.like("taskwrapper-%")))))))
-        db.execute(delete(DetectionFinding).where(DetectionFinding.target_type == "pcap", DetectionFinding.target_id.in_(select(PcapRecord.id).where(PcapRecord.segment_id.like("taskwrapper-%")))))
-        db.execute(delete(Task).where(Task.payload["pcap_id"].as_integer().in_(select(PcapRecord.id).where(PcapRecord.segment_id.like("taskwrapper-%")))))
+        db.execute(delete(AlertDelivery).where(AlertDelivery.alert_id.in_(alert_ids())))
+        db.execute(delete(Alert).where(Alert.finding_id.in_(finding_ids())))
+        db.execute(delete(Anomaly).where(Anomaly.pcap_id.in_(pcap_ids())))
+        db.execute(delete(PacketRecord).where(PacketRecord.pcap_id.in_(pcap_ids())))
+        db.execute(delete(Flow).where(Flow.pcap_id.in_(pcap_ids())))
+        db.execute(delete(DetectionFinding).where(DetectionFinding.target_type == "pcap", DetectionFinding.target_id.in_(pcap_ids())))
+        db.execute(delete(DetectionFinding).where(DetectionFinding.task_id.in_(task_ids())))
+        db.execute(delete(AnalysisResult).where(AnalysisResult.task_id.in_(task_ids())))
+        db.execute(delete(Task).where(Task.id.in_(task_ids())))
         db.execute(delete(PcapRecord).where(PcapRecord.segment_id.like("taskwrapper-%")))
         db.commit()
 

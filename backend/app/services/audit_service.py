@@ -62,3 +62,62 @@ def audit_summary(assets: list[dict[str, Any]], files: list[dict[str, Any]], pca
         "leak_risk": leak_risk_audit(pcaps),
     }
 
+"""Audit trail for administrative write operations.
+
+``AuditLog`` existed but nothing ever wrote to it, so a destructive or
+recovery action left no trace. :func:`record_audit` is the one write path: it
+records the acting administrator, the action and a small details payload, and it
+never raises - an audit failure must not turn a working operation into an error.
+
+Details are capped and JSON-safe: an audit entry carries counts and identifiers,
+never a matched value or a credential.
+"""
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.core.security import get_session_user
+from app.models import AuditLog
+
+#: Keeps one oversized payload from bloating the table.
+MAX_DETAIL_ITEMS = 32
+MAX_DETAIL_CHARS = 512
+
+
+def _actor(db: Session, request: Any) -> str:
+    try:
+        user = get_session_user(db, request)
+    except Exception:  # pragma: no cover - an unreadable session is not a write error
+        user = None
+    return str(getattr(user, "username", "") or "admin")
+
+
+def _clean(details: Any) -> dict[str, Any]:
+    if not isinstance(details, dict):
+        return {}
+    clean: dict[str, Any] = {}
+    for key, value in list(details.items())[:MAX_DETAIL_ITEMS]:
+        if isinstance(value, (int, float, bool)) or value is None:
+            clean[str(key)[:64]] = value
+        elif isinstance(value, str):
+            clean[str(key)[:64]] = value[:MAX_DETAIL_CHARS]
+        else:
+            clean[str(key)[:64]] = str(value)[:MAX_DETAIL_CHARS]
+    return clean
+
+
+def record_audit(db: Session, request: Any, *, action: str, target: str = "",
+                 severity: str = "Low", details: Any = None) -> AuditLog | None:
+    """Append one audit row. Returns ``None`` if the entry could not be stored."""
+    try:
+        row = AuditLog(action=str(action)[:128], actor=_actor(db, request),
+                       target=str(target)[:512], severity=str(severity)[:16],
+                       details=_clean(details))
+        db.add(row)
+        db.flush()
+        return row
+    except Exception:  # pragma: no cover - auditing is best-effort by design
+        return None
+
+
+__all__ = ["record_audit"]

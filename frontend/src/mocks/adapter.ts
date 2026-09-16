@@ -180,6 +180,10 @@ function route(method: string, url: string, params: Params, body: unknown): unkn
   if (path === '/audit/summary') return clone(data.auditSummary)
   if (path === '/analysis/results') return []
 
+  // ---- Rule sets (central detection rules) ----
+  if (path === '/rulesets' && method === 'get') return clone(data.ruleSets)
+  if (parts[0] === 'rulesets' && parts[2] === 'versions' && method === 'get') return clone(data.ruleSetVersions)
+
   // ---- Fallback ----
   return { detail: `mock: no route for ${method} ${path}` }
 }

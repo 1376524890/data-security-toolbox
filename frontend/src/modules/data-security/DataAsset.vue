@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { listDataAssets, getDataAsset } from '../../api/dataAssets'
 import { listProbes, collectProbeDataAssets, type Probe } from '../../api/probes'
@@ -14,6 +15,7 @@ import SeverityTag from '../../components/security/SeverityTag.vue'
 import DataRiskCard from '../../components/security/DataRiskCard.vue'
 import JsonViewer from '../../components/evidence/JsonViewer.vue'
 
+const router = useRouter()
 const loading = ref(true)
 const error = ref('')
 const items = ref<DataAssetType[]>([])
@@ -131,6 +133,10 @@ onMounted(() => { load(); loadProbes() })
     <FilterBar :filters="filterFields" :model="filters" @search="reset" @reset="reset">
       <template #actions>
         <el-button type="primary" @click="openCollect">从探针采集数据资产</el-button>
+        <!-- The legacy projection stays the entry point; the object model is a
+             separate view so this page keeps its existing meaning. -->
+        <el-button @click="router.push('/data-types')">按数据类型查看</el-button>
+        <el-button @click="router.push('/data-asset-jobs')">采集任务与进度</el-button>
       </template>
     </FilterBar>
     <StateBox :loading="loading" :error="error" :empty="!items.length" @retry="load">

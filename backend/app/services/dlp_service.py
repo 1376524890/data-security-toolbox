@@ -11,7 +11,7 @@ import zlib
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
-from urllib.parse import unquote_plus
+from urllib.parse import unquote_plus, urlsplit
 
 import dpkt
 
@@ -25,7 +25,13 @@ MAX_OBJECTS = 500
 DEFAULT_POLICY = {'enabled': True, 'categories': ['phone', 'id_card', 'email', 'api_key'],
                   'keywords': [], 'fingerprints': [], 'min_matches': 1,
                   'min_confidence': MIN_ALERT_CONFIDENCE,
-                  'exclude_cidrs': ['127.0.0.0/8', '::1/128']}
+                  'exclude_cidrs': ['127.0.0.0/8', '::1/128'],
+                  # The toolbox talking to itself is not data loss.
+                  'self_endpoints': [], 'ignore_own_traffic': True}
+# Our own management channel authenticates with fixed header/cookie names, so a
+# captured stream carrying them is the toolbox talking to itself no matter which
+# address it uses (platform URL, DHCP change, hostname vs IP, ...).
+OWN_TRAFFIC_MARKERS = (b'x-probe-token', b'x-probe-id', b'x-probe-bootstrap-token')
 # Precision of the built-in patterns. ``token`` matches any long random run, so
 # hashes, base64 blobs and container ids keep it below the alert threshold.
 BUILTIN_CONFIDENCE = {'phone': .7, 'id_card': .9, 'bank_card': .85, 'email': .85, 'api_key': .95, 'token': .3}
@@ -44,6 +50,9 @@ def normalize_policy(config):
         policy['min_confidence'] = MIN_ALERT_CONFIDENCE
     if not isinstance(policy.get('exclude_cidrs'), list):
         policy['exclude_cidrs'] = list(DEFAULT_POLICY['exclude_cidrs'])
+    if not isinstance(policy.get('self_endpoints'), list):
+        policy['self_endpoints'] = list(DEFAULT_POLICY['self_endpoints'])
+    policy['ignore_own_traffic'] = bool(policy.get('ignore_own_traffic', True))
     return policy
 
 
@@ -70,6 +79,95 @@ def excluded_networks(policy):
         except ValueError:
             continue
     return networks
+
+
+def own_traffic_markers():
+    from app.core.config import settings
+    return (*OWN_TRAFFIC_MARKERS, str(settings.cookie_name).lower().encode())
+
+
+def self_endpoint_entries(policy):
+    """Addresses that belong to the toolbox itself.
+
+    ``DEPLOYMENT_BACKEND_URL`` is the URL our own probes upload to, so it is the
+    authoritative "this address is us" hint. ``DLP_SELF_ENDPOINTS`` adds extra
+    ``host[:port]`` / CIDR entries (for example sibling tooling on the same
+    host), and a stored policy may carry its own list.
+    """
+    entries = list(policy.get('self_endpoints') or [])
+    if policy.get('ignore_own_traffic', True):
+        from app.core.config import settings
+        backend_url = str(getattr(settings, 'deployment_backend_url', '') or '').strip()
+        if backend_url:
+            parts = urlsplit(backend_url if '//' in backend_url else f'//{backend_url}')
+            if parts.hostname:
+                entries.append(f'{parts.hostname}:{parts.port}' if parts.port else parts.hostname)
+        entries.extend(item for item in re.split(r'[,;\s]+', str(getattr(settings, 'dlp_self_endpoints', '') or '')) if item)
+    return [str(item).strip() for item in entries if str(item).strip()]
+
+
+def _split_endpoint(value):
+    host, port = str(value or '').strip(), None
+    if ':' in host:
+        head, _, tail = host.rpartition(':')
+        if tail.isdigit() and head:
+            host, port = head, int(tail)
+    return host.strip(), port
+
+
+def parse_self_endpoints(entries):
+    """Parse ``host``, ``host:port``, ``cidr`` and ``cidr:port`` entries once per capture."""
+    parsed = []
+    for item in entries:
+        host, port = _split_endpoint(item)
+        if not host:
+            continue
+        try:
+            network = ipaddress.ip_network(host, strict=False)
+        except ValueError:
+            network = None
+        parsed.append((network, host.lower(), port))
+    return parsed
+
+
+def endpoint_is_self(ip, port, parsed):
+    try:
+        address = ipaddress.ip_address(str(ip))
+    except ValueError:
+        return False
+    for network, host, entry_port in parsed:
+        if entry_port is not None and int(port) != entry_port:
+            continue
+        if network is not None:
+            if address in network:
+                return True
+        elif str(ip) == host:
+            return True
+    return False
+
+
+def host_header_is_self(host_header, parsed):
+    """Match the HTTP ``Host`` header so hostname-addressed tooling is excluded too."""
+    host, port = _split_endpoint(host_header)
+    host = host.lower()
+    if not host:
+        return False
+    for network, name, entry_port in parsed:
+        if network is not None or name != host:
+            continue
+        if entry_port is None or port is None or port == entry_port:
+            return True
+    return False
+
+
+def is_own_traffic(key, data, parsed, markers):
+    """True when a stream belongs to the toolbox's own management traffic."""
+    if parsed and (endpoint_is_self(key[0], key[1], parsed) or endpoint_is_self(key[2], key[3], parsed)):
+        return True
+    if not markers:
+        return False
+    sample = data[:65536].lower()
+    return any(marker in sample for marker in markers)
 
 
 def looks_like_text(data):
@@ -235,22 +333,23 @@ def masked(value):
 
 
 def inspect_content(body, config):
-    # Import lazily so this parsing service can be used without initializing the
-    # complete detection-engine registry (which itself registers DLP).
-    from app.engine.data_engine.engine import REGEX_RULES
+    """Text stage of the network DLP path, using the shared detection engine.
+
+    The engine is the same one the probe runs, so a type cannot mean two things.
+    Only the categories named by the stored policy are reported, and no matched
+    value is carried out of this function.
+    """
+    from app.services import sensitive_engine
 
     policy = normalize_policy(config)
     minimum = policy['min_matches']
     text = unquote_plus(body.decode('utf-8', 'replace'))
     hits = []
-    for category in policy['categories']:
-        pattern = REGEX_RULES.get(category)
-        if not pattern:
-            continue
-        matches = list(pattern.finditer(text))
-        if len(matches) >= minimum:
-            hits.append({'kind': category, 'count': len(matches), 'samples': [masked(m.group()) for m in matches[:3]],
-                         'confidence': BUILTIN_CONFIDENCE.get(category, DEFAULT_CONFIDENCE), 'sensitive': True})
+    for hit in sensitive_engine.to_legacy_hits(
+            sensitive_engine.scan_text(text, source_type='network', protocol='http'),
+            policy['categories']):
+        if hit['count'] >= minimum:
+            hits.append({**hit, 'samples': []})
     for keyword in policy['keywords']:
         count = text.casefold().count(keyword.casefold())
         if count >= minimum:
@@ -267,19 +366,30 @@ def analyze_capture(path, config):
     from app.services.rule_library import managed_rules
     policy = normalize_policy({**config, 'managed_rules': managed_rules(), 'rule_timeouts': []})
     networks = excluded_networks(policy)
+    self_parsed = parse_self_endpoints(self_endpoint_entries(policy))
+    markers = own_traffic_markers() if policy['ignore_own_traffic'] else ()
     streams, coverage = reassemble(path)
     coverage['excluded_streams'] = 0
+    coverage['excluded_own_traffic'] = 0
     objects, observations, findings = [], {'domain': set(), 'url': set(), 'hash': set()}, []
     for key, data, incomplete in streams:
         if host_internal(key[0], networks) or host_internal(key[2], networks):
             # Host-internal traffic never leaves the machine, so it is not egress.
             coverage['excluded_streams'] += 1
             continue
+        if is_own_traffic(key, data, self_parsed, markers):
+            # The toolbox's own probe/console channel is not data loss.
+            coverage['excluded_own_traffic'] += 1
+            continue
         extracted = http_objects(data)
         if not extracted:
             # Cleartext protocols without an HTTP parser still get bounded text scanning.
             if looks_like_text(data):
                 extracted = [{'filename': 'tcp-payload', 'body': data, 'complete': False, 'content_type': 'text/plain'}]
+        if self_parsed and any(host_header_is_self(obj.get('host'), self_parsed) for obj in extracted):
+            # Hostname-addressed tooling: the IP check above cannot see it.
+            coverage['excluded_own_traffic'] += 1
+            continue
         for obj in extracted:
             if len(objects) >= MAX_OBJECTS:
                 coverage['object_limit'] = True

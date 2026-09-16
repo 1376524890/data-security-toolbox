@@ -12,13 +12,17 @@ RUN apt-get update && \
     libpangoft2-1.0-0 libgdk-pixbuf-2.0-0 libharfbuzz0b libfontconfig1 fonts-noto-cjk tshark && \
     rm -rf /var/lib/apt/lists/*
 
+# The build context is the repository root so the shared detection package
+# (`shared/sensitive_detection`) ships in every image, exactly as the probe
+# receives it. Sibling services import it through app/services/sensitive_engine.
 WORKDIR /app
-COPY requirements.txt requirements-optional.txt ./
+COPY backend/requirements.txt backend/requirements-optional.txt ./
 RUN pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt -r requirements-optional.txt
-COPY app ./app
-COPY alembic ./alembic
-COPY alembic.ini .
-COPY scripts ./scripts
+COPY backend/app ./app
+COPY backend/alembic ./alembic
+COPY backend/alembic.ini .
+COPY backend/scripts ./scripts
+COPY shared ./shared
 RUN useradd -m -u 10001 appuser && mkdir -p /app/data/storage /app/data/reports /app/data/integrations /app/data/offline && chown -R appuser:appuser /app
 
 # Zeek ships a self-contained install under /usr/local/zeek plus the system

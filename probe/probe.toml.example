@@ -38,14 +38,67 @@ enabled = false
 interval_seconds = 3600
 # Absolute directories to inventory, e.g. ["/srv/data", "/var/www/uploads"].
 paths = []
-max_files = 200
-max_depth = 3
+# Bare names (``node_modules``) filter that directory anywhere below a root;
+# absolute paths exclude exactly that subtree. ``file_types`` is an extension
+# allow-list - leaving it empty keeps every type in scope.
+exclude_paths = []
+file_types = []
 # Register locally listening database services (mysql/postgres/redis/...) as assets.
 include_databases = true
 timeout_seconds = 120
 # Allow an administrator to trigger a collection from the platform.
 allow_remote = false
 poll_seconds = 30
+
+# Every limit below is enforced by the shared ScanBudget, so one run can never
+# read an unbounded amount of data. The report states which limit stopped it,
+# and a stopped run is Partial - it never claims a path disappeared.
+#
+# Files/directories visited, and how deep the walk goes below each root.
+max_files = 200
+max_depth = 3
+max_dirs = 500
+# Total bytes read across the whole run, and per file.
+max_bytes_read = 536870912
+max_single_file_size = 2097152
+# Files up to this size get a FULL_SHA256; larger ones get a versioned partial
+# fingerprint (size + HEAD/25%/50%/75%/TAIL blocks) and are marked as candidates.
+max_full_hash_size = 8388608
+sample_block_size = 65536
+max_sample_rows = 25
+# 0 disables the corresponding resource guard (CPU seconds / peak RSS MiB).
+max_cpu_seconds = 0.0
+max_rss_mb = 0.0
+# XLSX is the one container format that is parsed instead of only listed.
+xlsx_max_entries = 512
+xlsx_max_uncompressed_bytes = 67108864
+xlsx_max_compression_ratio = 200.0
+xlsx_max_shared_strings = 200000
+xlsx_max_sheets = 32
+xlsx_max_columns = 256
+xlsx_max_rows = 200
+
+# Analysis cache. A file whose identity (path/device/inode/size/mtime) and whose
+# analysis conditions (engine/ruleset/parser config) are unchanged is reused
+# without reading its content again. Only metadata, hashes and Detection
+# summaries are cached - never file content or sample values.
+cache_enabled = true
+# Must be writable by the probe service account (see ReadWritePaths in the unit).
+cache_path = "/var/lib/data-security-toolbox/cache/analysis.sqlite"
+
+# Central rule set. The server is the only place rules are authored: the probe
+# downloads an immutable published pack, verifies its SHA256, builds a throwaway
+# engine and only then swaps it in atomically. A failed update keeps the version
+# that is already running, and the first start works offline because the package
+# ships a baseline snapshot.
+[ruleset]
+enabled = true
+# Must be writable by the probe service account (see ReadWritePaths in the unit).
+dir = "/var/lib/data-security-toolbox/rules"
+# Bounded download size; a larger server pack is rejected, not truncated.
+max_pack_bytes = 2097152
+self_test_timeout_seconds = 2.0
+poll_seconds = 900
 
 # Bounded TCP-connect inventory performed locally by the unprivileged probe.
 [scan]

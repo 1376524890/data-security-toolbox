@@ -11,14 +11,22 @@ from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
 
 
-REGEX_RULES = {
-    "phone": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
-    "id_card": re.compile(r"(?<!\d)[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)"),
-    "bank_card": re.compile(r"(?<!\d)(?:62|4\d{3}|5[1-5]\d{2})[ -]?(?:\d[ -]?){12,17}(?!\d)"),
-    "email": re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),
-    "api_key": re.compile(r"\b(?:AKIA|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,})\b"),
-    "token": re.compile(r"\b(?:Bearer\s+)?[A-Za-z0-9_\-]{32,}\b"),
-}
+# Patterns and confidences come from the shared rule pack, so the platform, the
+# probe and the network DLP stage cannot drift apart. REGEX_RULES stays as the
+# legacy "lowercase category -> compiled pattern" mapping used by existing APIs.
+def _builtin_patterns() -> dict[str, Any]:
+    from app.services import sensitive_engine
+
+    patterns: dict[str, Any] = {}
+    for rule in sensitive_engine.get_engine().rules:
+        name = sensitive_engine.legacy_name(rule.get("entity"))
+        if not name or not rule.get("pattern"):
+            continue
+        patterns[name] = sensitive_engine.compiled_pattern(rule)
+    return patterns
+
+
+REGEX_RULES = _builtin_patterns()
 
 
 def shannon_entropy(text: str) -> float:
@@ -55,20 +63,20 @@ def extract_text(path: Path) -> str:
 
 
 def scan_text(text: str) -> dict[str, Any]:
+    """Per-category counts. No matched value is returned, stored or logged."""
+    from app.services import sensitive_engine
+
+    hits = sensitive_engine.scan_text(text, source_type="file")
     counts: dict[str, int] = {name: 0 for name in REGEX_RULES}
-    samples: dict[str, list[str]] = {name: [] for name in REGEX_RULES}
-    for name, pattern in REGEX_RULES.items():
-        matches = pattern.findall(text)
-        counts[name] = len(matches)
-        samples[name] = [str(item) for item in matches[:10]]
-    secret_candidates = [value for name in ("api_key", "token") for value in samples[name]]
-    high_entropy = [value for value in secret_candidates if shannon_entropy(value) >= 3.5]
+    counts.update(sensitive_engine.count_by_legacy_name(hits))
     return {
         "counts": counts,
-        "samples": samples,
-        "secret_count": counts["api_key"] + counts["token"],
-        "pii_count": counts["phone"] + counts["id_card"] + counts["bank_card"] + counts["email"],
-        "high_entropy_secrets": high_entropy[:20],
+        "hits": [hit.to_dict() for hit in hits],
+        "secret_count": sensitive_engine.secret_count(hits),
+        "pii_count": sensitive_engine.pii_count(hits),
+        # Legacy key. Entropy is now part of the per-rule confidence, so there is
+        # no separate list of candidate secrets to hand around.
+        "high_entropy_secrets": [],
     }
 
 
@@ -91,31 +99,62 @@ def infer_columns(text: str, source: str) -> list[dict[str, Any]]:
                 columns = list(data[0].keys())
         except Exception:
             columns = []
+    from app.services import sensitive_engine
+
+    engine = sensitive_engine.get_engine()
     classified = []
-    mappings = {
-        "user_id": ["user_id", "userid", "uid"],
-        "phone": ["phone", "mobile", "cellphone", "手机号", "联系电话"],
-        "id_card": ["id_card", "idcard", "身份证", "identity_card"],
-        "medical_record": ["medical_record", "病历", "patient_id", "诊断"],
-    }
     for column in columns:
-        categories = [category for category, keywords in mappings.items() if any(keyword in column.lower() for keyword in keywords)]
-        classified.append({"name": column, "sensitivity": "High" if categories else "Unknown", "categories": categories})
+        hits = [hit for hit in engine.scan_field(str(column), source_type="file", file_name=source) if hit.sensitive]
+        categories = [sensitive_engine.legacy_name(hit.entity) or str(hit.entity).lower() for hit in hits]
+        # Legacy contract: this field is a binary "contains sensitive data" signal
+        # (High/Unknown) rather than a severity level. The L1..L4 classification is
+        # reported separately so the old pages keep working unchanged.
+        classified.append({
+            "name": column,
+            "sensitivity": "High" if categories else "Unknown",
+            "sensitivity_level": hits[0].level if hits else "",
+            "severity": hits[0].severity if hits else "",
+            "categories": categories,
+        })
     return classified
 
 
-def presidio_scan(text: str) -> list[dict[str, str]]:
+_PRESIDIO_STATUS: dict[str, Any] = {
+    "available": False, "enabled": False, "reason": "not_attempted", "rule_source": "presidio_runtime",
+}
+
+
+def presidio_status() -> dict[str, Any]:
+    """How the last Presidio attempt really went - never a silent success."""
+    return dict(_PRESIDIO_STATUS)
+
+
+def presidio_scan(text: str) -> list[dict[str, Any]]:
+    """Optional runtime recognizers.
+
+    A missing model or a failed analyzer is recorded in :func:`presidio_status`
+    so a report can say "not checked" instead of "nothing found". Findings are
+    tagged ``rule_source=presidio_runtime``; they never carry matched text.
+    """
     from app.core.config import settings
 
     if not settings.presidio_enabled:
+        _PRESIDIO_STATUS.update(available=False, enabled=False, reason="disabled_by_settings")
         return []
     try:
         from presidio_analyzer import AnalyzerEngine
+    except ImportError as exc:
+        _PRESIDIO_STATUS.update(available=False, enabled=True, reason=f"dependency_missing:{type(exc).__name__}")
+        return []
+    try:
         analyzer = AnalyzerEngine()
         results = analyzer.analyze(text=text, language="en")
-        return [{"entity_type": item.entity_type, "score": round(float(item.score), 3), "start": item.start, "end": item.end} for item in results]
-    except Exception:
+    except Exception as exc:
+        _PRESIDIO_STATUS.update(available=False, enabled=True, reason=f"analyzer_failed:{type(exc).__name__}")
         return []
+    _PRESIDIO_STATUS.update(available=True, enabled=True, reason="")
+    return [{"entity_type": item.entity_type, "score": round(float(item.score), 3), "start": item.start,
+             "end": item.end, "rule_source": "presidio_runtime"} for item in results]
 
 
 def yara_scan(path: Path, rule_dir: Path) -> list[dict[str, Any]]:
@@ -154,6 +193,7 @@ class DataEngine(DetectionEngine):
                 "size": path.stat().st_size,
                 "regex": scan,
                 "presidio": presidio[:50],
+                "presidio_status": presidio_status(),
                 "yara": yara_matches[:50],
             }
             columns = infer_columns(text, path.name)
@@ -202,7 +242,7 @@ class DataEngine(DetectionEngine):
                     rule_id="DATA_PII_001",
                     severity="High",
                     confidence=0.9,
-                    evidence={"text_sample": scan["samples"], "counts": scan["counts"]},
+                    evidence={"counts": scan["counts"], "hits": scan["hits"]},
                     recommendation="对文本中的 PII 进行脱敏和最小化采集。",
                 ).normalize())
             if scan["secret_count"] > 0:
@@ -211,7 +251,7 @@ class DataEngine(DetectionEngine):
                     rule_id="DATA_SECRET_001",
                     severity="Critical",
                     confidence=0.85,
-                    evidence={"secret_samples": scan["samples"]["api_key"] + scan["samples"]["token"]},
+                    evidence={"counts": scan["counts"], "hits": scan["hits"]},
                     recommendation="轮换泄露密钥，并从日志和配置中清除明文凭据。",
                 ).normalize())
         return findings
