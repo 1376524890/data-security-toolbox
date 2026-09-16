@@ -47,7 +47,7 @@
 - `payload.profile_id` 保留为顶层键（可被引用守卫直接查询）；
 - `payload.profile_snapshot` 记录 `profile_id/profile_name/profile_version/config`。
 
-这样"任务登记后编辑 Profile"不会改变探针被要求执行的内容；`profile_version` 让报告能回溯到当时的配置版本。探针侧 `discover_data_assets` 只读取它认识的键，`exclude_paths`/`file_types` 暂不生效但完整保留在快照里，避免平台假装已经执行了它没有执行的过滤。
+这样"任务登记后编辑 Profile"不会改变探针被要求执行的内容；`profile_version` 让报告能回溯到当时的配置版本。探针侧 `discover_data_assets` 只读取它认识的键；快照里始终保留完整配置，避免平台假装已经执行了它没有执行的过滤。阶段 3 当时 `exclude_paths`/`file_types` 尚未被探针执行，**该限制已在 v2.8.0（探针 3.4.0）解除**，见第 9 节修订 R1。
 
 ## 3. 共享扫描层（`shared/scanning/`）
 
@@ -126,9 +126,42 @@
 
 - **未在真实主机上跑过 XLSX/大文件扫描**：本阶段全部为进程内 + 隔离目录验证；真实 Kali 探针上的合成 XLSX 端到端验收在阶段 5/6 进行。
 - **未在真实探针上验证 systemd `ReadWritePaths` 生效**：`CACHE_DIR` 的创建与授权由 `install.sh` 断言（单测覆盖），实际 cgroup 写权限在阶段 6 升级后确认。
-- **`exclude_paths` / `file_types` 尚未被探针执行**：已进入 Profile 模型与任务快照，但 `discover_data_assets` 暂不读取，报告因此不会声称执行了排除/类型过滤。这是刻意的"不假装已实现"，在阶段 5 的页面中需如实体现。
+- ~~**`exclude_paths` / `file_types` 尚未被探针执行**~~：该限制在阶段 5 已被修复，探针现在真实执行两项过滤并回传 `coverage.scope_filter`。原文保留见第 9 节修订 R1。
 - **部分指纹只能形成"疑似副本"**：`PARTIAL_FINGERPRINT` 版本为 `1.0.0`，相同指纹只代表候选，不能与完整 SHA256 的"内容一致"混入同一统计口径；聚合口径在阶段 4 实现。
 - **XLSX `read_only` 不等于严格内存有界**：openpyxl 的 sharedStrings 仍需整体载入，因此用 `xlsx_max_shared_strings`/`xlsx_max_uncompressed_bytes` 显式设限，超限即 Partial 而非继续解析。
 - **缓存键依赖 mtime_ns/size/inode，不是强完整性监控**：内容被替换但元数据完全一致的伪装变更不会被发现；这是已知能力边界，主提示词要求的"按配置周期强制重检"尚未提供开关。
 - **`max_cpu_seconds` / `max_rss_mb` 默认关闭**：探针侧不主动采样自身资源，只有在配置里显式设置时才生效；默认 0 表示关闭而非"无限制即安全"。
 - **阶段 3 未提供 Profile 管理界面**：阶段 3 的分阶段要求未包含前端交付，Profile/任务/进度页面按分阶段提示词在阶段 5 交付。
+
+## 9. 修订记录（阶段 5 引入）
+
+本节只记录对上面阶段 3 结论的**更正**，不改写阶段 3 当时的实测记录。
+
+### R1. `exclude_paths` / `file_types` 已由探针真实执行
+
+阶段 3 交付时这两项只进了 Profile 模型与任务快照，"尚未生效"是当时的真实状态。阶段 5 的端到端验收把这条列为必须闭环的缺口，因此补齐如下：
+
+| 位置 | 变化 |
+|---|---|
+| `probe/data_assets.py` | 新增 `class ScopeFilter`、`scope_filter_for()`，接入 `discover_data_assets` 的目录遍历；被排除的目录不再进入遍历，`file_types` 变成扩展名允许列表 |
+| `probe/data_assets.py` | 报告新增 `coverage.scope_filter`：回传生效的 `exclude_paths`/`file_types`、`excluded_directories`、`filtered_files` 计数 |
+| `backend/app/services/scan_profile_service.py` | `probe_config()` 把 Profile 的 `exclude_paths`/`file_types` 翻译成探针配置 |
+| `backend/app/api/extensions.py` | `DataAssetScanConfig` 接受这两个字段，并校验路径不含 `..` |
+| `probe/probe.py`、`probe.toml.example`、`deployment/service.py` | `DEFAULT_CONFIG['data']` 与 toml 生成同步声明，保证"只声明不执行"不会再出现 |
+
+被排除路径的语义（容易写错，已在单测中钉死）：
+
+- 被排除的目录**仍然在扫描范围内**，只是不再被遍历/上报。因此一次**完整**扫描如果不再报告它，平台必须把它退化为 `NOT_OBSERVED`；
+- 反过来，如果让 `in_scope()` 也跳过被排除路径，被排除的实例会永久停留在 `ACTIVE`，与"完整扫描才作结论"的语义冲突。所以 `in_scope()` **刻意忽略**排除项，由 `test_scope_test_ignores_exclusions_by_design` 固化这一决定。
+
+### R2. 部分指纹摘要进入报告
+
+`Fingerprint.as_evidence()` 原先不输出 `value`，导致 `resolve_identity()` 对大文件永远退化成 `hash_type='scoped'`，"疑似副本（partial）"这条候选路径在真实链路里从未被走到。v2.8.0 让摘要带上 `value` 与 `is_full`，探针再补 `partial` 标记；同时 `data_object_service` 只接受 `^[0-9a-f]{32,64}$` 的摘要，避免脱敏占位符变成对象键。
+
+### R3. `recount_object` 漏算本轮扫到的实例
+
+会话是 `autoflush=False`，`sweep_scope()` 刚改完的实例状态对随后的 `COUNT` 查询不可见，导致对象会多认领原本已消失的副本，直到下一份报告才纠正。修法是在 recount 之前 `if swept: db.flush()`。
+
+### R4. 版本与包
+
+阶段 3 记录里的 `3905c9e3…`/`2c5fbe89…` 是 3.3.1 的探针包摘要，已被 3.4.0 取代（amd64 `26a6544b…`、arm64 `d994d1ec…`）。平台 2.8.0 / 探针 3.4.0 的发布与升级记录见 `docs/data-discovery-stage6-upgrade.md`。
