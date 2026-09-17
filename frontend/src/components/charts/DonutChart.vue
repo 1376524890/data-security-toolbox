@@ -4,7 +4,7 @@ import type * as echarts from 'echarts'
 import BaseChart from './BaseChart.vue'
 
 const props = defineProps<{
-  data: Array<{ name: string; value: number }>
+  data: Array<{ name: string; value: number; itemStyle?: { color?: string } }>
   colors?: string[]
   height?: number | string
 }>()

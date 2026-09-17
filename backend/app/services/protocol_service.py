@@ -261,8 +261,52 @@ def flow_timeline(flows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(flows, key=lambda item: item.get("start_time", 0))
 
 
+# Layer classification. A protocol that is not listed here is treated as an
+# application protocol, which is what a distribution chart should show.
+_LINK_LAYERS = {
+    "eth", "ethertype", "sll", "sll2", "vlan", "wlan", "wlan_radio", "null",
+    "loop", "raw", "frame", "data", "pcap", "pcapng",
+}
+_NETWORK_LAYERS = {"ip", "ipv6", "arp", "icmp", "icmpv6", "igmp", "gre"}
+_TRANSPORT_LAYERS = {"tcp", "udp", "tcp.segments", "sctp", "udplite"}
+
+
+def protocol_layer(name: str) -> str:
+    """Classify a protocol name as link / network / transport / application."""
+    key = str(name or "").strip().lower()
+    if not key:
+        return "application"
+    if key in _LINK_LAYERS:
+        return "link"
+    if key in _NETWORK_LAYERS:
+        return "network"
+    if key in _TRANSPORT_LAYERS:
+        return "transport"
+    # tshark labels some frames "HTTP/JSON" or "SSHv2"; match on the family.
+    head = key.split("/", 1)[0].split("v", 1)[0]
+    if head in _LINK_LAYERS:
+        return "link"
+    if head in _NETWORK_LAYERS:
+        return "network"
+    if head in _TRANSPORT_LAYERS:
+        return "transport"
+    return "application"
+
+
 def protocol_tree(summary: dict[str, int]) -> list[dict[str, Any]]:
-    return [{"name": name, "count": count} for name, count in summary.items()]
+    """Protocol counters, annotated with the layer each name belongs to.
+
+    ``frame.protocols`` lists every layer of a frame, so a raw counter mixes
+    capture plumbing (``sll``, ``ethertype``, ``eth``), network and transport
+    layers (``ip``, ``tcp``, ``udp``) with real application protocols. Drawn
+    as-is the distribution is topped by ``sll`` and ``ethertype``, which tells
+    an operator nothing, so callers can filter on ``layer`` - the counters
+    themselves stay untouched.
+    """
+    return [
+        {"name": name, "count": count, "layer": protocol_layer(name)}
+        for name, count in sorted(summary.items(), key=lambda entry: entry[1], reverse=True)
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,15 @@ const tls = ref<Array<Record<string, unknown>>>([])
 const files = ref<NetworkFile[]>([])
 const traffic = ref<TrafficOverview | null>(null)
 const protocolTree = ref<Array<Record<string, unknown>>>([])
+
+// The overview panel shows the same application-layer view as the protocol
+// analysis page: the raw summary counts every frame layer (sll, ethertype,
+// ip, tcp), which is not a protocol distribution an operator can read.
+const applicationProtocols = computed(() =>
+  protocolTree.value
+    .filter((node: any) => (node.layer || 'application') === 'application')
+    .map((node: any) => ({ name: node.name, count: node.count })),
+)
 const anomalies = ref<Array<Record<string, unknown>>>([])
 const selectedPacket = ref<Packet | null>(null)
 const packetDetail = ref<PacketDetail | null>(null)
@@ -210,7 +219,7 @@ onMounted(load)
           </div>
           <div class="soc-card" style="margin-top: 12px">
             <div class="soc-card-title"><span class="dot" />协议摘要</div>
-            <JsonViewer :value="selected.protocol_summary" title="协议分布" :height="240" />
+            <JsonViewer :value="applicationProtocols" title="协议分布（应用层协议）" :height="240" />
           </div>
         </el-tab-pane>
 

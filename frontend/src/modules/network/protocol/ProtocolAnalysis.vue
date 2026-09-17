@@ -10,12 +10,20 @@ const loading = ref(true)
 const error = ref('')
 const protocols = ref<Array<Record<string, unknown>>>([])
 
+// A captured frame contributes every one of its layers to the counter, so the
+// raw list is topped by transport and capture plumbing (TCP, IP, sll,
+// ethertype). The charts show the application protocols; the layer comes from
+// the API so the classification lives in one place.
+const applicationProtocols = computed(() =>
+  protocols.value.filter((node: any) => (node.layer || 'application') === 'application'),
+)
+
 const protocolDistribution = computed(() => {
-  return protocols.value.map((node: any) => ({ name: node.name, value: node.count }))
+  return applicationProtocols.value.map((node: any) => ({ name: node.name, value: node.count }))
 })
 const protocolSummary = computed(() => {
   const out: Record<string, number> = {}
-  protocols.value.forEach((node: any) => {
+  applicationProtocols.value.forEach((node: any) => {
     out[node.name] = Number(node.count || 0)
   })
   return out
@@ -47,7 +55,7 @@ onMounted(load)
 <template>
   <div>
     <div class="toolbar">
-      <span class="text-dim">全局协议分布（跨全部捕获）</span>
+      <span class="text-dim">全局协议分布（跨全部捕获，应用层协议）</span>
       <div class="toolbar-spacer" />
     </div>
     <StateBox :loading="loading" :error="error" :empty="false" @retry="load">

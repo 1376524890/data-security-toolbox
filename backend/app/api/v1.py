@@ -104,7 +104,7 @@ from app.services.alert_service import (
 from app.services.asset_service import asset_relations
 from app.services.audit_service import audit_summary, log_analysis
 from app.services.crypto_profile import build_crypto_profile
-from app.services.protocol_service import packet_detail, protocol_tree, tcp_stream_follow
+from app.services.protocol_service import packet_detail, protocol_layer, protocol_tree, tcp_stream_follow
 from app.services.test_service import clear_test_data, import_test_data, test_status
 from app.services.report_service import build_summary, render_html, render_pdf
 from app.services.traffic_service import (
@@ -964,10 +964,45 @@ def asset_detail(asset_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
     item = db.get(Asset, asset_id)
     if not item:
         raise HTTPException(404, "asset not found")
-    findings = db.scalars(select(DetectionFinding).where(DetectionFinding.evidence["ip"].as_string() == item.ip).order_by(DetectionFinding.risk_score.desc()).limit(100)).all()
+    # Findings reach the asset through ``evidence.asset.ip``: the scan and
+    # threat-intel engines nest the asset they fired on, while the older
+    # shape put a flat ``ip`` next to the evidence. Matching only the flat key
+    # left "关联检测" empty for every asset that actually had findings.
+    findings = db.scalars(
+        select(DetectionFinding)
+        .where(
+            or_(
+                DetectionFinding.evidence["asset"]["ip"].as_string() == item.ip,
+                DetectionFinding.evidence["ip"].as_string() == item.ip,
+            )
+        )
+        .order_by(DetectionFinding.risk_score.desc())
+        .limit(100)
+    ).all()
     incidents = db.scalars(select(Incident).where(Incident.evidence["asset"].as_string() == item.ip).order_by(Incident.risk_score.desc()).limit(50)).all()
-    data_assets = db.scalars(select(DataAsset).where(DataAsset.source == item.hostname).limit(100)).all()
-    iocs = db.scalars(select(IOC).where(IOC.value.in_([item.ip, item.hostname])).limit(100)).all()
+    # Probe-collected data assets record the host they were found on in
+    # ``extra.host`` (``source`` holds "probe:<name>"), so matching ``source``
+    # against a hostname never linked anything.
+    data_assets = db.scalars(
+        select(DataAsset)
+        .where(
+            or_(
+                DataAsset.extra["host"].as_string() == item.ip,
+                DataAsset.source == item.hostname,
+            )
+        )
+        .limit(100)
+    ).all()
+    # An indicator belongs to an asset either because the asset *is* the
+    # indicator, or because a finding on this asset fired on that indicator.
+    ioc_values = {item.ip, item.hostname}
+    for finding in findings:
+        evidence = finding.evidence if isinstance(finding.evidence, dict) else {}
+        for key in ("value", "ioc", "indicator"):
+            candidate = evidence.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                ioc_values.add(candidate.strip())
+    iocs = db.scalars(select(IOC).where(IOC.value.in_(sorted(ioc_values))).limit(100)).all()
     relations = db.scalars(select(GraphRelation).where(or_(GraphRelation.source_node == item.ip, GraphRelation.target_node == item.ip))).all()
     vulnerabilities = db.scalars(select(Vulnerability).where(Vulnerability.asset_id == asset_id).order_by(Vulnerability.cvss_score.desc()).limit(100)).all()
     return {
@@ -1270,14 +1305,26 @@ def pcap_alerts(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     findings = [_serialize_detection(item) for item in db.scalars(select(DetectionFinding).where(DetectionFinding.target_type == "pcap", DetectionFinding.target_id == str(pcap_id)).order_by(DetectionFinding.risk_score.desc())).all()]
     alerts = db.scalars(select(Alert).where(Alert.finding_id.in_([item["id"] for item in findings])).order_by(Alert.risk_score.desc())).all() if findings else []
     external = _external_details(pcap_id, db)["alerts"]
+    # An alert is the correlated form of a finding, so the same hit used to be
+    # listed twice (once as "alert", once as "finding") and the alert's
+    # "evidence" was the alert row itself - id, severity, timestamps - rather
+    # than the rule, condition and metrics that were actually matched. The
+    # alert now carries the finding's evidence, and the finding is not listed
+    # a second time.
+    findings_by_id = {item["id"]: item for item in findings}
+    covered = {alert.finding_id for alert in alerts if alert.finding_id}
     merged: dict[str, Any] = {}
     for item in alerts:
         key = f"alert:{item.fingerprint}"
-        merged.setdefault(key, {"kind": "alert", "severity": item.severity, "title": item.title, "description": item.summary, "evidence": serialize_alert(item), "source": item.source, "id": item.id})
+        source_finding = findings_by_id.get(item.finding_id or -1)
+        evidence = source_finding["evidence"] if source_finding else serialize_alert(item)
+        merged.setdefault(key, {"kind": "alert", "severity": item.severity, "title": item.title, "description": item.summary, "evidence": evidence, "source": item.source, "id": item.id})
     for item in anomalies:
         key = f"anomaly:{item['rule']}:{item['severity']}:{item['description']}"
         merged.setdefault(key, {"kind": "anomaly", "severity": item["severity"], "title": item["rule"], "description": item["description"], "evidence": item["evidence"], "source": "builtin"})
     for item in findings:
+        if item["id"] in covered:
+            continue
         key = f"finding:{item['engine']}:{item['rule_id']}:{item['timestamp']}"
         merged.setdefault(key, {"kind": "finding", "severity": item["severity"], "title": item["rule_id"], "description": item["recommendation"], "evidence": item["evidence"], "source": item["engine"], "id": item["id"]})
     for item in external:
@@ -1981,9 +2028,16 @@ def global_flows(search: str | None = None, ip: str | None = None, protocol: str
 
 @router.get("/protocols")
 def global_protocols(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    """Global protocol distribution across all captured PCAPs."""
+    """Global protocol distribution across all captured PCAPs.
+
+    Every row carries the layer the protocol name belongs to, so the console
+    can chart application protocols instead of transport and capture plumbing.
+    """
     rows = db.execute(select(Flow.protocol, func.count(Flow.id), func.sum(Flow.bytes)).group_by(Flow.protocol)).all()
-    items = [{"name": name, "count": count, "bytes": int(bytes or 0)} for name, count, bytes in rows]
+    items = [
+        {"name": name, "count": count, "bytes": int(bytes or 0), "layer": protocol_layer(name)}
+        for name, count, bytes in rows
+    ]
     items.sort(key=lambda item: item["count"], reverse=True)
     return items
 

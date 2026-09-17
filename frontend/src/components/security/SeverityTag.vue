@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { severityLabels, severityTagColors } from '../../utils/mapping'
 
 const props = defineProps<{ value: string }>()
-const labelMap: Record<string, string> = { Critical: '严重', High: '高危', Medium: '中危', Low: '低危' }
-const color = computed(() => ({ Critical: '#ef4444', High: '#f97316', Medium: '#eab308', Low: '#3b82f6' }[props.value] || '#3b82f6'))
-const label = computed(() => labelMap[props.value] || props.value)
+const color = computed(() => severityTagColors[props.value] || '#3b82f6')
+const label = computed(() => severityLabels[props.value] || props.value)
 </script>
 
 <template>

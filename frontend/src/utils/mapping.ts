@@ -5,6 +5,23 @@ export const severityColors: Record<string, string> = {
   Low: '#2563eb',
 }
 
+// Four-level scale shared by finding severity and data-asset sensitivity.
+// The labels live here so the tags and the dashboard charts read the same -
+// a chart slice saying "Critical" next to a "严重" tag looks like two systems.
+export const severityOrder = ['Critical', 'High', 'Medium', 'Low'] as const
+export const severityLabels: Record<string, string> = {
+  Critical: '严重',
+  High: '高危',
+  Medium: '中危',
+  Low: '低危',
+}
+export const severityTagColors: Record<string, string> = {
+  Critical: '#ef4444',
+  High: '#f97316',
+  Medium: '#eab308',
+  Low: '#3b82f6',
+}
+
 export const statusColors: Record<string, string> = {
   ready: '#16a34a',
   success: '#16a34a',
