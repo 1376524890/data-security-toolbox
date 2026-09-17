@@ -1,5 +1,49 @@
 # Changelog
 
+## v2.10.0（探针 3.5.0）
+
+- **探针卸载（远程回收主机）**：此前只能删除平台记录，主机上的服务、systemd 单元与生产文件必须人工清理，
+  文档与前端提示都明确写着「不会卸载远程服务」。现在平台可以完整回收探针：通过 SSH 上传并执行
+  `probe/uninstall.sh`，停止服务、删除 systemd 单元，并删除 `/opt/data-security-toolbox`（运行时代码与虚拟环境）、
+  `/etc/data-security-toolbox`（`probe.toml`、`probe.token`、`ca.pem`）、`/var/lib/data-security-toolbox`
+  （采集分段、规则与扫描缓存）以及安装器自带的 dumpcap/tcpdump 副本，**成功后才删除平台记录**。
+  卸载复用下发的同一条 SSH 通道、同一套凭据加密、事件日志与状态机（`probe_deployments.action='uninstall'`），
+  因此控制台有实时进度和完整的删除清单。
+- **干净的删除语义**：卸载脚本以 root 运行且幂等，删除目标只来自固定白名单——不读命令行参数、不读目标机上的文件
+  （以 root 从可变文件读取删除目标等于提权原语）。符号链接只删链接本身、不跟随；删除前先
+  `stop`/`disable`/`reset-failed` 并清理仍在运行的探针进程，避免它在删除过程中继续写回 spool。
+  `dstprobe` 系统账号只在安装器留下的 `.created-user` 标记证明由本探针创建时（或 `--remove-user`）才删除，
+  否则默认保留共用账号。标记在删除任何文件之前一次性读出——实测发现，若在删除应用目录后再读，真实删除路径下
+  该账号会被错误地保留（`--dry-run` 反而正常），此问题已修复并有回归测试覆盖。
+- **可审计的结果**：脚本以一行 `DST_UNINSTALL {...}` 结束，返回已删除 / 本就不存在 / 按选项保留 / 未能删除的
+  路径、释放空间与退出码；平台解析后写入 `result`，控制台在卸载详情里展示。有残留时为
+  `REMOVAL_PARTIAL` 并逐条列出残留项；没有汇总行时为 `REMOVAL_FAILED`（bash 中止、sudo 拒绝或连接中断，
+  主机状态未知，平台不做任何断言）。失败后重新发起一次卸载即可重试，脚本幂等。卸载成功时平台立即作废该探针
+  的 token（`token`/`token_hash` 清空、状态置 `offline`），因为文件已经不在主机上。
+- **一键删除 = 先卸载再删记录**：`DELETE /api/v1/probes/{probe_id}` 支持可选请求体 `remove_remote`，
+  即「探针管理 → 删除」的默认行为：先清理主机，成功后再由 worker 删除平台记录；失败则保留记录
+  （记录里存着仍需清理的主机地址）。不带请求体保持原语义，只删除记录。
+- **安装失败的主机也能回收**：卸载只依赖一条 SSH 连接和一个 shell，不依赖目标机上存在任何探针文件，
+  因此预检不通过、安装中断、等待注册超时（卡在 90%）的主机都能直接回收——这类主机上通常已经留下一个
+  正在运行的服务，正是最需要清理的对象。
+- **卸载记录与接口**：`ProbeDeployment` 新增 `action` 与 `removal_options`（迁移 `0014_probe_removal`，
+  幂等且有 downgrade），部署页用「动作」列区分安装/卸载并展示清理结果与清理选项；新增
+  `POST /api/v1/probe-deployments/removal` 与 `DELETE /api/v1/probe-deployments/{id}`（历史记录清理，
+  永不动主机）。卸载凭据仅用于本次任务，任务结束（含失败）后立即销毁。
+- **探针包**：包内新增 `uninstall.sh`；`install.sh` 写入 `.created-user` / `.installed-capture-tool` 标记，
+  并把卸载脚本复制到 `/opt/data-security-toolbox/uninstall.sh`，离线主机可直接
+  `sudo bash /opt/data-security-toolbox/uninstall.sh`。`uninstall.sh` 一并纳入 CRLF 与可执行位校验。
+- **部署事件序号修复**：`ProbeDeploymentEvent.seq` 原先按已加载集合的长度计算，而会话是
+  `expire_on_commit=False` 且不自动 flush，集合一旦被缓存就不再增长，同一行的每条事件会拿到同一个序号
+  （实测一条卸载记录为 `1 REMOVING` / `1 REMOVED`，历史安装记录为 `1,1,1,1` 这类序列）。控制台用
+  `seq > after` 增量拉取进度，重复序号会让进度停在那里不再前进。现在序号取自该行已持久化的最大 `seq` + 1，
+  安装（下发）与卸载（回收）两条路径都有唯一递增序号的回归测试。
+- **版本**：平台升至 2.10.0，探针升至 3.5.0；探针包 `probe_packages/probe-3.5.0`（amd64 / arm64）已重建并校验
+  SHA256，amd64 `960857d304d06fc356dacd40e2918eb04f57a1471ea29ec8908c3e1ebae60f95`、
+  arm64 `866830c0a7a6283fe974a5577e98e67c4aa1498d59bd80ce42caa28852dfc398`。数据库迁移新增
+  `0014_probe_removal`，升级需执行 `alembic upgrade head`（镜像启动时自动执行）。使用说明、路径清单与
+  卸载选项见 `docs/probe-removal.md`，运维步骤见 `docs/部署与运行手册.md` 5.6。
+
 ## v2.9.0（探针 3.4.1）
 
 - **探针目录采集权限**：任务在 `/home/kali`、`/root` 等管理员下发目录报 Permission denied。探针 systemd 单元
