@@ -21,7 +21,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import false, func, or_, select
+from sqlalchemy import String, cast, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.services.probe_task_service import PROBE_TASK_KINDS, TERMINAL, expire_probe_tasks, visible_tasks
@@ -49,7 +49,7 @@ from app.engine import registry
 from app.engine.core.context import DetectionContext
 from app.engine.core.pipeline import DetectionPipeline
 from app.engine.risk_engine.engine import RiskEngine
-from app.incident_engine.engine import IncidentEngine
+from app.incident_engine.engine import IncidentEngine, evidence_asset_keys
 from app.integrations import integration_registry
 from app.integrations.offline_manager import (
     import_offline_path,
@@ -959,27 +959,61 @@ def asset_relation_list(db: Session = Depends(get_db)) -> list[dict[str, str]]:
     return asset_relations([{"ip": item.ip, "service": item.service, "port": item.port} for item in assets])
 
 
+def _incident_touches_asset(row: Incident, item: Asset) -> bool:
+    """Whether an incident's *entire* host list covers this asset."""
+    evidence = row.evidence if isinstance(row.evidence, dict) else {}
+    if evidence.get("asset") in {item.ip, item.hostname}:
+        return True
+    assets = evidence.get("assets")
+    return isinstance(assets, list) and item.ip in assets
+
+
+def _finding_touches_asset(row: DetectionFinding, item: Asset) -> bool:
+    """Whether a finding's evidence names this asset, in any of its spellings."""
+    evidence = row.evidence if isinstance(row.evidence, dict) else {}
+    wanted = {value.lower() for value in (item.ip, item.hostname) if value}
+    return bool(wanted & set(evidence_asset_keys(evidence)))
+
+
 @router.get("/assets/{asset_id}")
 def asset_detail(asset_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     item = db.get(Asset, asset_id)
     if not item:
         raise HTTPException(404, "asset not found")
-    # Findings reach the asset through ``evidence.asset.ip``: the scan and
-    # threat-intel engines nest the asset they fired on, while the older
-    # shape put a flat ``ip`` next to the evidence. Matching only the flat key
-    # left "关联检测" empty for every asset that actually had findings.
-    findings = db.scalars(
+    # Findings name their asset in several spellings: a nested ``asset.ip``
+    # (scan / threat-intel), a flat ``ip``, or only ``src``/``dst`` and
+    # ``metrics`` keys (traffic, rules, dlp). Matching the first two left
+    # "关联检测" empty for hosts that only appear in network evidence. The LIKE
+    # is a cheap candidate filter; ``_finding_touches_asset`` decides.
+    finding_candidates = db.scalars(
         select(DetectionFinding)
         .where(
             or_(
                 DetectionFinding.evidence["asset"]["ip"].as_string() == item.ip,
                 DetectionFinding.evidence["ip"].as_string() == item.ip,
+                cast(DetectionFinding.evidence, String).like(f"%{item.ip}%"),
             )
         )
         .order_by(DetectionFinding.risk_score.desc())
-        .limit(100)
+        .limit(500)
     ).all()
-    incidents = db.scalars(select(Incident).where(Incident.evidence["asset"].as_string() == item.ip).order_by(Incident.risk_score.desc()).limit(50)).all()
+    findings = [row for row in finding_candidates if _finding_touches_asset(row, item)][:100]
+    # An incident lists every host it touches in ``evidence.assets`` while
+    # ``evidence.asset`` only holds the display label, so matching the single
+    # label hid a multi-host incident from all but one of its hosts. The LIKE is
+    # a cheap candidate filter; ``_incident_touches_asset`` decides.
+    incident_candidates = db.scalars(
+        select(Incident)
+        .where(
+            or_(
+                Incident.evidence["asset"].as_string() == item.ip,
+                Incident.evidence["assets"].as_string().like(f"%{item.ip}%"),
+            )
+        )
+        .order_by(Incident.risk_score.desc())
+        .limit(200)
+    ).all()
+    incidents = [row for row in incident_candidates if _incident_touches_asset(row, item)][:50]
     # Probe-collected data assets record the host they were found on in
     # ``extra.host`` (``source`` holds "probe:<name>"), so matching ``source``
     # against a hostname never linked anything.
@@ -1002,6 +1036,11 @@ def asset_detail(asset_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
             candidate = evidence.get(key)
             if isinstance(candidate, str) and candidate.strip():
                 ioc_values.add(candidate.strip())
+        # The threat-intel engine reports hits as ``matched_iocs``; without
+        # them a real indicator match never reached the asset's IOC tab.
+        matched = evidence.get("matched_iocs")
+        if isinstance(matched, list):
+            ioc_values.update(str(value).strip() for value in matched if str(value).strip())
     iocs = db.scalars(select(IOC).where(IOC.value.in_(sorted(ioc_values))).limit(100)).all()
     relations = db.scalars(select(GraphRelation).where(or_(GraphRelation.source_node == item.ip, GraphRelation.target_node == item.ip))).all()
     vulnerabilities = db.scalars(select(Vulnerability).where(Vulnerability.asset_id == asset_id).order_by(Vulnerability.cvss_score.desc()).limit(100)).all()
@@ -1516,6 +1555,22 @@ def correlate_incidents(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     findings = [DetectionResult(**item) for item in payload.get("findings", [])]
     return [item.to_dict() for item in incident_engine.correlate(findings, int(payload.get("window_seconds", 3600)))]
+
+
+@router.post("/incidents/rebuild-attribution")
+def rebuild_incident_attribution(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Re-derive each incident's hosts from the findings that incident stored.
+
+    Repairs rows written before the asset label was normalised. Derived fields
+    only: no incident is created, deleted or re-fingerprinted.
+    """
+    from app.incident_engine.attribution import rebuild_attribution
+    from app.services.audit_service import record_audit
+
+    result = rebuild_attribution(db)
+    record_audit(db, request, action="incidents.rebuild_attribution", target="incidents", details=result)
+    db.commit()
+    return result
 
 
 @router.get("/iocs")

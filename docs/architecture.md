@@ -42,3 +42,92 @@ V2.1 新增 `Integration Adapter Layer`，统一第三方组件输入：
 `base = severity_weight * 20`
 
 `risk_score = min(100, base * exposure_factor * data_sensitivity * threat_factor * confidence)`
+
+## 模块关系
+
+| 模块 | 依赖 | 边界 |
+| --- | --- | --- |
+| `app/api/*` | `app/services/*`、`app/models.py`、`app/core/*` | 只做鉴权、参数校验、查询编排，不做检测计算 |
+| `app/workers/tasks.py` | `app/engine`（pipeline）、`app/incident_engine`、`app/services/*`、`app/integrations/*` | 任务入口，负责事务与回写 |
+| `app/engine/*` | `app/engine/core/*` | 每个引擎实现 `analyze(context) -> list[DetectionResult]` |
+| `app/incident_engine` | 仅依赖 `DetectionResult` | 对外暴露 `evidence_asset_keys()` / `evidence_ioc_keys()` 供他人复用 |
+| `app/services/*` | `app/models.py` + 外部工具（tshark、nuclei…） | 领域逻辑，不直接处理 HTTP |
+| `frontend/src/modules/*` | `frontend/src/api/*` → `/api/v1` | 只消费 API，不承载业务判定 |
+
+约束：各检测引擎由 `EngineRegistry` 注册、`DetectionPipeline` 调度，彼此不直接 import；
+横向共享数据统一通过 `DetectionContext.data` 传递（如 `dlp_policy`、`iocs`、`cve_lookup_enabled`、`probe_id`）。
+凡是需要从 evidence 解析「这是哪台主机 / 哪个指标」的模块，必须复用 `app.incident_engine.engine`
+的 `evidence_asset_keys()` 与 `evidence_ioc_keys()`，避免同一份 evidence 在不同模块被解读成不同资产。
+
+## 数据流
+
+1. 探针按 `segment_seconds` 切片抓包，落到本地 spool，按 `X-Probe-ID`/`X-Probe-Token` 上传 `pcaps`。
+2. 上传同时提交资产盘点结果（`assets`）、数据资产清单（`data_assets`/`data_objects`/`asset_instances`）、文件哈希（`files`）。
+3. FastAPI 落库并创建 `tasks` 记录，任务经 Redis 投递给 Celery worker。
+4. worker 组装 `DetectionContext`（flows、packets、log_lines、assets、data…），跑 `DetectionPipeline`。
+5. 每个 `DetectionResult` 落 `detection_findings`；`RiskEngine` 计算 `risk_score`/`risk_level`；
+   `IncidentEngine` 按「时间窗口 + 资产 + IOC」聚合成 `incidents`；命中的告警落 `alerts` 并按需投递 `alert_deliveries`。
+6. 前端通过 `/api/v1` 查询，报告由 `reports` 模板渲染。
+
+## 服务关系
+
+| 服务 | 作用 | 依赖 |
+| --- | --- | --- |
+| `postgres` | 唯一持久化存储 | — |
+| `redis` | Celery broker + 结果后端 | — |
+| `backend` | FastAPI 接入、查询、鉴权、上传落盘 | postgres、redis |
+| `worker` | 通用分析任务（检测、情报同步、告警投递） | postgres、redis |
+| `beat` | 定时任务：探针任务超时、PCAP 保留清理、worker 能力心跳、Wazuh 告警同步、下发超时清扫 | redis |
+| `deployment-worker` | 独占探针下发/回收（SSH 通道） | postgres、redis |
+| `frontend` | nginx 托管 Vue 构建产物并把 `/api` 反代到 backend | backend |
+| `flower` | Celery 监控 | redis |
+
+## 核心类 / 组件
+
+| 组件 | 位置 | 职责 |
+| --- | --- | --- |
+| `DetectionContext` | `app/engine/core/context.py` | 一次分析的全部输入（数据 + 共享上下文） |
+| `DetectionEngine` / `EngineRegistry` / `DetectionPipeline` | `app/engine/core/` | 引擎接口、注册表、调度 |
+| `DetectionResult` | `app/engine/core/result.py` | 统一检测结果（engine/rule_id/severity/confidence/evidence/…） |
+| `RiskEngine` | `app/engine/risk_engine/` | 风险评分与分级 |
+| `IncidentEngine` | `app/incident_engine/engine.py` | 事件聚合；`evidence_asset_keys()` / `evidence_ioc_keys()` |
+| `ThreatIntelEngine` | `app/threat_intel/engine.py` | IOC 命中（`TI_IOC_001`）、本地 CVE 关联（`CVE_*`） |
+| `ProtocolService` | `app/services/protocol_service.py` | PCAP 解析、协议分类（`protocol_layer()`） |
+| 下发/回收状态机 | `app/deployment/{record,removal}.py` | 探针部署与卸载的事件流水与幂等 |
+
+## 数据库关系
+
+```
+probes 1---n assets            probes 1---n pcaps 1---n flows / packets
+probes 1---n files             probes 1---n probe_deployments 1---n probe_deployment_events
+probes 1---n asset_instances   probe_deployments 1---1 probe_deployment_credentials
+data_objects 1---n asset_instances        rule_sets 1---n rule_set_versions / rules
+tasks 1---n detection_findings            detection_findings 1---n alerts 1---n alert_deliveries
+incidents（自持 findings JSON 与 fingerprint 去重，按 evidence.asset / evidence.assets 归属资产）
+scan_profiles 驱动探针侧扫描；reports / audit_logs / system_settings / integration_status 为平台侧记录
+```
+
+说明：`assets` 是「主机 + 服务」粒度（同一 IP 的不同端口/服务各一条，`asset_type='service'`）；
+`data_objects` / `asset_instances` 是探针采集到的数据对象及其在具体探针上的物理副本，身份为
+`(probe_id, 规范化绝对路径)`。
+
+## API 调用关系
+
+- 控制台：`frontend/src/api/*` → nginx `/api` 反代 → FastAPI `/api/v1/*` → `app/services/*` → `app/models.py`。
+- 探针：`probe/probe.py` → `/api/v1/probes/register`、`/probes/{id}/heartbeat`、`/volumes/*`、`/pcaps/*`、
+  `/assets/*`、`/files/upload`、`/rulesets/*`，全部带 `X-Probe-ID` + `X-Probe-Token`。
+- 任务链：API 建 `tasks` → Redis → worker 执行 → `detection_findings` / `incidents` / `alerts` → 前端轮询查询。
+- 维护端点：`/api/v1/admin/*`（如 `data-assets/backfill`、`data-assets/rebuild-projection`），写审计后返回统计。
+
+## 探针与服务端通信关系
+
+| 方向 | 触发 | 通道 | 说明 |
+| --- | --- | --- | --- |
+| 探针 → 服务端 | 首次安装 | HTTPS + `bootstrap_token` | `/probes/register` 换取 `probe.id` 与 `probe.token`，持久化到 `/etc/data-security-toolbox/probe.token` |
+| 探针 → 服务端 | 每 30s | HTTPS + 双头鉴权 | `/heartbeat` 上报存活、版本、采集状态 |
+| 探针 → 服务端 | 每 `segment_seconds` | HTTPS 分片上传 | PCAP 段、资产盘点、数据资产、文件哈希 |
+| 探针 → 服务端 | 每 `ruleset.poll_seconds`(900s) | HTTPS 下载 + SHA256 校验 | 规则包先校验再原子替换，失败保留旧版本；首启走随包基线快照 |
+| 探针 ← 服务端 | 平台触发 | 探针侧轮询 `allow_remote` | 远程扫描 / 数据资产采集任务 |
+| 服务端 → 探针 | 管理员下发或回收 | SSH（`deployment-worker`） | 推送安装/卸载脚本；卸载删除白名单固定，成功后才删平台记录 |
+
+安全边界：探针只出站、只读采集，不解密 TLS、不做串接阻断；服务端不反向登录被检主机（除显式的探针下发/回收通道）。

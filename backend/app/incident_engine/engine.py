@@ -32,29 +32,57 @@ def _short_asset(value: object) -> str:
     return str(value)
 
 
-def _asset_keys(finding: DetectionResult) -> list[str]:
-    evidence = finding.evidence
+def _asset_identity(value: object) -> str:
+    """The address a nested asset payload is known by.
+
+    ``_short_asset`` output is a *display* label ("10.0.0.7:mysql:3306"); using
+    it as the identity matched no asset row and split one host into one incident
+    per open port, so correlation resolves the address first and only falls back
+    to the composite label when the payload carries no address at all.
+    """
+    if isinstance(value, dict):
+        address = value.get("ip") or value.get("host") or value.get("hostname")
+        if address:
+            return str(address)
+    return _short_asset(value)
+
+
+def evidence_asset_keys(evidence: dict[str, Any]) -> list[str]:
+    """Every host address a single finding's evidence points at."""
     keys = []
-    for field_name in ("src_ip", "dest_ip", "dst_ip", "ip", "asset", "host", "hostname", "agent_name"):
+    # ``src``/``dst`` are the traffic engine's spelling of the same pair, so
+    # they must be read too or every port-scan finding looks assetless.
+    for field_name in ("src_ip", "dest_ip", "dst_ip", "src", "dst", "ip", "asset", "host", "hostname", "agent_name"):
         value = evidence.get(field_name)
         if value:
-            keys.append(_short_asset(value).lower())
+            keys.append(_asset_identity(value).lower())
     for flow in evidence.get("flow", []):
         if isinstance(flow, dict):
             for field_name in ("src_ip", "dst_ip", "dest_ip"):
                 if flow.get(field_name):
                     keys.append(str(flow[field_name]).lower())
+    # The rules engine names the host only inside its metric keys
+    # (``src:<ip>:ports``), so the address is parsed back out of them.
+    metrics = evidence.get("metrics")
+    for name in metrics if isinstance(metrics, dict) else {}:
+        parts = str(name).split(":")
+        if len(parts) >= 3 and parts[0] in ("src", "dst") and parts[1]:
+            keys.append(parts[1].lower())
     if isinstance(evidence.get("record"), dict):
         record = evidence["record"]
         for field_name in ("src_ip", "dest_ip", "ip", "hostname", "agent.name"):
             value = record.get(field_name)
             if value:
                 keys.append(str(value).lower())
-    return sorted(set(keys))
+    return sorted({key for key in keys if key})
 
 
-def _ioc_keys(finding: DetectionResult) -> list[str]:
-    evidence = finding.evidence
+def _asset_keys(finding: DetectionResult) -> list[str]:
+    return evidence_asset_keys(finding.evidence)
+
+
+def evidence_ioc_keys(evidence: dict[str, Any]) -> list[str]:
+    """Every indicator a single finding's evidence named."""
     ioc = evidence.get("ioc")
     if isinstance(ioc, dict) and ioc.get("value"):
         return [str(ioc["value"]).lower()]
@@ -69,6 +97,10 @@ def _ioc_keys(finding: DetectionResult) -> list[str]:
             if record.get(field_name):
                 keys.append(str(record[field_name]).lower())
     return sorted(set(keys))
+
+
+def _ioc_keys(finding: DetectionResult) -> list[str]:
+    return evidence_ioc_keys(finding.evidence)
 
 
 def _probe_key(finding: DetectionResult) -> str:
@@ -140,6 +172,10 @@ class IncidentEngine:
                 if len(cluster) < 2:
                     continue
                 asset = self._asset_label(cluster, key)
+                # One incident can touch several hosts (a scan source plus its
+                # targets). ``asset`` stays the display label, ``assets`` is
+                # every host in the cluster so each asset page can find it.
+                assets = sorted({value for item in cluster for value in _asset_keys(item)})
                 ioc = self._ioc_label(cluster, key)
                 stages = sorted({_stage(item) for item in cluster})
                 if len(stages) < 2 and not ioc and not asset:
@@ -162,6 +198,7 @@ class IncidentEngine:
                     findings=[item.to_dict() for item in cluster],
                     evidence={
                         "asset": asset,
+                        "assets": assets,
                         "ioc": ioc,
                         "probe_id": probe_id,
                         "stages": stages,

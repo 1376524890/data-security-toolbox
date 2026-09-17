@@ -18,7 +18,7 @@ from app.engine.core.pipeline import DetectionPipeline
 from app.engine.core.result import DetectionResult, PipelineResult
 from app.engine.graph import build_graph
 from app.engine.risk_engine.engine import RiskEngine
-from app.incident_engine.engine import IncidentEngine
+from app.incident_engine.engine import IncidentEngine, evidence_asset_keys
 from app.models import (
     IOC,
     Alert,
@@ -104,8 +104,12 @@ def _recent_findings(db, probe_id: int | None, window_seconds: int = 3600, exclu
 
 def _finding_signature(item: dict[str, Any]) -> str:
     evidence = item.get("evidence") or {}
-    asset = evidence.get("src_ip") or evidence.get("dst_ip") or evidence.get("asset") or ""
-    return f"{item.get('engine')}|{item.get('rule_id')}|{item.get('timestamp')}|{asset}"
+    # Findings are plain dicts at this point, so the identity is rebuilt with
+    # the same rules the incident engine uses. Reading only src_ip/dst_ip/asset
+    # left every traffic finding (which spells them ``src``/``dst``) on an
+    # empty asset and merged distinct hosts into one signature.
+    assets = ",".join(evidence_asset_keys(evidence))
+    return f"{item.get('engine')}|{item.get('rule_id')}|{item.get('timestamp')}|{assets}"
 
 
 def _merge_findings(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
