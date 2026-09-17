@@ -10,7 +10,7 @@
 | 平台 | 2.10.0 | `backend/app/main.py`（FastAPI version）、`frontend/package.json` |
 | 探针 | 3.5.0 | `probe/probe.py:AGENT_VERSION`、`backend/app/core/config.py:probe_agent_version` |
 | 数据库迁移 | `0014_probe_removal (head)` | `alembic current` |
-| 分支 / 最新提交 | `develop` / `0cf03de` | `git log --oneline` |
+| 分支 / 最新提交 | `develop` / `573d9e9`（本轮引擎归属修复） | `git log --oneline` |
 | 工作区 | 干净 | `git status` |
 | 远端 | `origin` = `https://github.com/1376524890/data-security-toolbox.git` | `git remote -v` |
 
@@ -50,6 +50,23 @@
 已修复（`0cf03de`，已部署验证）：资产详情「关联检测 / 关联事件」长期为空、事件退化成 `global`、
 多主机事件只对一台主机可见、IOC 联动不读 `matched_iocs`、findings 去重签名对流量 findings 恒为空。
 
+已修复（本轮，已部署验证）：
+
+1. **幽灵引擎 `rules`**：`app/rules/interpreter.py::interpret_rules()` 曾硬编码 `engine="rules"`，
+   而注册表里没有这个引擎。流量引擎（网络规则）与合规引擎（合规规则）的规则命中全部落到该名字下，
+   导致安全引擎页面按引擎过滤恒为 0、检测中心「引擎」列显示不存在的值、66 条告警 `source='rules'`。
+   现由调用方传入 `self.name`；历史数据（79 条 finding / 18 条事件内条目 / 66 条告警 `source`）已按真实
+   归属纠正为 `traffic_engine`。
+2. **引擎下拉硬编码**：`EngineDetail.vue` / `DetectionCenter.vue` / `SensitiveDiscovery.vue` 三处硬编码的
+   引擎名与 `detection_findings.engine` 真实取值不一致，所有按引擎过滤都返回空。现统一读
+   `GET /engine/registry`（新增 `slug` / `label` / `rule_count` / `detection_engine` / `detection_count`）。
+3. **规则数显示为空**：`EngineDetail.vue` 曾用 `health[name].rule_count` 覆盖适配器上报的真实值，
+   而 `/health` 只有 `tshark/zeek/suricata`，`Sigma/Wazuh/osquery/OpenSCAP` 因此渲染成 `-`；
+   Sigma 页的「规则资源」读 `/offline/resources` 的 `sigma_rules`（库内不存在）故恒显示「暂无」。
+   现规则数与规则清单统一来自规则库（`GET /rules?engine=`），并锁定「卡片规则数 == 清单条数」不变量。
+4. **Suricata 规则数假 0**：`workers/tasks.py::_worker_capability()` 只统计离线目录，
+   而 `run_suricata` 同时加载随包规则；实测 `/health.suricata.rule_count` 由 0 修正为 2（2 个 `sid:`）。
+
 ## 技术债务
 
 - ruff E501 存量约 1,000+ 处（`line-length = 100`），只约束新增代码。
@@ -58,6 +75,14 @@
 - 控制台顶部仍保留「测试数据 → 导入/清除测试数据」入口（`frontend/src/App.vue`），
   与「只用真实数据」的交付要求冲突，待决策是否在生产构建隐藏。
 - 本机 `docker compose build` 会被挂起的 buildx 客户端卡死，必须改用 legacy builder（见 `AGENTS.md`）。
+- **66 条历史告警的 `fingerprint`/`correlation_key` 仍是 `rules` 派生值**：本轮只纠正了可见的 `source`。
+  重算 fingerprint 会与 13:59 新产生的正确告警（`a64dc8ad…`）碰撞，合并 66 条历史实例超出「标签纠正」的范围。
+  影响面：同一条件再次命中时新建告警实例而非抑制递增；新数据的 fingerprint 正确。
+- **两个「规则数」口径并存**：注册表 `rule_count` = 规则**文件数**（与规则清单一致，suricata=1）；
+  `/health.suricata.rule_count` = 实际加载的 **`sid:` 条数**（suricata=2）。两者都真实但单位不同，暂未统一。
+- **「检测规则」页签按文件类型而非引擎分组**：`RulesCenter.vue` 的 `sigma`/`suricata`/`yara` 页签仍用
+  `RuleItem.type`，而 `app/rules/network`、`app/rules/compliance` 下的 YAML 会被归到 `sigma` 页签。
+  接口已提供真实 `engine` 字段（数据正确），页签改造待做；页面不为空，属标签精度问题。
 
 ## 当前架构
 
@@ -92,6 +117,10 @@
 | vulnerabilities | **0** | graph_relations | 1,018 |
 | detections | 5 | detection_evidence | 3 |
 
+（本轮修复后重新采集：`detection_findings` **820**、`incidents` **56**、`alerts` **122**、
+`engine='rules'` 已归零；引擎分布 `protocol_engine` 375、`threat_intel` 332、`traffic_engine` 98、
+`dlp_engine` 14、`compliance_engine` 1、`rules` 0。表内其余数字为上一轮采集值。）
+
 要点：
 
 - 资产 214 条中有 200 条是 `192.168.191.168` 的 service 级资产（端口扫描真实产物），非脏数据。
@@ -123,14 +152,19 @@
 - 页面分包：9 个业务域模块；驾驶舱、资产中心、PCAP 工作台、协议分析、事件中心、告警中心、IOC 情报、情报源、规则库等。
 - 近期修复：驾驶舱环形图（统一 `severityOrder` / `severityLabels` / `severityTagColors`）、
   协议分布只显示应用层、PCAP 告警证据改用命中规则的真实 evidence。
-- 单测 31/31 通过，`vue-tsc --noEmit` 干净（上一轮基线）。
+- 本轮修复：安全引擎页/检测中心/敏感发现的引擎选项与过滤全部改读注册表；引擎页新增「规则清单」
+  （可按引擎列出真实规则文件、展开看规则正文）；安全引擎菜单新增 6 个平台引擎入口。
+- 单测 31/31 通过，`vue-tsc --noEmit` 干净（本轮复跑）。
 
 ## 后端状态
 
 - FastAPI（8000，容器 healthy）+ Celery worker + beat + 独立 `deployment-worker`（探针下发/回收）。
 - 检测引擎 6 个 + 情报/适配/关联三套子系统；`evidence` 中的资产身份解析本轮统一到
   `evidence_asset_keys()` / `evidence_ioc_keys()`。
-- 全量基线（固定口径，见「测试状态」）：HEAD 521 用例 / 16 环境失败；当前 525 用例 / 同样 16 个失败。
+- 规则归属的**唯一来源**：`_rule_file_entries()` 同时服务 `GET /rules` 与 `/engine/registry` 的
+  `rule_count`，两者的数字不可能再互相矛盾。
+- 全量基线（固定口径，见「测试状态」）：HEAD `e815a54` 521 用例 / 16 环境失败；
+  资产归属轮 525 用例 / 同样 16 个失败；本轮 **531 用例 / 同样 16 个失败**（失败集合逐条一致）。
 
 ## Docker 状态
 
@@ -145,9 +179,9 @@
 
 | 套件 | 命令 | 基线 |
 | --- | --- | --- |
-| 后端全量（固定口径） | 见下方 `docker run` 说明 | HEAD `e815a54` = 521 用例 / 16 失败；当前 = **525 用例 / 16 失败，失败集合逐条一致** |
-| 前端单测 | `docker exec source-frontend-1 npx vitest run` | 31/31 通过 |
-| 前端类型 | `docker exec source-frontend-1 npx vue-tsc --noEmit` | 干净 |
+| 后端全量（固定口径） | 见下方 `docker run` 说明 | HEAD `e815a54` = 521 用例 / 16 失败；本轮 = **531 用例 / 16 失败，失败集合逐条一致** |
+| 前端单测 | `frontend/` 下 `npx vitest run`（本机 node 22.19 + 仓库 `node_modules`） | 31/31 通过 |
+| 前端类型 | `frontend/` 下 `npx vue-tsc --noEmit` | 干净 |
 
 **镜像不含 `tests/`、`pyproject.toml`、`probe_packages/`**，因此 `docker exec ... pytest` 无法直接跑用例。
 固定口径（HEAD 与当前改动用完全相同的命令各跑一次，再逐条比对失败集合）：
@@ -184,6 +218,11 @@ docker run --rm -v "${src}\backend\app:/app/app" -v "${src}\backend\tests:/app/t
    （`ip:service:port` 复合串）。把展示串当身份用是本次缺陷的共同根因。
 8. **多主机事件同时归属多台主机**：`evidence.asset` 只是展示用的首标签，`evidence.assets` 才是成员集合，
    查询侧一律按成员判定（LIKE 只做候选过滤，Python 侧精确判定，保证 SQLite 测试与 PostgreSQL 行为一致）。
+9. **引擎名由后端定义**：控制台路由段（`/engines/sigma`）与落库引擎名（`sigma_log_engine`）历史上不一致，
+   前端再各自硬编码一份名单，必然漂移。现由 `ENGINE_PRESENTATION` + `GET /engine/registry` 统一提供
+   `slug` / `label` / `detection_engine`，前端不再持有任何引擎名单。
+10. **规则库单一来源**：`_rule_file_entries()` 是规则文件与引擎归属的唯一枚举点，`/rules` 与注册表的
+    规则数共用它；"规则数"必须等于该引擎的规则清单条数。
 
 ## 兼容性变更记录
 
@@ -195,5 +234,11 @@ docker run --rm -v "${src}\backend\app:/app/app" -v "${src}\backend\tests:/app/t
 | `/api/v1/pcap/alerts` 的 alert 项 evidence 改为命中规则的 evidence | 修复错误数据 | 原先返回告警自身元数据（id/severity/时间），非规则证据 |
 | 新增 `POST /api/v1/incidents/rebuild-attribution` | 新增端点 | 只重算已有事件的 `asset`/`assets`/`stages`/`title`，不增删事件、不改 `fingerprint`；写 `audit_logs` |
 | `asset_detail` 的「关联检测」匹配范围扩大 | 同一资产可能返回比以前更多的 findings | 由「只看 `evidence.asset.ip`/`evidence.ip`」扩大到所有主机拼写，实测 192.168.191.130 由 0 变 99 |
+| `/api/v1/engine/registry` 每项追加 `slug` / `label` / `rule_count` / `detection_engine` / `detection_count` | 新增字段，纯追加 | 旧消费者只读 `name`/`version` 不受影响；`detection_engine` 是该引擎真正落库的引擎名 |
+| `/api/v1/rules` 每项追加 `engine`，并新增 `engine=` 查询参数 | 新增字段 + 新增可选参数 | 原有 `rule_type` 参数保留；返回项新增 1 个字段 |
+| `/api/v1/rules` 的 `type` 取值分布 | 规则归类变化 | `app/rules/network`、`app/rules/compliance` 下的规则此前被标成 `sigma`（按扩展名猜的），现按**加载它的引擎**给出 `engine` 标签，`type` 仍保留扩展名语义 |
+| 历史数据的引擎归属纠正 | `detection_findings.engine` 79 行、`incidents.findings.items[*].engine` 18 条、`alerts.source` 66 行 | 仅纠正错误归属，不新增/不删除记录，不改 `fingerprint`/`id` |
+| `/engines/*` 页面的「检测」卡片由「本页条数」改为「真实总数」 | 前端显示 | 之前固定最多 20；现取 `total` |
+| 安全引擎菜单新增 6 个平台引擎入口 | 前端导航 | 原菜单只指向 6 个第三方适配器，而检测结果来自平台引擎，导致那些引擎不可达 |
 
 禁止修改项与硬约束见 `AGENTS.md`「禁止修改的内容」。

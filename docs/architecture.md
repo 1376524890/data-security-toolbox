@@ -131,3 +131,37 @@ scan_profiles 驱动探针侧扫描；reports / audit_logs / system_settings / i
 | 服务端 → 探针 | 管理员下发或回收 | SSH（`deployment-worker`） | 推送安装/卸载脚本；卸载删除白名单固定，成功后才删平台记录 |
 
 安全边界：探针只出站、只读采集，不解密 TLS、不做串接阻断；服务端不反向登录被检主机（除显式的探针下发/回收通道）。
+
+## 引擎命名与规则归属
+
+引擎存在**三套名字**，历史上没有统一，是「按引擎过滤查不到数据」的根因：
+
+| 名字 | 用途 | 例子 |
+| --- | --- | --- |
+| 控制台路由段（slug） | 前端 URL `/engines/<slug>` | `sigma`、`traffic`、`ioc` |
+| 注册表引擎名 | `getEngineRegistry()` / 检测管线 | `sigma_log_engine`、`traffic_engine`、`threat_intel` |
+| 落库引擎名 | `detection_findings.engine`（告警 `source` 同源） | 与注册表引擎名一致 |
+
+统一方式：`app/api/v1.py` 的 `ENGINE_PRESENTATION` 定义 slug ↔ 引擎名 ↔ 中文标签，
+由 `GET /engine/registry` 下发 `slug` / `label` / `detection_engine` / `rule_count` / `detection_count`，
+**前端不再持有任何引擎名单**。
+
+规则库是「引擎 ↔ 规则文件」的唯一枚举点：
+
+```
+app/rules/logs/*.yaml|*.yml      -> sigma_log_engine
+app/rules/network/*.yaml         -> traffic_engine     (经 interpret_rules 解释执行)
+app/rules/compliance/*.yaml      -> compliance_engine  (经 interpret_rules 解释执行)
+app/rules/data/*.yar             -> data_engine        (YARA)
+$INTEGRATION_DIR/yara_rules/*.yar-> data_engine        (YARA，离线导入)
+app/integrations/suricata/rules/*.rules  -> suricata   (随包规则，run_suricata 加载)
+$INTEGRATION_DIR/suricata_rules/*.rules  -> suricata   (离线规则包)
+```
+
+- `_rule_file_entries()` 枚举上表，`GET /rules` 每项带 `engine`，并支持 `?engine=` 过滤。
+- `interpret_rules(context, rule_dir, engine)` 的 `engine` **必须由调用方（引擎自身）传入**；
+  写死引擎名会让检测结果落到一个注册表里不存在的名字下。
+- 不变式：`/engine/registry` 的 `rule_count` == `/rules?engine=<name>` 的条数（已由
+  `tests/test_api.py::test_rule_library_tags_every_file_with_its_engine` 锁定）。
+- 注意 `_worker_capability()` 上报的 suricata `rule_count` 单位是 `sid:` 条数（运行时口径），
+  与注册表的「规则文件数」不同但都真实。
