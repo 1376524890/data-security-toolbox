@@ -74,7 +74,7 @@ def _scan_budget_defaults() -> dict[str, Any]:
     return {key: _SCAN_LIMITS[key] for key in SCAN_BUDGET_KEYS if key in _SCAN_LIMITS}
 
 
-AGENT_VERSION = "3.4.0"
+AGENT_VERSION = "3.4.1"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
     "capture": {"interface": "any", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},
@@ -100,7 +100,7 @@ DEFAULT_CONFIG = {
         "interval_seconds": 3600,
         "targets": [],
         "discovery": True,
-        "top_ports": 1000,
+        "top_ports": 200,
         "nuclei": False,
         "nuclei_tags": "",
         "ports": [22, 80, 443, 445, 3306, 5432, 6379, 8080],
@@ -743,26 +743,49 @@ class ProbeAgent:
         return headers
 
     def register(self) -> None:
-        if self.identity.exists():
+        bootstrap = str(self.config.agent.get("bootstrap_token") or "")
+        deployment_id = int(self.config.agent.get("deployment_id") or 0)
+        # A platform-managed deployment always pushes a fresh one-time enrollment
+        # token together with its deployment id, and a successful enrollment
+        # clears that token again. A token that is still here therefore means the
+        # platform is waiting for this host to enroll now, which outranks a
+        # leftover identity (`install.sh` keeps probe.identity.json on purpose):
+        # deleting the probe and deploying again, or reinstalling on a host that
+        # once ran a probe, must register instead of silently reusing a probe_id
+        # the platform already revoked.
+        if self.identity.exists() and not (bootstrap and deployment_id):
             # Existing identity wins; never re-enroll/rotate on restart.
             self.probe_id = self.identity.probe_id
             self.token = self.identity.token
             return
-        bootstrap = str(self.config.agent.get("bootstrap_token") or "")
         if not bootstrap:
             self.auth_error = True
             raise RuntimeError("probe has no identity and no bootstrap token")
-        headers = {"X-Probe-Bootstrap-Token": bootstrap} if bootstrap else {}
+        headers = {"X-Probe-Bootstrap-Token": bootstrap}
         info = {
             "name": socket.gethostname(),
             "hostname": socket.gethostname(),
             "ip_address": local_ip(self.config.capture["interface"]),
             "metadata": {"system": system_metrics(), "agent_version": AGENT_VERSION, "interface": self.config.capture["interface"], "interfaces": network_interfaces()},
         }
-        deployment_id = int(self.config.agent.get("deployment_id") or 0)
         if deployment_id:
             info["deployment_id"] = deployment_id
-        result = http_json(f"{self.config.base_url()}/api/v1/probes/register", info, headers, self.config)
+        try:
+            result = http_json(f"{self.config.base_url()}/api/v1/probes/register", info, headers, self.config)
+        except urllib.error.HTTPError as exc:
+            # The pushed token is one-time. If the enrollment already succeeded but
+            # the process died before the token was cleared (or the platform
+            # revoked it), the identity on disk is still the credential the
+            # platform last issued, so prefer it over a restart loop.
+            if exc.code in (401, 403) and self.identity.exists():
+                print(
+                    f"probe enrollment rejected (HTTP {exc.code}); keeping the stored identity",
+                    file=sys.stderr,
+                )
+                self.probe_id = self.identity.probe_id
+                self.token = self.identity.token
+                return
+            raise
         probe_id = int(result["id"])
         token = result.get("token") or self.token
         if not token:

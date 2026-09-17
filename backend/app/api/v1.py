@@ -75,6 +75,7 @@ from app.models import (
     ProbeDeployment,
     ProbeEnrollment,
     OfflineResource,
+    LocalCve,
     Report,
     Task,
     User,
@@ -803,7 +804,8 @@ def start_scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict[str,
 
         if not db.get(Probe, payload.probe_id):
             raise HTTPException(404, "probe not found")
-        ports = payload.ports or [22, 80, 443, 445, 3306, 5432, 6379, 8080]
+        from app.services.scan_service import select_ports
+        ports = payload.ports or select_ports(min(payload.top_ports, 256))
         task = queue_probe_scan(db, payload.probe_id, {
             "targets": [payload.target],
             "ports": ports,
@@ -1554,8 +1556,17 @@ def offline_resources(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
 
 
 @router.get("/offline/cves")
-def offline_cves(search: str | None = None, limit: int = Query(100, le=1000), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    return list_local_cves(db, search or "", limit)
+def offline_cves(search: str | None = None, limit: int = Query(100, ge=1, le=1000),
+                 page: int | None = Query(None, ge=1), page_size: int = Query(50, ge=1, le=200),
+                 db: Session = Depends(get_db)) -> Any:
+    # Keep the legacy array contract for existing integrations.
+    if page is None:
+        return list_local_cves(db, search or "", limit)
+    query = select(func.count()).select_from(LocalCve)
+    if search:
+        query = query.where(LocalCve.cve_id.ilike(f"%{search}%"))
+    total = db.scalar(query) or 0
+    return page_response(list_local_cves(db, search or "", page_size, (page - 1) * page_size), page, page_size, total)
 
 
 @router.post("/offline/upload")
@@ -2067,6 +2078,10 @@ def list_rules(rule_type: str | None = Query(None), db: Session = Depends(get_db
         _add(path, "sigma")
     for path in sorted((base / "compliance").glob("*.yaml")):
         _add(path, "sigma")
+    for path in sorted((Path(__file__).resolve().parents[1] / "integrations" / "suricata" / "rules").rglob("*.rules")):
+        _add(path, "suricata")
+    for path in sorted((settings.integration_dir / "suricata_rules").glob("*.rules")):
+        _add(path, "suricata")
     # Offline-imported Suricata rules
     resources = db.scalars(select(OfflineResource).where(OfflineResource.resource_type == "suricata_rules")).all()
     for resource in resources:

@@ -14,6 +14,8 @@ import StatusBadge from '../../../components/security/StatusBadge.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
 import { formatBytes, formatDateTime, formatDuration } from '../../../utils/format'
 
+const evidenceDialog = ref(false)
+const alertEvidence = ref<unknown>(null)
 const loading = ref(true)
 const error = ref('')
 const items = ref<PcapRecord[]>([])
@@ -304,7 +306,7 @@ onMounted(load)
               <el-table-column label="等级" width="100"><template #default="{ row }"><SeverityTag :value="row.severity" /></template></el-table-column>
               <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
               <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
-              <el-table-column label="证据" width="90"><template #default="{ row }"><JsonViewer :value="row.evidence" title="查看" :height="200" /></template></el-table-column>
+              <el-table-column label="证据" width="90"><template #default="{ row }"><el-button link type="primary" :disabled="!row.evidence" @click.stop="alertEvidence = row.evidence; evidenceDialog = true">查看证据</el-button></template></el-table-column>
             </el-table>
           </div>
         </el-tab-pane>
@@ -346,6 +348,7 @@ onMounted(load)
       </div>
     </el-dialog>
   </div>
+<el-dialog v-model="evidenceDialog" title="告警证据" width="min(900px, 90vw)" append-to-body><JsonViewer :value="alertEvidence" :height="480" /></el-dialog>
 </template>
 
 <style scoped>

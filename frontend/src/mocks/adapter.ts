@@ -153,7 +153,7 @@ function route(method: string, url: string, params: Params, body: unknown): unkn
 
   // ---- Offline ----
   if (path === '/offline/resources') return clone(data.offlineResources)
-  if (path === '/offline/cves') return clone(data.localCves)
+  if (path === '/offline/cves') return params.page ? paginate(clone(data.localCves).filter(item => !params.search || item.cve_id.includes(String(params.search))), params) : clone(data.localCves)
 
   // ---- Integrations ----
   if (path === '/integrations') return clone(data.integrations)

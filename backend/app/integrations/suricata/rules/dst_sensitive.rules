@@ -1,0 +1,2 @@
+alert http any any -> any any (msg:"DST Cleartext private key transfer"; flow:established; content:"-----BEGIN PRIVATE KEY-----"; sid:9900001; rev:1;)
+alert http any any -> any any (msg:"DST Cleartext RSA private key transfer"; flow:established; content:"-----BEGIN RSA PRIVATE KEY-----"; sid:9900002; rev:1;)

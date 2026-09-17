@@ -15,6 +15,8 @@ from urllib.parse import unquote_plus, urlsplit
 
 import dpkt
 
+from app.core.config import settings
+
 from app.services.rule_library import DEFAULT_CONFIDENCE, MIN_ALERT_CONFIDENCE
 
 MAX_STREAM = 2 * 1024 * 1024
@@ -412,6 +414,21 @@ def analyze_capture(path, config):
             objects.append(metadata)
             triggered = [h for h in hits if alertable(h, policy['min_confidence'])]
             if triggered:
+                if not obj.get('is_header'):
+                    directory = settings.storage_dir / 'dlp_objects'
+                    directory.mkdir(parents=True, exist_ok=True)
+                    target = directory / metadata['sha256']
+                    import os
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+                        handle.write(body)
+                        temporary = Path(handle.name)
+                    try:
+                        os.replace(temporary, target)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                    metadata['binary_available'] = True
+                    metadata['hash_scope'] = 'complete_file' if metadata['complete'] else 'captured_bytes'
                 findings.append({
                     'engine': 'dlp_engine', 'rule_id': 'DLP_TRANSFER_001', 'severity': 'High',
                     'confidence': max(hit['confidence'] for hit in triggered),

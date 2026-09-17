@@ -29,7 +29,7 @@ class ProbeOut(BaseModel):
 class ProbeScanRequest(BaseModel):
     targets: list[str] = Field(min_length=1, description="要扫描的目标：IP / CIDR / 范围")
     discovery: bool = True
-    top_ports: int = Field(default=1000, ge=1, le=65535)
+    top_ports: int = Field(default=200, ge=1, le=65535)
     ports: list[int] = Field(default_factory=list, max_length=256, description="显式端口列表；为空时按 top_ports 扫描")
     nuclei: bool = False
     nuclei_tags: str = ""
@@ -46,7 +46,7 @@ class ProbeScanRequest(BaseModel):
 class ScanRequest(BaseModel):
     target: str = Field(min_length=1, max_length=256, description="目标：IP / 主机名 / CIDR / 范围，如 192.168.110.0/24 或 192.168.110.1")
     discovery: bool = True
-    top_ports: int = Field(default=1000, ge=1, le=65535)
+    top_ports: int = Field(default=200, ge=1, le=65535)
     ports: list[int] = Field(default_factory=list, max_length=256, description="显式端口列表；为空时按 top_ports 扫描")
     public_exposed: bool = False
     nuclei: bool = False

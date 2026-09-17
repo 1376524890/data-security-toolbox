@@ -41,4 +41,7 @@ python3 probe.py --config ./probe.toml
   file's content to `/api/v1/files/upload` so the backend can run sensitive-data analysis on real
   bytes (PII/secret/YARA). Each record includes `sha256` and `md5`.
 - Registration persists `probe_id + token` to `agent.identity_path` (0600) and never re-enrolls on
-  restart.
+  restart. A platform deployment pushes a one-time enrollment token together with its
+  `deployment_id`; while that token is present it outranks the stored identity, so deleting a probe
+  and deploying again on the same host (or reinstalling on a host that once ran a probe) enrolls
+  instead of reusing the retired `probe_id`. A rejected token falls back to the stored identity.

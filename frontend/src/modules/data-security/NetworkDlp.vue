@@ -3,14 +3,30 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, apiPost, apiPatch } from '../../api/client'
 import JsonViewer from '../../components/evidence/JsonViewer.vue'
+import HexViewer from '../../components/evidence/HexViewer.vue'
+import { downloadUrl } from '../../api/client'
 type Policy = { enabled: boolean; categories: string[]; keywords: string[]; fingerprints: string[]; min_matches: number; min_confidence: number; exclude_cidrs: string[] }
 type Hit = { kind: string; count: number; samples: string[]; confidence?: number; sensitive?: boolean }
-type Transfer = { id: number; pcap_id: number; filename: string; src_ip: string; src_port: number; dst_ip: string; dst_port: number; size: number; sha256: string; complete: boolean; content_type: string; matches: Hit[] }
+type Transfer = { task_id: number; binary_available?: boolean; id: number; pcap_id: number; filename: string; src_ip: string; src_port: number; dst_ip: string; dst_port: number; size: number; sha256: string; complete: boolean; content_type: string; matches: Hit[] }
 const config = reactive<Policy>({enabled:true, categories:[], keywords:[], fingerprints:[], min_matches:1, min_confidence:0.6, exclude_cidrs:['127.0.0.0/8','::1/128']})
 const keywords = ref(''), hashes = ref(''), cidrs = ref(''), error = ref(''), busy = ref(false)
 const items = ref<Transfer[]>([]), coverage = ref<unknown[]>([])
 const selected = ref<Transfer | null>(null)
 const drawer = ref(false)
+const binary = ref(''), binaryError = ref(''), binaryLoading = ref(false)
+let evidenceRequest = 0
+async function openTransfer(row: Transfer) {
+  selected.value = row; drawer.value = true; binary.value = ''; binaryError.value = ''
+  const request = ++evidenceRequest
+  binaryLoading.value = false
+  if (!row.binary_available) return
+  binaryLoading.value = true
+  try {
+    const data = await apiGet<{hex:string}>(`/dlp/transfers/${row.task_id}/${row.id}/content`)
+    if (request === evidenceRequest) binary.value = data.hex
+  } catch(e) { if (request === evidenceRequest) binaryError.value = String(e) }
+  finally { if (request === evidenceRequest) binaryLoading.value = false }
+}
 type DlpRule = { id:string; name:string; entity:string; pattern:string; source:string; enabled:boolean; confidence?:number; sensitive?:boolean; alertable?:boolean; version?:string }
 const rules = ref<DlpRule[]>([]), ruleDialog = ref(false), ruleBusy = ref(false)
 const newRule = reactive({name:'', entity:'', pattern:'', enabled:true})
@@ -95,16 +111,32 @@ onMounted(load)
       </el-form>
     </el-collapse-item></el-collapse>
     <div style="margin:16px 0"><b>传输对象与匹配结果</b><el-button style="float:right" @click="load">刷新</el-button></div>
-    <el-table :data="items" size="small" @row-click="(row:Transfer)=>{ selected=row; drawer=true }">
+    <el-table :data="items" size="small" @row-click="openTransfer">
       <el-table-column prop="pcap_id" label="PCAP" width="70" />
       <el-table-column prop="filename" label="对象 / 文件" min-width="170" show-overflow-tooltip />
       <el-table-column label="传输方向" min-width="230"><template #default="{row}">{{row.src_ip}}:{{row.src_port}} → {{row.dst_ip}}:{{row.dst_port}}</template></el-table-column>
+      <el-table-column prop="sha256" label="SHA256（捕获内容）" min-width="200" show-overflow-tooltip />
       <el-table-column prop="size" label="字节数" width="90" />
       <el-table-column label="完整性" width="100"><template #default="{row}">{{row.complete ? '完整' : '部分 / 未确认'}}</template></el-table-column>
       <el-table-column label="命中"><template #default="{row}"><el-tag v-for="(hit,index) in row.matches" :key="index" :type="alertableHit(hit) ? 'danger' : 'info'" size="small">{{hit.kind}} × {{hit.count}}{{alertableHit(hit) ? '' : '（仅证据）'}}</el-tag><span v-if="!row.matches.length">未命中当前策略</span></template></el-table-column>
     </el-table>
     <el-empty v-if="!items.length" description="上传并分析 PCAP 后显示传输内容；也可导入演示场景" />
     <el-collapse style="margin-top:16px"><el-collapse-item title="检测覆盖范围与截断信息"><JsonViewer :value="coverage" /></el-collapse-item></el-collapse>
-    <el-drawer v-model="drawer" title="传输证据（敏感样本已脱敏）" size="55%"><JsonViewer v-if="selected" :value="selected" /></el-drawer>
+    <el-drawer v-model="drawer" title="传输文件证据" size="70%">
+      <template v-if="selected">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="SHA256"><span style="overflow-wrap:anywhere">{{selected.sha256}}</span></el-descriptions-item>
+          <el-descriptions-item label="哈希范围">{{selected.complete ? '完整重组文件' : '已捕获片段，不能作为完整文件哈希'}}</el-descriptions-item>
+        </el-descriptions>
+        <div v-if="selected.binary_available" style="margin:16px 0">
+          <el-link :href="downloadUrl(`/dlp/transfers/${selected.task_id}/${selected.id}/content?download=true`)" type="primary">下载捕获二进制（{{selected.size}} 字节）</el-link>
+          <p>原始字节预览（最多 4096 字节，未脱敏）</p>
+          <el-alert v-if="binaryError" :title="binaryError" type="error" />
+          <div v-loading="binaryLoading" style="max-height:360px;overflow:auto"><HexViewer :data="binary" /></div>
+        </div>
+        <el-alert v-else title="未保留二进制证据；敏感传输的历史 PCAP 需重新分析。" type="info" />
+        <JsonViewer :value="selected" />
+      </template>
+    </el-drawer>
   </div>
 </template>

@@ -660,7 +660,11 @@ def discover_data_assets(config: dict, stop_event=None, on_progress=None) -> dic
                 budget.check()
             except BudgetExceeded:
                 break
-            if root.is_symlink() or not root.is_dir():
+            try:
+                readable_directory = not root.is_symlink() and root.is_dir()
+            except OSError:
+                readable_directory = False
+            if not readable_directory:
                 errors.append(f'目录不存在或不可读取: {root}')
                 continue
             root = root.absolute()

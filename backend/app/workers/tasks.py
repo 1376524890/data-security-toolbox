@@ -675,14 +675,14 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
             _finish(task_id, error="scan target is required")
             return {}
         discovery = bool(payload.get("discovery", True))
-        top_ports = int(payload.get("top_ports") or 1000)
+        top_ports = int(payload.get("top_ports") or 200)
         ports = [int(item) for item in (payload.get("ports") or []) if str(item).strip().isdigit()]
         public_exposed = bool(payload.get("public_exposed", False))
         nuclei = bool(payload.get("nuclei", False))
         nuclei_tags = str(payload.get("nuclei_tags") or "")
         nuclei_tpl = str(payload.get("nuclei_templates") or "")
         port_scope = f"{len(ports)} 个指定端口" if ports else f"top {top_ports} 端口"
-        update_task(task_id, status="Running", progress=5, current_stage=f"发现存活主机（TCP-connect / {port_scope}）")
+        update_task(task_id, status="Running", progress=5, current_stage=f"准备网段扫描（{port_scope}）")
         warning = ""
         if discovery:
             warning = detect_interception(ports=ports or None)
@@ -690,8 +690,9 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
                 update_task(task_id, log=f"[scan] {warning}\n")
         hosts = [target]
         if discovery and is_subnet(target):
-            hosts = discover_hosts(target, ports=ports or None)
-            update_task(task_id, progress=15, current_stage=f"发现 {len(hosts)} 台存活主机", log=f"[scan] discovery {target} -> {len(hosts)} host(s)\n")
+            from app.services.scan_service import expand_targets
+            hosts = expand_targets(target)
+            update_task(task_id, progress=15, current_stage=f"待扫描 {len(hosts)} 个地址", log=f"[scan] discovery {target} -> {len(hosts)} host(s)\n")
         if not hosts:
             db.add(AnalysisResult(task_id=task_id, module="scan", content={"target": target, "hosts": [], "assets": 0, "findings": 0}, risk_level="Low"))
             db.commit()

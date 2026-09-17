@@ -18,6 +18,6 @@ export function uploadOffline(file: File, resourceType: string, name?: string, v
   return apiUpload('/integrations/offline/upload', file, { resource_type: resourceType, name: name || '', version: version || '' })
 }
 
-export function listLocalCves(search = ''): Promise<LocalCve[]> {
-  return apiGet('/offline/cves', { search })
+export function listLocalCves(search = '', page = 1, page_size = 50): Promise<{items: LocalCve[]; total: number}> {
+  return apiGet('/offline/cves', { search, page, page_size })
 }

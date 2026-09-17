@@ -27,12 +27,12 @@ def test_missing_key_does_not_leave_active_task(monkeypatch):
 
 
 @pytest.mark.parametrize("start_rc, expected", [(0, "WAIT_CALLBACK"), (1, "FAILED")])
-def test_password_push_uses_sudo_and_checks_start(monkeypatch, start_rc, expected):
+def test_password_push_uses_sudo_and_checks_restart(monkeypatch, start_rc, expected):
     ssh = Mock(username="operator")
     commands = []
     def execute(command, **kwargs):
         commands.append(command)
-        return (start_rc, "", "") if "systemctl start" in command else (0, "", "")
+        return (start_rc, "", "") if "systemctl restart" in command else (0, "", "")
     ssh.exec.side_effect = execute
     monkeypatch.setattr(service, "SshClient", Mock(return_value=ssh))
     monkeypatch.setattr(service, "run_preflight", lambda *args, **kwargs: {"compatible": True, "arch": "amd64", "interfaces": ["eth0"]})
@@ -54,7 +54,10 @@ def test_password_push_uses_sudo_and_checks_start(monkeypatch, start_rc, expecte
         if start_rc:
             assert dep.error_code == "START_FAILED"
     assert any(command.startswith("sudo -n bash ") for command in commands)
-    assert "sudo -n systemctl start data-security-toolbox-probe 2>&1" in commands
+    # A retry/upgrade must restart the unit: `systemctl start` is a no-op while a
+    # probe is still running, which left the previous code and config live.
+    assert "sudo -n systemctl restart data-security-toolbox-probe 2>&1" in commands
+    assert not [command for command in commands if "systemctl start" in command]
     assert service.SshClient.call_args.kwargs["password"] == "test-password"
 
 

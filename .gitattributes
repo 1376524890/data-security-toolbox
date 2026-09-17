@@ -1,0 +1,6 @@
+# Scripts and systemd units are executed and parsed on Linux hosts. A Windows
+# checkout (core.autocrlf=true) must not hand them CRLF line endings: bash then
+# reads the option as `pipefail\r` and dies at line 2 with
+# "set: pipefail: invalid option name", and systemd misparses the unit.
+*.sh text eol=lf
+*.service text eol=lf

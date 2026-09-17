@@ -13,6 +13,8 @@ const loading = ref(true)
 const error = ref('')
 const items = ref<LocalCve[]>([])
 const search = ref('')
+const page = ref(1), pageSize = ref(50), total = ref(0)
+function searchCves() { page.value = 1; void load() }
 const busy = ref(false), dialog = ref(false), library = ref('尚未导入 Grype DB')
 const draft = reactive({cve_id:'', severity:'Medium', cvss_score:0, description:''})
 type LibraryJob = {id:string; status:string; stage?:string; downloaded_bytes?:number; imported?:number; updated?:number; error?:string; result?:{imported:number; updated:number; preserved:number; version:string}}
@@ -62,7 +64,9 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    items.value = await listLocalCves(search.value)
+    const result = await listLocalCves(search.value, page.value, pageSize.value)
+    items.value = result.items
+    total.value = result.total
     const resources = await listOfflineResources()
     const grype = resources.find(r=>r.resource_type === 'grype_db')
     if (grype) library.value = `Grype DB：${grype.version}，${grype.count} 条 CVE`
@@ -87,8 +91,8 @@ onUnmounted(() => { disposed = true; if(pollTimer) clearTimeout(pollTimer) })
 <template>
   <div>
     <div class="toolbar">
-      <el-input v-model="search" placeholder="搜索 CVE ID" clearable style="width:240px" @keyup.enter="load" />
-      <el-button @click="load">搜索</el-button><div class="toolbar-spacer" />
+      <el-input v-model="search" placeholder="搜索 CVE ID" clearable style="width:240px" @keyup.enter="searchCves" @clear="searchCves" />
+      <el-button @click="searchCves">搜索</el-button><div class="toolbar-spacer" />
       <el-button :loading="busy" @click="updateGrype">下载 / 更新 Grype DB</el-button>
       <el-upload :auto-upload="false" :show-file-list="false" :on-change="importGrype" accept=".zst,.gz,.tar,.db,.sqlite"><el-button :disabled="busy">导入 Grype DB</el-button></el-upload>
       <el-upload :auto-upload="false" :show-file-list="false" :on-change="importCves" accept=".json,.csv,.yaml,.yml"><el-button :disabled="busy">导入 CVE 规则</el-button></el-upload>
@@ -114,8 +118,9 @@ onUnmounted(() => { disposed = true; if(pollTimer) clearTimeout(pollTimer) })
         <el-table-column label="CVSS" width="90"><template #default="{ row }"><span class="mono">{{ row.cvss_score ?? '-' }}</span></template></el-table-column>
         <el-table-column label="发布时间" width="150"><template #default="{ row }">{{ row.published ? formatDateTime(row.published) : '-' }}</template></el-table-column>
         <el-table-column label="修改时间" width="150"><template #default="{ row }">{{ row.modified ? formatDateTime(row.modified) : '-' }}</template></el-table-column>
-        <el-table-column label="描述" min-width="240" show-overflow-tooltip><template #default="{ row }"><span>{{ typeof row.description === 'string' ? row.description : row.description?.text || JSON.stringify(row.description) }}</span></template></el-table-column>
+        <el-table-column label="描述" min-width="240" show-overflow-tooltip><template #default="{ row }"><span>{{ typeof row.description === 'string' ? row.description : row.description?.zh || row.description?.text || row.description?.en || JSON.stringify(row.description) }}</span></template></el-table-column>
       </el-table>
     </StateBox>
+    <el-pagination class="pagination" v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[20,50,100,200]" :total="total" layout="total, sizes, prev, pager, next" @current-change="load" @size-change="searchCves" />
   </div>
 </template>

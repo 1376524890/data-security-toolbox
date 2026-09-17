@@ -19,6 +19,7 @@ Two engines are used:
 from __future__ import annotations
 
 import ipaddress
+from itertools import islice
 import re
 import shutil
 import socket
@@ -52,6 +53,11 @@ COMMON_PORTS: tuple[int, ...] = (
     9000, 9001, 9042, 9060, 9080, 9090, 9092, 9100, 9160, 9200, 9300, 9443,
     9600, 9999, 10000, 10250, 11211, 15672, 16379, 25565, 27017, 27018, 50000,
     50070, 50090, 61616,
+    7, 9, 13, 17, 19, 20, 26, 37, 49, 70, 79, 82, 83, 84, 85, 89, 90,
+    99, 106, 113, 125, 144, 146, 163, 199, 211, 212, 222, 254, 255,
+    256, 259, 264, 280, 301, 306, 311, 340, 366, 406, 407, 416, 417,
+    425, 427, 444, 458, 464, 481, 497, 500, 512, 513, 524, 541, 543,
+    544, 545, 556, 563, 593, 616, 625, 683, 687, 691, 700, 705,
 )
 
 PORT_SERVICES: dict[int, str] = {
@@ -164,7 +170,7 @@ def expand_targets(target: str, max_hosts: int = MAX_SWEEP_HOSTS) -> list[str]:
             return []
         if network.num_addresses <= 2:
             return [str(network.network_address)]
-        hosts = [str(item) for item in network.hosts()]
+        hosts = [str(item) for item in islice(network.hosts(), max_hosts)]
         return hosts[:max_hosts]
     if IP_RANGE_RE.match(text):
         start_text, _, end_text = text.partition("-")
@@ -285,7 +291,7 @@ def scan_host_python(host: str, ports: list[int], timeout: float = 0.7, concurre
     return sorted(results, key=lambda item: item["port"])
 
 
-def scan_host(host: str, top_ports: int = 1000, timeout: int = 300, ports: list[int] | None = None) -> list[dict[str, Any]]:
+def scan_host(host: str, top_ports: int = 200, timeout: int = 300, ports: list[int] | None = None) -> list[dict[str, Any]]:
     """Service/version scan a single host; return open services with product/version.
 
     Prefers nmap (``-Pn -sT`` so blocked ICMP cannot suppress the port scan) and

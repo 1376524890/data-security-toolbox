@@ -106,7 +106,7 @@ async function runScan(): Promise<void> {
       await new Promise((r) => setTimeout(r, 3000))
       const cur = await getScan(task.id)
       scanProgress.value = cur.progress ?? scanProgress.value
-      scanStage.value = cur.current_stage || scanStage.value
+      scanStage.value = cur.current_stage?.replace(/nmap|nuclei|python-tcp|TCP-connect/gi, '服务检测') || scanStage.value
       if (TERMINAL_STATUSES.includes(cur.status)) {
         scanResult.value = cur
         break
@@ -187,10 +187,10 @@ onMounted(() => { load(); loadProbes() })
         <el-input v-model="scanTarget" placeholder="目标：IP / 主机 / CIDR / 范围，如 192.168.110.0/24" style="width: 320px" clearable />
         <el-input-number v-model="scanTopPorts" :min="1" :max="65535" :step="50" style="width: 130px" />
         <el-input v-model="scanPorts" placeholder="指定端口（可选），如 22,80,443,3306" style="width: 220px" clearable />
-        <el-switch v-if="scanSource === 'platform'" v-model="scanNuclei" active-text="Nuclei" />
-        <el-input v-if="scanSource === 'platform' && scanNuclei" v-model="scanNucleiTags" placeholder="nuclei tags，如 tech,cve" style="width: 180px" clearable />
+        <el-switch v-if="scanSource === 'platform'" v-model="scanNuclei" active-text="漏洞检测" />
+        <el-input v-if="scanSource === 'platform' && scanNuclei" v-model="scanNucleiTags" placeholder="检测类别，如 tech,cve" style="width: 180px" clearable />
         <el-button type="primary" :loading="scanning" @click="runScan">开始扫描</el-button>
-        <span class="text-muted" style="font-size: 12px">平台扫描使用 nmap（-Pn，带 TCP-connect 兜底）；探针扫描由目标网段内的探针执行</span>
+        <span class="text-muted" style="font-size: 12px">自动扫描指定网段，默认检查常用 200 个端口；探针扫描在探针所在网络执行</span>
       </div>
       <el-progress v-if="scanning" :percentage="scanProgress" :stroke-width="10" style="margin-top: 10px" />
       <div v-if="scanning" class="text-muted" style="font-size: 12px; margin-top: 4px">{{ scanStage }}</div>
@@ -200,7 +200,6 @@ onMounted(() => { load(); loadProbes() })
           存活主机 {{ scanSummary.hosts }} 台，服务资产 {{ scanSummary.assets }} 个
         </el-tag>
         <el-tag v-else type="danger" size="small">扫描失败：{{ scanResult.error }}</el-tag>
-        <span v-if="scanSummary.engine" class="text-muted" style="font-size: 12px; margin-left: 8px">引擎 {{ scanSummary.engine }}</span>
         <div v-if="scanResult.scanned_assets?.length" style="margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap">
           <el-tag v-for="a in scanResult.scanned_assets" :key="a.id" size="small" effect="plain">{{ a.ip }}:{{ a.port }} {{ a.service }} ({{ a.asset_type }})</el-tag>
         </div>

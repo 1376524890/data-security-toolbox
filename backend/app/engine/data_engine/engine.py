@@ -167,7 +167,7 @@ def yara_scan(path: Path, rule_dir: Path) -> list[dict[str, Any]]:
     rule_files += sorted((settings.integration_dir / 'yara_rules').glob('*.yar'))
     if not rule_files:
         return []
-    compiled = yara.compile(filepaths={f'rule_{index}': str(file) for index, file in enumerate(rule_files)}, includes=False)
+    compiled = yara.compile(sources={f'rule_{index}': file.read_text(encoding='utf-8') for index, file in enumerate(rule_files)}, includes=False)
     matches = compiled.match(str(path), timeout=10)
     return [{"rule": item.rule, "tags": item.tags, "meta": item.meta} for item in matches]
 

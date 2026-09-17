@@ -695,3 +695,24 @@ def dlp_transfers(pcap_id: int | None = None, db: Session = Depends(get_db)):
         coverage.append({'pcap_id': capture, **result.content.get('coverage', {})})
         items.extend({**item, 'pcap_id': capture, 'task_id': task.id} for item in result.content.get('objects', []) if not item.get('is_header') or item.get('matches'))
     return {'items': items[:2000], 'coverage': coverage, 'mode': 'passive', 'tls_decryption': False}
+
+@router.get('/dlp/transfers/{task_id}/{object_id}/content')
+def dlp_transfer_content(task_id: int, object_id: int, download: bool = False, db: Session = Depends(get_db)):
+    from fastapi.responses import FileResponse
+    from app.core.config import settings
+    result = db.scalar(select(AnalysisResult).where(AnalysisResult.task_id == task_id,
+                       AnalysisResult.module == 'dlp').order_by(AnalysisResult.id.desc()))
+    obj = next((item for item in (result.content.get('objects', []) if result else [])
+                if item.get('id') == object_id and item.get('binary_available')), None)
+    if not obj or not re.fullmatch(r'[a-f0-9]{64}', str(obj.get('sha256', ''))):
+        raise HTTPException(404, '未保留该对象的二进制证据；历史 PCAP 请重新分析')
+    path = settings.storage_dir / 'dlp_objects' / obj['sha256']
+    if not path.is_file():
+        raise HTTPException(404, '二进制证据已清理，请重新分析原始 PCAP')
+    if download:
+        return FileResponse(path, media_type='application/octet-stream', filename=obj['sha256'] + '.bin',
+                            headers={'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store'})
+    with path.open('rb') as handle:
+        preview = handle.read(4096)
+    return {'hex': preview.hex(), 'preview_bytes': len(preview), 'size': obj['size'],
+            'truncated': obj['size'] > len(preview), 'sha256': obj['sha256'], 'complete': obj['complete']}

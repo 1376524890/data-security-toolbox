@@ -70,7 +70,8 @@
 }
 .side-menu .el-menu-item:hover { background: var(--soc-panel-hover); color: var(--soc-text); }
 .side-menu .el-menu-item.is-active { background: var(--soc-primary-dim); color: var(--soc-primary); }
-.side-menu .el-menu-item .el-icon { color: currentColor; }
+.side-menu .el-menu-item .el-icon { color: currentColor; width: 20px; height: 20px; font-size: 18px; flex-shrink: 0; }
+.el-icon svg { width: 1em; height: 1em; flex-shrink: 0; vertical-align: middle; }
 
 /* Header */
 .header-title { font-weight: 700; color: var(--soc-text-strong); font-size: 14px; white-space: nowrap; }

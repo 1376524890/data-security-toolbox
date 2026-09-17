@@ -69,6 +69,63 @@ def test_restart_reuses_existing_identity_no_rotation(tmp_path: Path) -> None:
     assert second.token == "tok-abc123"
 
 
+def test_platform_deployment_enrolls_over_a_leftover_identity(tmp_path: Path) -> None:
+    """Deleting a probe and deploying again must enroll, not reuse a revoked id.
+
+    `install.sh` keeps `/etc/data-security-toolbox/probe.identity.json` across an
+    upgrade on purpose, so a host that already ran a probe still has one. That
+    leftover identity used to win over the one-time enrollment token the platform
+    pushes with a deployment, so the probe never called `/probes/register` and the
+    deployment sat at "service started; awaiting registration" until it timed out.
+    """
+    config = _make_config(tmp_path)
+    probe.http_json = lambda *a, **k: {"id": 12, "token": "tok-old"}
+    probe.ProbeAgent(config).register()
+
+    # The platform deploys again: new deployment id plus a fresh enrollment token.
+    fresh = _make_config(tmp_path)
+    fresh.agent["deployment_id"] = 7
+    seen: dict[str, object] = {}
+
+    def fake_register(url, payload, headers, cfg, timeout=30):
+        seen["url"] = url
+        seen["payload"] = payload
+        seen["headers"] = headers
+        return {"id": 99, "token": "tok-new"}
+
+    probe.http_json = fake_register
+    agent = probe.ProbeAgent(fresh)
+    agent.register()
+
+    assert seen["url"].endswith("/api/v1/probes/register")
+    assert seen["headers"]["X-Probe-Bootstrap-Token"] == "boot"
+    assert seen["payload"]["deployment_id"] == 7
+    assert agent.probe_id == 99
+    assert agent.token == "tok-new"
+    identity = json.loads(Path(fresh.agent["identity_path"]).read_text())
+    assert identity["probe_id"] == 99
+    assert identity["token"] == "tok-new"
+
+
+def test_spent_enrollment_token_falls_back_to_the_stored_identity(tmp_path: Path) -> None:
+    """A one-time token is already spent if the probe died right after enrolling."""
+    config = _make_config(tmp_path)
+    probe.http_json = lambda *a, **k: {"id": 12, "token": "tok-abc123"}
+    probe.ProbeAgent(config).register()
+
+    fresh = _make_config(tmp_path)
+    fresh.agent["deployment_id"] = 7
+
+    def rejected(*a, **k):
+        raise urllib.error.HTTPError("url", 401, "enrollment token already consumed", {}, None)
+
+    probe.http_json = rejected
+    agent = probe.ProbeAgent(fresh)
+    agent.register()  # must not raise, or systemd would restart the probe forever
+    assert agent.probe_id == 12
+    assert agent.token == "tok-abc123"
+
+
 def test_missing_identity_and_no_bootstrap_raises(tmp_path: Path) -> None:
     config = _make_config(tmp_path, bootstrap="")
     agent = probe.ProbeAgent(config)

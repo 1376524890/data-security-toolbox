@@ -169,6 +169,19 @@ class DeploymentService:
         rc, _, _ = ssh.exec(f"tar -xzf {shlex.quote(remote_artifact)} -C {shlex.quote(remote_dir)}")
         if rc != 0:
             raise DeploymentError("PACKAGE_FAILED", "unable to extract probe package")
+        # `install.sh` runs under bash and writes a systemd unit, so a package
+        # built from a CRLF checkout (Windows, core.autocrlf=true) aborts on the
+        # target with "set: pipefail : invalid option name". New packages are
+        # written with Unix line endings; this keeps an artifact built before
+        # that fix deployable.
+        rc, _, _ = ssh.exec(
+            f"cd {shlex.quote(remote_dir)} && "
+            "find . -maxdepth 2 -type f \\( -name '*.sh' -o -name '*.service' \\) "
+            "-exec sed -i 's/\\r$//' {} + 2>/dev/null; "
+            "tr -d '\\r' < install.sh | cmp -s - install.sh"
+        )
+        if rc != 0:
+            raise DeploymentError("PACKAGE_FAILED", "probe package installer has CRLF line endings")
 
     def _upload_config(self, ssh: SshClient, toml: str, remote_dir: str, ca_file: str | None) -> str | None:
         remote_toml = f"{remote_dir}/probe.toml"
@@ -262,7 +275,11 @@ class DeploymentService:
             self._event(deployment, "WAIT_CALLBACK", "installed; awaiting registration")
             self.db.commit()
             prefix = "" if ssh.username == "root" else "sudo -n "
-            rc, _, _ = ssh.exec(prefix + "systemctl start data-security-toolbox-probe 2>&1")
+            # `restart`, not `start`: install.sh runs with --install-only, so a
+            # probe that is already running (retry or upgrade) would otherwise be
+            # left with the previous code and config in memory and never enrol -
+            # `systemctl start` is a no-op on an active unit.
+            rc, _, _ = ssh.exec(prefix + "systemctl restart data-security-toolbox-probe 2>&1")
             if rc != 0:
                 raise DeploymentError("START_FAILED", "unable to start probe service")
             self.db.refresh(deployment)

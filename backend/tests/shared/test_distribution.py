@@ -20,6 +20,8 @@ PACKAGES = REPO_ROOT / "probe_packages"
 # artifacts that must keep their original contents.
 CURRENT_VERSION = settings.probe_agent_version
 INSTALLER = REPO_ROOT / "probe" / "install.sh"
+UNIT = REPO_ROOT / "probe" / "data-security-toolbox-probe.service"
+LOAD_IMAGES = REPO_ROOT / "offline" / "load-images.sh"
 REQUIREMENTS = REPO_ROOT / "probe" / "requirements.txt"
 DOCKERFILE = REPO_ROOT / "backend" / "Dockerfile"
 COMPOSE = REPO_ROOT / "docker-compose.yml"
@@ -139,3 +141,34 @@ def test_probe_requirements_pin_the_timeout_capable_regex_engine() -> None:
     assert "regex==" in requirements
     # Without it the engine still runs but cannot bound a hostile pattern.
     assert "openpyxl==" in requirements
+
+
+def test_shipped_scripts_use_unix_line_endings() -> None:
+    """A CRLF checkout must never reach a Linux host.
+
+    bash reads `set -euo pipefail` followed by a carriage return as an unknown
+    option and aborts the install at line 2 with
+    "set: pipefail : invalid option name", and systemd misparses the unit. The
+    artifact is also built on Windows workstations (`core.autocrlf=true`), so
+    the assertion follows the tarball, not just the repository.
+    """
+    for path in (INSTALLER, UNIT, LOAD_IMAGES):
+        assert b"\r\n" not in path.read_bytes(), f"{path} has CRLF line endings"
+
+    manifests = _manifests()
+    assert manifests, "no built probe package: run probe_packages/build_packages.py"
+    for manifest_path, manifest in manifests:
+        with tarfile.open(manifest_path.parent / manifest["artifact"]) as archive:
+            for name in ("install.sh", "data-security-toolbox-probe.service"):
+                data = archive.extractfile(name).read()
+                assert b"\r\n" not in data, f"{manifest_path}: {name} has CRLF line endings"
+
+
+def test_shipped_installer_is_executable() -> None:
+    """Windows has no POSIX mode bits, so the artifact has to carry them."""
+    manifests = _manifests()
+    assert manifests, "no built probe package: run probe_packages/build_packages.py"
+    for manifest_path, manifest in manifests:
+        with tarfile.open(manifest_path.parent / manifest["artifact"]) as archive:
+            member = archive.getmember("install.sh")
+        assert member.mode & 0o111, f"{manifest_path}: install.sh is not executable"

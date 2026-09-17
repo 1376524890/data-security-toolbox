@@ -180,11 +180,12 @@ Group=dstprobe
 ExecStart=${PY_BIN} ${PROBE_DIR}/probe.py --config ${CONFIG_DIR}/probe.toml
 Restart=always
 RestartSec=5
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+# Read-only inventory access, including administrator-selected private directories.
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_DAC_READ_SEARCH
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 ReadWritePaths=${SPOOL_DIR} ${RULES_DIR} ${CACHE_DIR} ${CONFIG_DIR}
 PrivateTmp=true
 

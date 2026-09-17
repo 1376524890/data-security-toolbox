@@ -471,11 +471,11 @@ def list_offline_resources(db: Session) -> list[dict[str, Any]]:
     ]
 
 
-def list_local_cves(db: Session, search: str = "", limit: int = 100) -> list[dict[str, Any]]:
+def list_local_cves(db: Session, search: str = "", limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     query = select(LocalCve)
     if search:
         query = query.where(LocalCve.cve_id.ilike(f"%{search}%"))
-    rows = db.scalars(query.order_by(LocalCve.cvss_score.desc()).limit(limit)).all()
+    rows = db.scalars(query.order_by(LocalCve.cvss_score.desc(), LocalCve.cve_id).offset(offset).limit(limit)).all()
     return [
         {
             "cve_id": item.cve_id,
