@@ -19,6 +19,20 @@ export const statusColors: Record<string, string> = {
   imported: '#16a34a',
   REMOVING: '#2563eb',
   REMOVED: '#0d9488',
+  // Deployment state machine (install path). Without these the console falls
+  // back to grey for every stage of a live deployment.
+  CREATED: '#64748b',
+  CONNECTING: '#2563eb',
+  PREFLIGHT: '#2563eb',
+  UPLOADING: '#2563eb',
+  INSTALLING: '#2563eb',
+  STARTING: '#2563eb',
+  WAIT_CALLBACK: '#ea580c',
+  REGISTERED: '#16a34a',
+  FAILED: '#b91c1c',
+  REMOVAL_PARTIAL: '#ea580c',
+  REMOVAL_FAILED: '#b91c1c',
+  ONLINE: '#16a34a',
 }
 
 export const nodeTypeColors: Record<string, string> = {

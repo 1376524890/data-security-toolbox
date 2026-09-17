@@ -11,6 +11,11 @@ const labelMap: Record<string, string> = {
   ready: '就绪', disabled: '已禁用', error: '错误', online: '在线', offline: '离线',
   degraded: '降级', analyzed: '已分析', imported: '已导入', retained_analysis: '保留分析',
   ONLINE: '在线', REMOVING: '卸载中', REMOVED: '已卸载',
+  // Deployment state machine: every stage the console can render has a label,
+  // so a live deployment never shows a raw enum to the operator.
+  CREATED: '已创建', CONNECTING: '连接中', PREFLIGHT: '环境预检', UPLOADING: '上传中',
+  INSTALLING: '安装中', STARTING: '启动中', WAIT_CALLBACK: '等待注册', REGISTERED: '已注册',
+  FAILED: '失败', REMOVAL_PARTIAL: '部分清理', REMOVAL_FAILED: '清理失败',
 }
 const color = computed(() => statusColors[props.value] || '#64748b')
 const label = computed(() => labelMap[props.value] || props.value)
