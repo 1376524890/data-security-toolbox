@@ -1,5 +1,50 @@
 # Changelog
 
+## v2.9.0（探针 3.4.1）
+
+- **探针目录采集权限**：任务在 `/home/kali`、`/root` 等管理员下发目录报 Permission denied。探针 systemd 单元
+  把 `ProtectHome` 由 `true` 改为 `read-only`，并新增仅用于读取与目录遍历的 `CAP_DAC_READ_SEARCH`；
+  探针仍以 `dstprobe` 运行，保持只读系统保护与不跟随符号链接的范围限制。单个目录不可读不再中断其余目录。
+  该权限允许探针读取普通账户原本无权读取的文件，可采集范围仍由管理员下发的采集目录决定。
+- **探针重新入网**：`install.sh` 为升级需要会保留 `probe.identity.json`，而探针原先「本地已有身份就不再注册」，
+  导致平台新部署下发的一次性入网令牌永远不会被消费——删除探针后重新添加会一直停在 90%
+  `service started; awaiting registration`，直到 5 分钟回调超时判 `CALLBACK_TIMEOUT`；探针进程健康，
+  但心跳用已注销的 `probe_id` 收到 401（心跳 401 被静默吞掉）。现在平台推送的
+  `bootstrap_token + deployment_id` 优先于旧身份，探针会重新入网并替换身份；令牌已消费或失效且本地仍有身份时
+  退回本地身份，而不是退出让 systemd 反复重启。实机（Kali 192.168.191.130）确认重启后 1 秒内完成换号，部署转为 ONLINE。
+- **探针服务未重启**：平台用 `--install-only` 装完包就直接 `systemctl start`，而重试/升级时探针服务本来就在运行，
+  `systemctl start` 对已运行的 unit 是空操作，新代码与新配置从未生效（磁盘上是新版，`MainPID` 仍是 3 小时前的老进程，
+  日志继续刷 401）。改用 `systemctl restart`，并在 `tests/deployment/test_registration_flow.py` 断言不再出现 `systemctl start`。
+- **探针包 CRLF**：`install.sh`、systemd 单元与 `offline/load-images.sh` 在本机 Windows 检出
+  （`core.autocrlf=true`）下带 CRLF，远端 bash 在第 2 行即失败：`set: pipefail : invalid option name`。
+  新增 `.gitattributes` 强制 `*.sh`/`*.service` 为 LF；探针包构建统一以 LF 写出文本成员并补齐可执行位
+  （Windows 无 POSIX 权限位，此前包内 `install.sh` 是 0666）；部署侧解包后仍会兜底清理 CR 并校验，因此旧包也仍可安装。
+
+- **网络扫描**：平台与探针默认端口由 1000 降为 200，平台对指定网段逐地址执行扫描，
+  避免存活预探测漏掉仅开放其他端口的主机（此前这类主机会被 `0 hosts up` 直接跳过）；
+  页面去除底层工具名称，继续提供显式端口与执行探针选择。修复网段展开在超大网段下的内存与耗时问题。
+- **检测规则**：新增 Suricata 明文私钥传输基线（`backend/app/integrations/suricata/rules/dst_sensitive.rules`）
+  与 YARA 私钥/云凭据基线（`backend/app/rules/data/sensitive_files.yar`），基线同时进入规则列表和实际检测；
+  YARA 改为按 UTF-8 内容编译，修复 Windows 中文规则路径读取失败。
+- **网络 DLP 原始证据**：命中敏感传输时保存原始二进制，新增
+  `GET /dlp/transfers/{task_id}/{object_id}/content` 返回 SHA256、哈希范围、前 4096 字节的十六进制预览，
+  并支持完整捕获字节下载；片段哈希不再标为完整文件哈希，原始字节单独落盘，列表与告警仍只携带元数据。
+  历史 PCAP 需重新分析才产生字节证据。
+
+- **资产详情 500**：运行日志显示 PostgreSQL 在提取 JSON 证据字段时拒绝 `\u0000`。写入层把 NUL 表示为可见的
+  `\x00`，迁移 `0013_safe_json_evidence` 修复历史 JSON，保留记录及原本的字面转义字符串。修复后
+  `/api/v1/assets/11` 与 `/api/v1/data/assets/242` 均返回 200。
+- **CVE 与前端**：`GET /offline/cves` 支持 `page` / `page_size` 服务端分页并返回总数，不传 `page` 时保持旧的数组响应；
+  前端改为服务端分页、中文分页控件、CVE 中文描述优先、搜索可重置；PCAP 告警证据改为独立弹窗，统一 SVG 图标尺寸。
+- **`.env.example`**：补充 `DEPLOYMENT_BACKEND_URL` 的用途、地址格式与示例——必须是探针可访问的
+  协议 + IP/域名 + 端口，不要填容器名、`localhost` 或 `/api/v1` 后缀；只有自签证书才需要 CA 文件。
+- **版本**：平台升至 2.9.0，探针升至 3.4.1；探针包 `probe_packages/probe-3.4.1`（amd64 / arm64）已重建并校验 SHA256，
+  amd64 `6684b46616124a0cc643c1b8abc613469d8cfae81a8979c2fb3f660ec4e56677`、
+  arm64 `293b7a35e3e71bd0b603c99a018b25695a92e1ab8455013420f52863a2a9f32e`。数据库迁移新增
+  `0013_safe_json_evidence`，升级需执行 `alembic upgrade head`。已安装探针升级到 3.4.1 后才会拿到入网与采集权限修复。
+- 缺陷现象、实机验证过程与安装步骤见 `docs/bugfix-2026-09-16.md`；探针部署卡在 90% 的排查步骤见
+  `docs/部署与运行手册.md` 的 Q7。
+
 ## v2.8.0（探针 3.4.0）
 
 - **统一敏感数据引擎**：`shared/sensitive_detection` 成为平台与探针唯一的检测实现，文件引擎、
