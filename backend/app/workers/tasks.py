@@ -366,13 +366,27 @@ def _worker_capability() -> dict[str, Any]:
         return {"available": True, "version": version}
 
     rule_count = 0
-    rules_dir = _shutil.which("suricata") and settings.integration_dir / "suricata_rules"
-    if rules_dir and rules_dir.is_dir():
-        for rule_file in rules_dir.glob("*.rules"):
-            try:
-                rule_count += rule_file.read_text(encoding="utf-8", errors="replace").count("sid:")
-            except Exception:
-                pass
+    if _shutil.which("suricata"):
+        # Count the rule files Suricata is really started with. ``run_suricata``
+        # loads the shipped rule set (``integrations/suricata/rules``) plus the
+        # resolved offline set; reading only the offline directory reported
+        # "0 rules" while Suricata ran with rules loaded.
+        rule_dirs = [
+            Path(__file__).resolve().parents[1] / "integrations" / "suricata" / "rules",
+            settings.integration_dir / "suricata_rules",
+        ]
+        seen: set[Path] = set()
+        for directory in rule_dirs:
+            if not directory.is_dir():
+                continue
+            for rule_file in sorted(directory.glob("*.rules")):
+                if rule_file in seen:
+                    continue
+                seen.add(rule_file)
+                try:
+                    rule_count += rule_file.read_text(encoding="utf-8", errors="replace").count("sid:")
+                except Exception:
+                    pass
     return {
         "worker_id": f"analysis-{_socket.gethostname()}",
         "heartbeat": datetime.now(UTC).isoformat(),

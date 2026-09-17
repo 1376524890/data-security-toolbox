@@ -41,6 +41,15 @@ export const menuGroups: MenuNode[] = [
     { path: '/engines/wazuh', title: 'Wazuh', icon: 'Cpu' },
     { path: '/engines/osquery', title: 'osquery', icon: 'Cpu' },
     { path: '/engines/openscap', title: 'OpenSCAP', icon: 'Cpu' },
+    // Platform engines that own the rule library and produce the findings the
+    // console reports. Without these entries the menu only reached the
+    // third-party adapters, which are not the engines behind the detections.
+    { path: '/engines/protocol', title: '协议检测引擎', icon: 'Cpu' },
+    { path: '/engines/traffic', title: '流量检测引擎', icon: 'Cpu' },
+    { path: '/engines/data', title: '数据检测引擎', icon: 'Coin' },
+    { path: '/engines/dlp', title: '防泄露检测引擎', icon: 'Lock' },
+    { path: '/engines/compliance', title: '合规检测引擎', icon: 'DocumentChecked' },
+    { path: '/engines/ioc', title: '威胁情报引擎', icon: 'Aim' },
   ]},
   { group: '运维管理', items: [
     { path: '/probes', title: '探针管理', icon: 'Connection' },

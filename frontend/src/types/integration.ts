@@ -11,4 +11,7 @@ export interface IntegrationStatus {
   last_check: string
   status: string
   message: string
+  /** Rule files the adapter reports as loaded (suricata / sigma). */
+  rule_count?: number
+  rule_source?: string
 }

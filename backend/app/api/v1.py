@@ -565,6 +565,22 @@ def _engine_rule_counts() -> dict[str, int]:
     return counts
 
 
+# Internal engine name -> (UI slug, display label). The console routes predate
+# the engine names (``/engines/sigma`` vs ``sigma_log_engine``), so the mapping
+# lives server-side: every view that lists engines or filters findings by
+# engine reads it from ``/engine/registry`` instead of hard-coding a list.
+ENGINE_PRESENTATION: dict[str, tuple[str, str]] = {
+    "asset_engine": ("asset", "资产引擎"),
+    "protocol_engine": ("protocol", "协议引擎"),
+    "traffic_engine": ("traffic", "流量引擎"),
+    "data_engine": ("data", "数据引擎"),
+    "sigma_log_engine": ("sigma", "Sigma 日志引擎"),
+    "compliance_engine": ("compliance", "合规引擎"),
+    "dlp_engine": ("dlp", "数据防泄露引擎"),
+    "threat_intel": ("ioc", "威胁情报引擎"),
+}
+
+
 @router.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     redis_ok = False
@@ -1603,8 +1619,46 @@ def ioc_associations(ioc_id: int, db: Session = Depends(get_db)) -> dict[str, An
 
 
 @router.get("/engine/registry")
-def engine_registry() -> list[dict[str, Any]]:
-    return [engine.metadata() for engine in registry.all()]
+def engine_registry(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """Every detection engine with its real rule inventory and finding count.
+
+    ``rule_count`` is the number of rule files backing the engine and
+    ``detection_count`` the findings it has actually produced, so the UI never
+    has to guess which ``detection_findings.engine`` value an engine writes --
+    the internal engine name and the value stored on a finding are not always
+    the same string (for example the built-in rule interpreter is registered as
+    ``sigma_log_engine``), and the UI routes predate both.
+    """
+    # Count each engine's own rule files so the number always matches the rule
+    # list the console renders for that engine.
+    rule_counts: dict[str, int] = {}
+    for item in _rule_file_entries(db):
+        rule_key = str(item.get("engine") or "")
+        rule_counts[rule_key] = rule_counts.get(rule_key, 0) + 1
+    capability_rules = _merge_capability(_read_worker_capabilities())
+    finding_counts = {
+        str(name): int(total)
+        for name, total in db.execute(
+            select(DetectionFinding.engine, func.count(DetectionFinding.id)).group_by(DetectionFinding.engine)
+        ).all()
+    }
+    items: list[dict[str, Any]] = []
+    for engine in registry.all():
+        entry = dict(engine.metadata())
+        name = str(entry.get("name") or "")
+        slug, label = ENGINE_PRESENTATION.get(name, (name, name))
+        rule_count = rule_counts.get(name)
+        if rule_count is None and name in {"zeek", "suricata"}:
+            rule_count = int((capability_rules.get(name) or {}).get("rule_count") or 0)
+        entry.update({
+            "slug": slug,
+            "label": label,
+            "rule_count": int(rule_count or 0),
+            "detection_engine": name,
+            "detection_count": finding_counts.get(name, 0),
+        })
+        items.append(entry)
+    return items
 
 
 @router.get("/integrations")
@@ -2213,49 +2267,66 @@ def incident_trend(range: str = Query("7d"), db: Session = Depends(get_db)) -> d
 
 
 @router.get("/rules")
-def list_rules(rule_type: str | None = Query(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+def list_rules(rule_type: str | None = Query(None), engine: str | None = Query(None), db: Session = Depends(get_db)) -> dict[str, Any]:
     """List Sigma / Suricata / YARA rules with content."""
+    items = _rule_file_entries(db)
+    if rule_type:
+        items = [item for item in items if item["type"] == rule_type]
+    if engine:
+        items = [item for item in items if item["engine"] == engine]
+    return {"items": items, "total": len(items)}
+
+
+def _rule_file_entries(db: Session) -> list[dict[str, Any]]:
+    """Every rule file in the platform rule library, tagged with its engine.
+
+    The engine tag is what keeps the console truthful: a file is listed once,
+    under the engine that actually loads it, instead of being grouped by file
+    extension. ``/rules`` and the per-engine rule counter share this source so
+    a rule list and its count can never disagree.
+    """
     base = Path(__file__).resolve().parents[1] / "rules"
     items: list[dict[str, Any]] = []
 
-    def _add(path: Path, rtype: str) -> None:
+    def _add(path: Path, rtype: str, engine_name: str) -> None:
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             content = ""
-        items.append({"type": rtype, "name": path.name, "path": str(path), "content": content, "size": path.stat().st_size})
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        items.append({"type": rtype, "engine": engine_name, "name": path.name, "path": str(path), "content": content, "size": size})
 
     for path in sorted((base / "logs").glob("*.yaml")):
-        _add(path, "sigma")
+        _add(path, "sigma", "sigma_log_engine")
     for path in sorted((base / "data").glob("*.yar")):
-        _add(path, "yara")
+        _add(path, "yara", "data_engine")
     for path in sorted((settings.integration_dir / 'yara_rules').glob('*.yar')):
-        _add(path, 'yara')
+        _add(path, 'yara', "data_engine")
     for path in sorted((base / 'logs').glob('*.yml')):
-        _add(path, 'sigma')
+        _add(path, 'sigma', "sigma_log_engine")
     for path in sorted((base / "data").glob("*.yaml")):
-        _add(path, "sigma")
+        _add(path, "sigma", "data_engine")
     for path in sorted((base / "network").glob("*.yaml")):
-        _add(path, "sigma")
+        _add(path, "sigma", "traffic_engine")
     for path in sorted((base / "compliance").glob("*.yaml")):
-        _add(path, "sigma")
+        _add(path, "sigma", "compliance_engine")
     for path in sorted((Path(__file__).resolve().parents[1] / "integrations" / "suricata" / "rules").rglob("*.rules")):
-        _add(path, "suricata")
+        _add(path, "suricata", "suricata")
     for path in sorted((settings.integration_dir / "suricata_rules").glob("*.rules")):
-        _add(path, "suricata")
+        _add(path, "suricata", "suricata")
     # Offline-imported Suricata rules
     resources = db.scalars(select(OfflineResource).where(OfflineResource.resource_type == "suricata_rules")).all()
     for resource in resources:
         path = Path(resource.storage_path)
         if path.exists() and path.is_file():
-            _add(path, "suricata")
+            _add(path, "suricata", "suricata")
         elif path.exists() and path.is_dir():
             for rule_file in sorted(path.glob("*.rules")):
-                _add(rule_file, "suricata")
-    if rule_type:
-        items = [item for item in items if item["type"] == rule_type]
-    items = list({item['path']: item for item in items}.values())
-    return {"items": items, "total": len(items)}
+                _add(rule_file, "suricata", "suricata")
+    return list({item['path']: item for item in items}.values())
 
 
 @router.get("/probes/{probe_id}/metrics")

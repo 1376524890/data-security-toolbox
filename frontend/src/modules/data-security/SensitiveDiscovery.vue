@@ -39,7 +39,7 @@ async function load(): Promise<void> {
   try {
     const [assetResult, findingResult, riskResult, sensitiveResult] = await Promise.all([
       listDataAssets({ page: 1, page_size: 200 }),
-      listDetections({ engine: 'data', page: 1, page_size: 100 }),
+      listDetections({ engine: 'data_engine', page: 1, page_size: 100 }),
       getRiskSummary(),
       getSensitiveFindings(),
     ])

@@ -17,7 +17,7 @@ class ComplianceEngine(DetectionEngine):
         context.data["public_database_count"] = len(public_databases)
         context.data["weak_protocol_count"] = len(weak_protocols)
         rule_dir = Path(__file__).resolve().parents[2] / "rules" / "compliance"
-        findings = interpret_rules(context, rule_dir)
+        findings = interpret_rules(context, rule_dir, self.name)
         if weak_protocols:
             findings.append(DetectionResult(
                 engine=self.name,

@@ -115,12 +115,12 @@ def _eval_condition(condition: str, context: DetectionContext) -> bool:
     return _compare(_resolve(context, name), op, right)
 
 
-def interpret_rules(context: DetectionContext, rule_dir: Path) -> list[DetectionResult]:
+def interpret_rules(context: DetectionContext, rule_dir: Path, engine: str) -> list[DetectionResult]:
     results: list[DetectionResult] = []
     for rule in load_rules(rule_dir):
         if _eval_condition(rule.condition, context):
             results.append(DetectionResult(
-                engine="rules",
+                engine=engine,
                 rule_id=rule.rule_id,
                 severity=rule.severity,
                 confidence=rule.confidence,

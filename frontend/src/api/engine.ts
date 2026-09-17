@@ -5,6 +5,16 @@ export interface EngineInfo {
   version: string
   description?: string
   capabilities?: string[]
+  /** Console route segment for this engine (``sigma`` for ``sigma_log_engine``). */
+  slug?: string
+  /** Human readable engine name. */
+  label?: string
+  /** Rule files in the platform library that this engine loads. */
+  rule_count?: number
+  /** The value this engine writes to ``detection_findings.engine``. */
+  detection_engine?: string
+  /** Findings this engine has already produced. */
+  detection_count?: number
 }
 
 export function getEngineRegistry(): Promise<EngineInfo[]> {

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listDetections, getDetection, type DetectionQuery } from '../../../api/detections'
-import { runPipeline, type PipelineRunResult } from '../../../api/engine'
+import { getEngineRegistry, runPipeline, type PipelineRunResult } from '../../../api/engine'
 import type { DetectionFinding, FindingDetail } from '../../../types/finding'
 import StateBox from '../../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../../components/common/FilterBar.vue'
@@ -21,11 +21,24 @@ const detail = ref<FindingDetail | null>(null)
 const drawer = ref(false)
 const filters = reactive<DetectionQuery>({ search: '', severity: '', engine: '', page: 1, page_size: 50 })
 
-const filterFields: FilterField[] = [
+// The engine filter must offer the names findings are actually stored under.
+// The previous hard-coded list (traffic/protocol/zeek/...) never matched
+// ``detection_findings.engine``, so filtering by engine always returned nothing.
+const engineOptions = ref<Array<{ label: string; value: string }>>([])
+const filterFields = computed<FilterField[]>(() => [
   { key: 'search', label: '搜索 Rule/Engine', placeholder: '搜索 Rule / Engine / 建议', width: '240px' },
   { key: 'severity', label: '等级', type: 'select', options: ['Critical', 'High', 'Medium', 'Low'].map((v) => ({ label: v, value: v })), width: '110px' },
-  { key: 'engine', label: '引擎', type: 'select', options: ['traffic', 'protocol', 'zeek', 'suricata', 'data', 'sigma', 'ioc', 'compliance'].map((v) => ({ label: v, value: v })), width: '140px' },
-]
+  { key: 'engine', label: '引擎', type: 'select', options: engineOptions.value, width: '170px' },
+])
+
+async function loadEngines(): Promise<void> {
+  try {
+    const engines = await getEngineRegistry()
+    engineOptions.value = engines.map((e) => ({ label: `${e.label || e.name} (${e.detection_count ?? 0})`, value: e.detection_engine || e.name }))
+  } catch {
+    engineOptions.value = []
+  }
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -79,7 +92,10 @@ async function runPipelineNow(): Promise<void> {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await loadEngines()
+  await load()
+})
 </script>
 
 <template>

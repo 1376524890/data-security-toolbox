@@ -17,7 +17,7 @@ class TrafficEngine(DetectionEngine):
 
     def analyze(self, context: DetectionContext) -> list[DetectionResult]:
         rule_dir = Path(__file__).resolve().parents[2] / "rules" / "network"
-        findings = interpret_rules(context, rule_dir)
+        findings = interpret_rules(context, rule_dir, self.name)
         probe = str(context.data.get("probe_id") or context.data.get("probe_name") or "global")
         window = int(context.data.get("port_scan_window_seconds") or settings.port_scan_window_seconds)
         threshold = int(context.data.get("port_scan_ports_threshold") or settings.port_scan_ports_threshold)
