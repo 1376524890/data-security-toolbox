@@ -29,13 +29,24 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
+# `uninstall.sh` removes the dstprobe account and a bundled capture tool only
+# when this installer is what created them, so record both decisions on disk.
+CREATED_USER=0
 if ! id dstprobe >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin dstprobe
+  CREATED_USER=1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "${APP_DIR}" "${PROBE_DIR}" "${SHARED_DIR}" "${CONFIG_DIR}" "${SPOOL_DIR}" "${RULES_DIR}" "${CACHE_DIR}"
+if [[ "${CREATED_USER}" -eq 1 ]]; then
+  : > "${APP_DIR}/.created-user"
+fi
 cp "${SCRIPT_DIR}/probe.py" "${SCRIPT_DIR}/scanner.py" "${SCRIPT_DIR}/data_assets.py" "${SCRIPT_DIR}/ruleset_client.py" "${SCRIPT_DIR}/requirements.txt" "${PROBE_DIR}/"
+if [[ -f "${SCRIPT_DIR}/uninstall.sh" ]]; then
+  cp "${SCRIPT_DIR}/uninstall.sh" "${APP_DIR}/uninstall.sh"
+  chmod 0755 "${APP_DIR}/uninstall.sh"
+fi
 
 # The detection engine is shared with the platform, so it ships as its own
 # package next to `probe/`: probe.py resolves `shared.sensitive_detection` from
@@ -70,9 +81,11 @@ elif command -v tcpdump >/dev/null 2>&1; then
   CAPTURE_TOOL="tcpdump"
 elif [[ -x "${SCRIPT_DIR}/bin/dumpcap" ]]; then
   install -m 0755 "${SCRIPT_DIR}/bin/dumpcap" /usr/local/bin/dumpcap
+  echo /usr/local/bin/dumpcap > "${APP_DIR}/.installed-capture-tool"
   CAPTURE_TOOL="dumpcap"
 elif [[ -x "${SCRIPT_DIR}/bin/tcpdump" ]]; then
   install -m 0755 "${SCRIPT_DIR}/bin/tcpdump" /usr/local/bin/tcpdump
+  echo /usr/local/bin/tcpdump > "${APP_DIR}/.installed-capture-tool"
   CAPTURE_TOOL="tcpdump"
 else
   if command -v apt-get >/dev/null 2>&1; then

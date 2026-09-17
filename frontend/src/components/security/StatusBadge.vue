@@ -10,6 +10,7 @@ const labelMap: Record<string, string> = {
   running: '运行中', pending: '等待中', success: '成功', failed: '失败',
   ready: '就绪', disabled: '已禁用', error: '错误', online: '在线', offline: '离线',
   degraded: '降级', analyzed: '已分析', imported: '已导入', retained_analysis: '保留分析',
+  ONLINE: '在线', REMOVING: '卸载中', REMOVED: '已卸载',
 }
 const color = computed(() => statusColors[props.value] || '#64748b')
 const label = computed(() => labelMap[props.value] || props.value)

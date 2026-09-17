@@ -127,6 +127,7 @@ sudo systemctl restart data-security-toolbox-probe
 **探针行为要点**：
 
 - 首次注册返回 `probe_id + token`，写入 `/etc/data-security-toolbox/probe.identity.json`（0600），**重启不轮换**；但平台部署下发的一次性入网令牌（`bootstrap_token` + `deployment_id`）优先于旧身份，因此「删除探针后重新添加」会重新入网并替换身份，而不是继续使用已注销的 `probe_id`。
+- 「探针管理 → 删除」默认**同时卸载主机探针**：平台先通过 SSH 删除主机上的服务、systemd 单元与全部生产文件（采集分段、规则缓存、虚拟环境、配置与身份文件），成功后才删除平台记录；取消勾选则只删除记录，主机文件保留、探针会再次注册。详见 [probe-removal.md](probe-removal.md)。
 - 抓包分片原子落盘 spool，认证上传 `/api/v1/pcaps/upload`，失败指数退避；spool 满则降级保留证据。
 - 心跳上报 CPU / 内存 / 捕获速率 / 上传状态；`asset_loop` 上报开放端口 + banner；`file_loop` 上传目标文件内容触发敏感检测。
 - 以 root 手动运行时，dumpcap 会降权，spool 目录需可写（`chmod 777` 或由运行用户属主）。生产用 `dstprobe` + `CAP_NET_RAW` 时由属主解决。

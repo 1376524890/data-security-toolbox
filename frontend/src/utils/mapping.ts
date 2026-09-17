@@ -17,6 +17,8 @@ export const statusColors: Record<string, string> = {
   error: '#b91c1c',
   analyzed: '#16a34a',
   imported: '#16a34a',
+  REMOVING: '#2563eb',
+  REMOVED: '#0d9488',
 }
 
 export const nodeTypeColors: Record<string, string> = {

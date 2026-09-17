@@ -45,12 +45,15 @@ class Settings(BaseSettings):
     deployment_known_hosts: str = ""
     deployment_ssh_timeout: int = 20
     deployment_callback_timeout_seconds: int = 300
+    # Removing a probe deletes its captured spool, which can be gigabytes on a
+    # long-running sensor, so removal gets a wider window than the install.
+    deployment_removal_timeout_seconds: int = 900
     deployment_worker_queue: str = "deployment"
     deployment_credential_ttl_seconds: int = 3600
     deployment_allow_password: bool = True
     deployment_default_profile: str = "standard"
     deployment_verify_host_key: bool = True
-    probe_agent_version: str = "3.4.1"
+    probe_agent_version: str = "3.5.0"
     pcap_index_limit: int = 10000
     pcap_retention_days: int = 7
     pcap_storage_max_gb: int = 100

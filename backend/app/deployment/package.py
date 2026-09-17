@@ -76,6 +76,25 @@ def find_package(arch: str, version: str | None = None) -> dict[str, Any]:
     }
 
 
+def find_uninstaller(version: str | None = None) -> Path:
+    """Return the arch-independent uninstaller shipped with the probe package.
+
+    ``uninstall.sh`` is plain bash and byte-identical in every architecture
+    package, so it is read from whichever one is present. It is uploaded and run
+    rather than re-implemented platform-side: the list of paths a probe creates
+    has to live next to the installer that creates them, or the two drift and a
+    removal silently leaves files behind.
+    """
+    version = version or settings.probe_agent_version
+    version_dir = settings.deployment_package_dir / f"probe-{version}"
+    if version_dir.is_dir():
+        for arch_dir in sorted(version_dir.iterdir()):
+            candidate = arch_dir / "uninstall.sh"
+            if candidate.is_file():
+                return candidate
+    raise PackageError(f"probe package {version} does not ship uninstall.sh")
+
+
 def list_packages() -> list[dict[str, Any]]:
     root = settings.deployment_package_dir
     if not root.is_dir():

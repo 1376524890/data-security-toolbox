@@ -16,10 +16,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PROBE = ROOT / "probe"
 OUT = ROOT / "probe_packages"
-VERSION = "3.4.1"
+VERSION = "3.5.0"
 ARCHS = ["amd64", "arm64"]
 FILES = [
     "install.sh",
+    "uninstall.sh",
     "probe.py",
     "scanner.py",
     "data_assets.py",

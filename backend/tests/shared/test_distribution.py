@@ -20,6 +20,7 @@ PACKAGES = REPO_ROOT / "probe_packages"
 # artifacts that must keep their original contents.
 CURRENT_VERSION = settings.probe_agent_version
 INSTALLER = REPO_ROOT / "probe" / "install.sh"
+UNINSTALLER = REPO_ROOT / "probe" / "uninstall.sh"
 UNIT = REPO_ROOT / "probe" / "data-security-toolbox-probe.service"
 LOAD_IMAGES = REPO_ROOT / "offline" / "load-images.sh"
 REQUIREMENTS = REPO_ROOT / "probe" / "requirements.txt"
@@ -152,14 +153,14 @@ def test_shipped_scripts_use_unix_line_endings() -> None:
     artifact is also built on Windows workstations (`core.autocrlf=true`), so
     the assertion follows the tarball, not just the repository.
     """
-    for path in (INSTALLER, UNIT, LOAD_IMAGES):
+    for path in (INSTALLER, UNINSTALLER, UNIT, LOAD_IMAGES):
         assert b"\r\n" not in path.read_bytes(), f"{path} has CRLF line endings"
 
     manifests = _manifests()
     assert manifests, "no built probe package: run probe_packages/build_packages.py"
     for manifest_path, manifest in manifests:
         with tarfile.open(manifest_path.parent / manifest["artifact"]) as archive:
-            for name in ("install.sh", "data-security-toolbox-probe.service"):
+            for name in ("install.sh", "uninstall.sh", "data-security-toolbox-probe.service"):
                 data = archive.extractfile(name).read()
                 assert b"\r\n" not in data, f"{manifest_path}: {name} has CRLF line endings"
 
@@ -172,3 +173,29 @@ def test_shipped_installer_is_executable() -> None:
         with tarfile.open(manifest_path.parent / manifest["artifact"]) as archive:
             member = archive.getmember("install.sh")
         assert member.mode & 0o111, f"{manifest_path}: install.sh is not executable"
+
+
+def test_package_ships_the_uninstaller_next_to_the_installer() -> None:
+    """A removal has to run the list of paths that the installer wrote.
+
+    Re-implementing the deletion on the platform side is how the two lists drift
+    and a removal starts leaving production files behind, so the uninstaller
+    ships in the artifact, is executable, and is copied onto the host by
+    `install.sh` (so it stays runnable even without the platform).
+    """
+    manifests = _manifests()
+    assert manifests, "no built probe package: run probe_packages/build_packages.py"
+    for manifest_path, manifest in manifests:
+        assert "uninstall.sh" in manifest["files"], manifest_path
+        with tarfile.open(manifest_path.parent / manifest["artifact"]) as archive:
+            member = archive.getmember("uninstall.sh")
+            script = archive.extractfile(member).read().decode()
+        assert member.mode & 0o111, f"{manifest_path}: uninstall.sh is not executable"
+        # The decisions the removal makes about optional artifacts are taken
+        # from install.sh's marker files, so both halves have to agree on them.
+        for marker in (".created-user", ".installed-capture-tool"):
+            assert marker in script, f"{manifest_path}: uninstall.sh ignores {marker}"
+    installer = INSTALLER.read_text(encoding="utf-8")
+    assert '"${SCRIPT_DIR}/uninstall.sh" "${APP_DIR}/uninstall.sh"' in installer
+    assert '"${APP_DIR}/.created-user"' in installer
+    assert '"${APP_DIR}/.installed-capture-tool"' in installer

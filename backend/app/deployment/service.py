@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,19 +15,44 @@ from app.deployment.credential import decrypt_credential
 from app.deployment.enrollment import create_enrollment
 from app.deployment.package import PackageError, find_package
 from app.deployment.preflight import run_preflight
+from app.deployment.record import DeploymentError, DeploymentRecord, _now
 from app.deployment.ssh_client import SshClient, SshError
-from app.models import ProbeDeployment, ProbeDeploymentCredential, ProbeDeploymentEvent
+from app.models import ProbeDeployment, ProbeDeploymentCredential
 
 
-class DeploymentError(Exception):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-        self.message = message
+def open_ssh(deployment: ProbeDeployment, verify_host_key: bool | None = None) -> SshClient:
+    """Decrypt the row's credential and return a connected SSH client.
 
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+    Shared by deployment and removal: both authenticate with the same
+    short-lived, AES-GCM encrypted secret and both honour the platform's
+    host-key policy.
+    """
+    if not deployment.credential:
+        raise DeploymentError("CREDENTIAL_MISSING", "deployment credential not found")
+    credential = deployment.credential
+    secret = decrypt_credential(
+        deployment.id,
+        deployment.auth_type,
+        credential.key_id,
+        credential.nonce,
+        credential.encrypted_secret,
+    )
+    key_passphrase = None
+    if deployment.auth_type == "private_key" and secret.startswith("{"):
+        key_data = json.loads(secret)
+        secret = key_data["private_key"]
+        key_passphrase = key_data.get("key_passphrase")
+    ssh = SshClient(
+        host=deployment.host,
+        port=deployment.port,
+        username=deployment.username,
+        password=secret if deployment.auth_type == "password" else None,
+        private_key=secret if deployment.auth_type == "private_key" else None,
+        key_passphrase=key_passphrase,
+        verify_host_key=settings.deployment_verify_host_key if verify_host_key is None else verify_host_key,
+    )
+    ssh.connect()
+    return ssh
 
 
 def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file: str | None, interface: str = "any") -> str:
@@ -106,56 +131,11 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
     )
 
 
-class DeploymentService:
+class DeploymentService(DeploymentRecord):
     def __init__(self, db: Session, deployment_id: int, verify_host_key: bool | None = None):
         self.db = db
         self.deployment_id = deployment_id
         self.verify_host_key = settings.deployment_verify_host_key if verify_host_key is None else verify_host_key
-
-    def _load(self) -> ProbeDeployment:
-        deployment = self.db.get(ProbeDeployment, self.deployment_id)
-        if not deployment:
-            raise DeploymentError("NOT_FOUND", "deployment not found")
-        return deployment
-
-    def _event(self, deployment: ProbeDeployment, stage: str, message: str) -> None:
-        seq = (len(deployment.events) or 0) + 1
-        self.db.add(ProbeDeploymentEvent(deployment_id=deployment.id, seq=seq, stage=stage, message=message))
-
-    def _advance(self, deployment: ProbeDeployment, stage: str, progress: int, message: str) -> None:
-        deployment.status = stage
-        deployment.current_stage = stage
-        deployment.progress = progress
-        self._event(deployment, stage, message)
-        self.db.commit()
-
-    def _fail(self, deployment: ProbeDeployment, code: str, message: str) -> None:
-        deployment.status = "FAILED"
-        deployment.error_code = code
-        deployment.error_message = message[:2000]
-        deployment.progress = 100
-        self._event(deployment, "FAILED", message)
-        self.db.commit()
-        self._destroy_credential(deployment)
-
-    def _destroy_credential(self, deployment: ProbeDeployment) -> None:
-        if deployment.credential_destroyed_at is not None:
-            return
-        if deployment.credential:
-            self.db.delete(deployment.credential)
-        deployment.credential_destroyed_at = _now()
-        self.db.commit()
-
-    def _lease(self, deployment: ProbeDeployment) -> None:
-        deployment.lease_expires_at = _now() + timedelta(minutes=30)
-        deployment.version = (deployment.version or 0) + 1
-        self.db.commit()
-
-    def _remote_temp_dir(self, ssh: SshClient) -> str:
-        rc, out, _ = ssh.exec("mktemp -d /tmp/dstprobe-deploy-XXXXXX 2>/dev/null")
-        if rc != 0 or not out.strip():
-            raise DeploymentError("INSTALL_FAILED", "unable to create remote temp dir")
-        return out.strip().splitlines()[-1]
 
     def _upload_package(self, ssh: SshClient, pkg: dict[str, Any], remote_dir: str) -> None:
         artifact = pkg["artifact"]
@@ -213,6 +193,10 @@ class DeploymentService:
 
     def run(self) -> None:
         deployment = self._load()
+        if deployment.action != "install":
+            # Removal rows are driven by RemovalService; never let the installer
+            # upload and start a probe against a row that asked to remove one.
+            return
         if deployment.status in {"ONLINE", "WAIT_CALLBACK", "REGISTERED", "FAILED", "CANCELLED"}:
             return
         if deployment.status == "CREATED":
@@ -222,31 +206,7 @@ class DeploymentService:
         remote_dir: str | None = None
         try:
             self._lease(deployment)
-            if not deployment.credential:
-                raise DeploymentError("CREDENTIAL_MISSING", "deployment credential not found")
-            credential = deployment.credential
-            secret = decrypt_credential(
-                deployment.id,
-                deployment.auth_type,
-                credential.key_id,
-                credential.nonce,
-                credential.encrypted_secret,
-            )
-            key_passphrase = None
-            if deployment.auth_type == "private_key" and secret.startswith("{"):
-                key_data = json.loads(secret)
-                secret = key_data["private_key"]
-                key_passphrase = key_data.get("key_passphrase")
-            ssh = SshClient(
-                host=deployment.host,
-                port=deployment.port,
-                username=deployment.username,
-                password=secret if deployment.auth_type == "password" else None,
-                private_key=secret if deployment.auth_type == "private_key" else None,
-                key_passphrase=key_passphrase,
-                verify_host_key=self.verify_host_key,
-            )
-            ssh.connect()
+            ssh = open_ssh(deployment, self.verify_host_key)
             self._advance(deployment, "PREFLIGHT", 20, "connected; running preflight")
             preflight = run_preflight(ssh, deployment.profile, backend_url=deployment.backend_url)
             deployment.preflight_result = preflight

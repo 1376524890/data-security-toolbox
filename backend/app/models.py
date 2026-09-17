@@ -630,11 +630,20 @@ class LocalCve(TimestampMixin, Base):
 
 
 class ProbeDeployment(TimestampMixin, Base):
-    """A server-initiated push deployment of a Probe to a target host."""
+    """A server-initiated Probe deployment or removal on a target host.
+
+    ``action`` is ``install`` for the push deployment described by the original
+    design and ``uninstall`` for a removal: the same SSH transport, credential
+    handling, event log and status machine are reused, but the remote step is
+    ``uninstall.sh`` instead of ``install.sh``. Removal options live in
+    ``removal_options`` so a host can be stripped with or without its captured
+    spool and its system account.
+    """
 
     __tablename__ = "probe_deployments"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128), index=True)
+    action: Mapped[str] = mapped_column(String(16), default="install", index=True)
     host: Mapped[str] = mapped_column(String(255), index=True)
     port: Mapped[int] = mapped_column(Integer, default=22)
     username: Mapped[str] = mapped_column(String(128), default="root")
@@ -661,6 +670,7 @@ class ProbeDeployment(TimestampMixin, Base):
     preflight_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     data_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    removal_options: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     credential: Mapped["ProbeDeploymentCredential | None"] = relationship(back_populates="deployment", uselist=False, cascade="all, delete-orphan")
     enrollment: Mapped["ProbeEnrollment | None"] = relationship(back_populates="deployment", uselist=False, cascade="all, delete-orphan")
     events: Mapped[list["ProbeDeploymentEvent"]] = relationship(back_populates="deployment", cascade="all, delete-orphan", order_by="ProbeDeploymentEvent.seq")

@@ -1,8 +1,7 @@
-"""Admin-only Probe deployment APIs (preflight, create, history, retry)."""
+"""Admin-only Probe deployment APIs (preflight, create, removal, history, retry)."""
 
 from __future__ import annotations
 
-import threading
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,15 +13,21 @@ from app.api.pagination import page_response, paginate
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import require_active_admin
-from app.deployment.credential import encrypt_credential
 from app.deployment.package import list_packages
 from app.deployment.preflight import run_preflight
+from app.deployment.record import ACTIVE_STATUSES, DeploymentError, store_credential
+from app.deployment.removal import create_removal_deployment
 from app.deployment.ssh_client import SshClient, SshError
-from app.models import ProbeDeployment, ProbeDeploymentCredential, ProbeDeploymentEvent, User
-from app.schemas import ProbeDeploymentCreate, ProbeDeploymentEventOut, ProbeDeploymentOut, ProbeDeploymentPreflightRequest
+from app.models import Probe, ProbeDeployment, ProbeDeploymentEvent, User
+from app.schemas import (
+    ProbeDeploymentCreate,
+    ProbeDeploymentEventOut,
+    ProbeDeploymentOut,
+    ProbeDeploymentPreflightRequest,
+    ProbeRemovalCreate,
+)
 
 router = APIRouter(prefix="/api/v1/probe-deployments", tags=["probe-deployments"])
-
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -36,6 +41,7 @@ def _serialize(deployment: ProbeDeployment) -> dict[str, Any]:
     return {
         "id": deployment.id,
         "name": deployment.name,
+        "action": deployment.action,
         "host": deployment.host,
         "port": deployment.port,
         "username": deployment.username,
@@ -56,6 +62,7 @@ def _serialize(deployment: ProbeDeployment) -> dict[str, Any]:
         "first_heartbeat_at": deployment.first_heartbeat_at,
         "preflight_result": deployment.preflight_result,
         "data_config": deployment.data_config or {},
+        "removal_options": deployment.removal_options or {},
         "result": deployment.result,
         "created_at": deployment.created_at,
         "updated_at": deployment.updated_at,
@@ -63,12 +70,9 @@ def _serialize(deployment: ProbeDeployment) -> dict[str, Any]:
 
 
 def _dispatch(deployment_id: int) -> None:
-    from app.workers.deployment_tasks import run_probe_deployment_task
+    from app.workers.deployment_tasks import dispatch_probe_deployment
 
-    try:
-        run_probe_deployment_task.delay(deployment_id)
-    except Exception:
-        threading.Thread(target=run_probe_deployment_task.run, args=(deployment_id,), daemon=True).start()
+    dispatch_probe_deployment(deployment_id)
 
 
 @router.get("/packages", response_model=None)
@@ -113,8 +117,12 @@ def create_deployment(payload: ProbeDeploymentCreate, request: Request, db: Sess
     existing = db.scalar(select(ProbeDeployment).where(ProbeDeployment.idempotency_key == payload.idempotency_key))
     if existing:
         return _serialize(existing)
-    active_statuses = ["CREATED", "CONNECTING", "PREFLIGHT", "UPLOADING", "INSTALLING", "STARTING", "WAIT_CALLBACK", "REGISTERED"]
-    active = db.scalar(select(ProbeDeployment).where(ProbeDeployment.host == payload.host, ProbeDeployment.status.in_(active_statuses)))
+    active = db.scalar(
+        select(ProbeDeployment).where(
+            ProbeDeployment.host == payload.host,
+            ProbeDeployment.status.in_(ACTIVE_STATUSES),
+        )
+    )
     if active:
         raise HTTPException(409, "host already has an active deployment")
     deployment = ProbeDeployment(
@@ -139,25 +147,80 @@ def create_deployment(payload: ProbeDeploymentCreate, request: Request, db: Sess
     )
     db.add(deployment)
     db.flush()
-    secret = payload.password or payload.private_key or ""
-    if payload.auth_type == "private_key" and payload.key_passphrase:
-        import json
-        secret = json.dumps({"private_key": payload.private_key, "key_passphrase": payload.key_passphrase})
-    ciphertext, nonce, key_id, expires_at = encrypt_credential(
-        deployment.id,
-        deployment.auth_type,
-        secret,
-        settings.deployment_credential_ttl_seconds,
+    store_credential(
+        db,
+        deployment,
+        auth_type=payload.auth_type,
+        password=payload.password,
+        private_key=payload.private_key,
+        key_passphrase=payload.key_passphrase,
     )
-    db.add(
-        ProbeDeploymentCredential(
-            deployment_id=deployment.id,
-            encrypted_secret=ciphertext,
-            nonce=nonce,
-            key_id=key_id,
-            expires_at=expires_at,
+    db.commit()
+    _dispatch(deployment.id)
+    return _serialize(deployment)
+
+
+@router.delete("/{deployment_id}", response_model=None)
+def delete_deployment(deployment_id: int, db: Session = Depends(get_db), user: User = Depends(require_active_admin)) -> dict[str, str]:
+    """Drop a finished deployment row from the history.
+
+    History cleanup only: it never touches the target host. Taking the probe off
+    a host is ``POST /removal``, which is a separate and auditable action, and
+    the row it leaves behind is kept so the console can still say what was
+    deleted there.
+    """
+    deployment = db.get(ProbeDeployment, deployment_id)
+    if not deployment:
+        raise HTTPException(404, "deployment not found")
+    if deployment.status in ACTIVE_STATUSES:
+        raise HTTPException(409, "deployment is still running")
+    db.delete(deployment)
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/removal", status_code=202, response_model=None)
+def create_removal(payload: ProbeRemovalCreate, db: Session = Depends(get_db), user: User = Depends(require_active_admin)) -> dict[str, Any]:
+    """Remove a probe from a target host, and record what was deleted there.
+
+    The row is an ordinary deployment with ``action='uninstall'``, so the
+    console gets the same live progress, event log and audit trail it gets for
+    an install; only the remote step differs. Credentials are never reused from
+    a previous run - the worker destroys them when that run ends - so the
+    operator supplies them again, which is what makes a retry safe.
+    """
+    if payload.auth_type == "password" and not settings.deployment_allow_password:
+        raise HTTPException(400, "password authentication is disabled")
+    if not settings.deployment_secret_key:
+        raise HTTPException(503, "deployment encryption key not configured")
+    existing = db.scalar(select(ProbeDeployment).where(ProbeDeployment.idempotency_key == payload.idempotency_key))
+    if existing:
+        return _serialize(existing)
+    if payload.probe_id is not None and db.get(Probe, payload.probe_id) is None:
+        raise HTTPException(404, "probe not found")
+    try:
+        deployment = create_removal_deployment(
+            db,
+            host=payload.host,
+            port=payload.port,
+            username=payload.username,
+            auth_type=payload.auth_type,
+            password=payload.password,
+            private_key=payload.private_key,
+            key_passphrase=payload.key_passphrase,
+            name=payload.name,
+            idempotency_key=payload.idempotency_key,
+            created_by=user.username,
+            probe_id=payload.probe_id,
+            options={
+                "keep_data": payload.keep_data,
+                "keep_user": payload.keep_user,
+                "remove_user": payload.remove_user,
+                "delete_record": payload.delete_record,
+            },
         )
-    )
+    except DeploymentError as exc:
+        raise HTTPException(409, exc.message) from exc
     db.commit()
     _dispatch(deployment.id)
     return _serialize(deployment)
@@ -215,6 +278,10 @@ def retry_deployment(payload: ProbeDeploymentCreate, deployment_id: int, db: Ses
     deployment = db.get(ProbeDeployment, deployment_id)
     if not deployment:
         raise HTTPException(404, "deployment not found")
+    # A removal is re-run by posting a new removal request, because the
+    # credential that would be needed is destroyed when the first run ends.
+    if deployment.action != "install":
+        raise HTTPException(409, "removal rows cannot be retried as a deployment")
     if deployment.status not in {"FAILED", "CANCELLED"}:
         raise HTTPException(409, "only failed deployments can be retried")
     if payload.host != deployment.host:
@@ -226,31 +293,17 @@ def retry_deployment(payload: ProbeDeploymentCreate, deployment_id: int, db: Ses
     active = db.scalar(select(ProbeDeployment).where(
         ProbeDeployment.host == deployment.host,
         ProbeDeployment.id != deployment.id,
-        ProbeDeployment.status.notin_(["FAILED", "CANCELLED", "ONLINE"]),
+        ProbeDeployment.status.notin_(["FAILED", "CANCELLED", "ONLINE", "REMOVED"]),
     ))
     if active:
         raise HTTPException(409, "host already has an active deployment")
-    if deployment.credential:
-        db.delete(deployment.credential)
-        db.flush()
-    secret = payload.password or payload.private_key or ""
-    if payload.auth_type == "private_key" and payload.key_passphrase:
-        import json
-        secret = json.dumps({"private_key": payload.private_key, "key_passphrase": payload.key_passphrase})
-    ciphertext, nonce, key_id, expires_at = encrypt_credential(
-        deployment.id,
-        payload.auth_type,
-        secret,
-        settings.deployment_credential_ttl_seconds,
-    )
-    db.add(
-        ProbeDeploymentCredential(
-            deployment_id=deployment.id,
-            encrypted_secret=ciphertext,
-            nonce=nonce,
-            key_id=key_id,
-            expires_at=expires_at,
-        )
+    store_credential(
+        db,
+        deployment,
+        auth_type=payload.auth_type,
+        password=payload.password,
+        private_key=payload.private_key,
+        key_passphrase=payload.key_passphrase,
     )
     deployment.callback_deadline = None
     deployment.registered_at = None

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { listProbes, deleteProbe, analyzeProbe, queueProbeScan, getProbeTasks, type Probe } from '../../api/probes'
 import { useAuthStore } from '../../stores/auth'
 import type { Task } from '../../types/task'
@@ -27,6 +27,21 @@ const scanDialog = ref(false)
 const scanProbe = ref<Probe | null>(null)
 const scanTargets = ref('')
 const scanPorts = ref('22,80,443,445,3306,5432,6379,8080')
+const removeDialog = ref(false)
+const removeTarget = ref<Probe | null>(null)
+const removal = reactive({
+  remote: true,
+  host: '',
+  port: 22,
+  username: 'root',
+  auth_type: 'password' as 'password' | 'private_key',
+  password: '',
+  private_key: '',
+  key_passphrase: '',
+  keep_data: false,
+  keep_user: false,
+  remove_user: false,
+})
 
 const filterFields: FilterField[] = [
   { key: 'search', label: '搜索名称/IP', placeholder: '搜索名称 / 主机 / IP', width: '240px' },
@@ -74,20 +89,53 @@ async function runAnalyze(row: Probe): Promise<void> {
 }
 
 async function remove(row: Probe): Promise<void> {
-  if (deletingId.value !== null) return
-  try {
-    await ElMessageBox.confirm(
-      `确定删除探针“${row.name}”（${row.ip_address}）？历史采集数据和部署记录将保留，探针凭据将失效。此操作不会卸载远程探针，请先停止主机上的探针服务，避免重新注册。`,
-      '删除探针',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
-  } catch { return }
+  removeTarget.value = row
+  // Uninstalling is the default because deleting the record alone leaves a
+  // live probe on the host that re-registers on its next heartbeat.
+  removal.remote = true
+  removal.host = row.ip_address && row.ip_address !== '0.0.0.0' ? row.ip_address : ''
+  removal.port = 22
+  removal.username = 'root'
+  removal.auth_type = 'password'
+  removal.password = ''
+  removal.private_key = ''
+  removal.key_passphrase = ''
+  removal.keep_data = false
+  removal.keep_user = false
+  removal.remove_user = false
+  removeDialog.value = true
+}
+
+async function submitRemove(): Promise<void> {
+  const row = removeTarget.value
+  if (!row || deletingId.value !== null) return
+  if (removal.remote) {
+    if (!removal.host.trim()) { ElMessage.warning('请填写目标主机地址'); return }
+    if (!removal.username.trim()) { ElMessage.warning('请填写 SSH 用户名'); return }
+    if (removal.auth_type === 'password' && !removal.password) { ElMessage.warning('请填写 SSH 密码'); return }
+    if (removal.auth_type === 'private_key' && !removal.private_key.trim()) { ElMessage.warning('请粘贴 SSH 私钥'); return }
+  }
   deletingId.value = row.id
   try {
-    await deleteProbe(row.id)
+    const result = await deleteProbe(row.id, removal.remote ? {
+      remove_remote: true,
+      host: removal.host.trim(),
+      port: Number(removal.port) || 22,
+      username: removal.username.trim(),
+      auth_type: removal.auth_type,
+      password: removal.auth_type === 'password' ? removal.password : undefined,
+      private_key: removal.auth_type === 'private_key' ? removal.private_key : undefined,
+      key_passphrase: removal.auth_type === 'private_key' ? removal.key_passphrase || undefined : undefined,
+      keep_data: removal.keep_data,
+      keep_user: removal.keep_user,
+      remove_user: removal.remove_user,
+    } : undefined)
     if (detail.value?.id === row.id) { drawer.value = false; detail.value = null; tasks.value = [] }
     if (items.value.length === 1 && filters.page > 1) filters.page -= 1
-    ElMessage.success('探针已删除')
+    removeDialog.value = false
+    ElMessage.success(result?.deployment_id
+      ? `已下发卸载任务 #${result.deployment_id}：主机清理完成后平台记录会自动移除，进度见「下发记录」`
+      : '探针记录已删除，目标主机未被改动')
     await load()
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : String(err))
@@ -169,6 +217,35 @@ onMounted(load)
         <el-form-item label="TCP 端口"><el-input v-model="scanPorts" placeholder="22,80,443,3306" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="scanDialog=false">取消</el-button><el-button type="primary" @click="submitScan">下发扫描</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="removeDialog" title="删除探针" width="640px" :close-on-click-modal="false" :close-on-press-escape="deletingId === null" :show-close="deletingId === null">
+      <el-alert title="同时卸载（推荐）：平台通过 SSH 停止服务、删除 systemd 单元和探针在主机上产生的全部生产文件，清理成功后再删除平台记录，并保留“删除了哪些文件”的审计结果。" type="success" :closable="false" />
+      <el-alert v-if="!removal.remote" title="仅删除平台记录：主机上的探针进程、systemd 单元和 /opt/data-security-toolbox、/var/lib/data-security-toolbox 等生产文件都不会被清理，探针会再次注册。" type="error" :closable="false" style="margin-top:8px" />
+      <el-form :disabled="deletingId !== null" label-width="110px" style="margin-top:16px">
+        <el-form-item label="探针">{{ removeTarget?.name }}（{{ removeTarget?.ip_address || '未知 IP' }}）</el-form-item>
+        <el-form-item label="卸载主机探针"><el-switch v-model="removal.remote" active-text="清理主机文件后再删除记录" /></el-form-item>
+        <template v-if="removal.remote">
+          <el-form-item label="目标主机" required><el-input v-model="removal.host" placeholder="192.168.1.10" /></el-form-item>
+          <el-form-item label="SSH 端口"><el-input-number v-model="removal.port" :min="1" :max="65535" /></el-form-item>
+          <el-form-item label="用户名" required><el-input v-model="removal.username" placeholder="root" /></el-form-item>
+          <el-form-item label="认证方式"><el-radio-group v-model="removal.auth_type"><el-radio-button value="password">密码</el-radio-button><el-radio-button value="private_key">私钥</el-radio-button></el-radio-group></el-form-item>
+          <el-form-item v-if="removal.auth_type === 'password'" label="密码" required><el-input v-model="removal.password" type="password" show-password /></el-form-item>
+          <template v-else>
+            <el-form-item label="私钥" required><el-input v-model="removal.private_key" type="textarea" :rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" /></el-form-item>
+            <el-form-item label="密钥口令"><el-input v-model="removal.key_passphrase" type="password" show-password /></el-form-item>
+          </template>
+          <el-form-item label="保留项">
+            <el-checkbox v-model="removal.keep_data">保留采集数据（采集分段与缓存）</el-checkbox>
+            <el-checkbox v-model="removal.keep_user">保留 dstprobe 系统账号</el-checkbox>
+            <el-checkbox v-model="removal.remove_user">强制删除 dstprobe 账号</el-checkbox>
+          </el-form-item>
+        </template>
+      </el-form>
+      <el-alert v-if="removal.remote" title="凭据仅用于本次卸载，任务结束后平台立即销毁、不留存。dstprobe 系统账号仅在安装时确由本探针创建的情况下才会删除，否则自动保留。" type="info" :closable="false" />
+      <template #footer>
+        <el-button :disabled="deletingId !== null" @click="removeDialog = false">取消</el-button>
+        <el-button type="danger" :loading="deletingId !== null" @click="submitRemove">{{ removal.remote ? '卸载并删除记录' : '仅删除记录' }}</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>

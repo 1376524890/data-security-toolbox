@@ -2,6 +2,7 @@ import { apiGet, apiPost } from './client'
 import client from './client'
 import type { PageResult } from '../types/common'
 import type { Task } from '../types/task'
+import type { DeleteProbePayload } from '../types/probeDeployment'
 
 export interface Probe {
   id: number
@@ -34,8 +35,14 @@ export function analyzeProbe(id: number): Promise<Task> {
   return apiPost(`/probes/${id}/analyze`)
 }
 
-export async function deleteProbe(id: number): Promise<void> {
-  await client.delete(`/probes/${id}`)
+/**
+ * Delete a probe record. With `payload.remove_remote` the platform first
+ * removes the probe from its host and drops the record only once that
+ * succeeded, so a failed removal never loses the address that needs cleaning.
+ */
+export async function deleteProbe(id: number, payload?: DeleteProbePayload): Promise<{ status: string; action?: string; deployment_id?: number }> {
+  const response = await client.delete(`/probes/${id}`, payload ? { data: payload } : undefined)
+  return response.data
 }
 
 export function queueProbeScan(id: number, payload: { targets: string[]; ports: number[] }): Promise<Task> {

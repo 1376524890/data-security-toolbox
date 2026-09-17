@@ -21,10 +21,11 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import false, func, or_, select, update
+from sqlalchemy import false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.services.probe_task_service import PROBE_TASK_KINDS, TERMINAL, expire_probe_tasks, visible_tasks
+from app.services.probe_service import ProbeInUseError, ProbeNotFoundError, delete_probe_record
 from app.api.pagination import page_response, paginate
 from app.core.config import settings
 from app.core.database import get_db
@@ -42,6 +43,8 @@ from app.core.security import (
 )
 from app.core.storage import safe_path, stream_to_storage
 from app.deployment.enrollment import EnrollmentError, consume_enrollment
+from app.deployment.record import DeploymentError
+from app.deployment.removal import create_removal_deployment
 from app.engine import registry
 from app.engine.core.context import DetectionContext
 from app.engine.core.pipeline import DetectionPipeline
@@ -73,7 +76,6 @@ from app.models import (
     PcapRecord,
     Probe,
     ProbeDeployment,
-    ProbeEnrollment,
     OfflineResource,
     LocalCve,
     Report,
@@ -86,6 +88,7 @@ from app.schemas import (
     Heartbeat,
     LogAnalysisRequest,
     LoginRequest,
+    ProbeDeleteRequest,
     ProbeRegister,
     ProbeScanRequest,
     ScanRequest,
@@ -98,7 +101,6 @@ from app.services.alert_service import (
     publish_alert,
     serialize_alert,
 )
-from app.services import data_object_service
 from app.services.asset_service import asset_relations
 from app.services.audit_service import audit_summary, log_analysis
 from app.services.crypto_profile import build_crypto_profile
@@ -112,6 +114,7 @@ from app.services.traffic_service import (
     top_n_communication,
     traffic_trend,
 )
+from app.workers.deployment_tasks import dispatch_probe_deployment
 from app.workers.tasks import (
     _upsert_incident,
     analyze_pcap_task,
@@ -730,38 +733,87 @@ def list_probes(status: str | None = None, search: str | None = None, page: int 
     return page_response([_serialize_probe(item) for item in result["items"]], page, page_size, result["total"])
 
 
+def _probe_removal_target(db: Session, probe: Probe, payload: ProbeDeleteRequest) -> tuple[str, int, str]:
+    """Decide which host to connect to for a removal, and as whom.
+
+    The probe's own deployment recorded how the platform reached that host, so
+    that is the default and keeps the console one click away from a clean
+    removal. The request may override it, which is what makes the same button
+    work for a probe that was registered by hand, or whose deployment row is
+    already gone.
+    """
+    deployment = db.get(ProbeDeployment, probe.deployment_id) if probe.deployment_id else None
+    if deployment is None:
+        deployment = db.scalar(
+            select(ProbeDeployment)
+            .where(ProbeDeployment.probe_id == probe.id)
+            .order_by(ProbeDeployment.id.desc())
+        )
+    host = payload.host or (deployment.host if deployment else "") or probe.ip_address
+    if not host:
+        raise HTTPException(400, "无法确定探针主机地址，请在请求中提供 host")
+    port = payload.port or (deployment.port if deployment else 0) or 22
+    username = payload.username or (deployment.username if deployment else "") or "root"
+    return host, int(port), username
+
+
 @router.delete("/probes/{probe_id}", dependencies=[Depends(require_active_admin)])
-def delete_probe(probe_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    expire_probe_tasks(db)
+def delete_probe(
+    probe_id: int,
+    payload: ProbeDeleteRequest | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_active_admin),
+) -> dict[str, Any]:
+    """Delete a probe record, optionally stripping its host in the same step.
+
+    Without a body nothing on the target host changes: the record is dropped and
+    everything the probe collected stays as it is. With ``remove_remote`` the
+    request becomes a removal first - the platform connects to the probe's last
+    known host, runs the uninstaller, and only then drops the record - so a
+    removal that fails keeps the very record that says which host still has
+    probe files on it.
+
+    The steps run in that order on purpose. Deleting the record first would
+    strand the host: nobody would know the address to clean, and the credential
+    that could clean it lives on the deployment the record pointed at.
+    """
     probe = db.get(Probe, probe_id)
     if not probe:
         raise HTTPException(404, "探针不存在")
-    active_task = db.scalar(select(Task.id).where(
-        Task.payload["probe_id"].as_integer() == probe_id,
-        Task.status.in_(["Pending", "Running"]),
-    ).limit(1))
-    if active_task:
-        raise HTTPException(409, "探针有未完成任务，请等待任务结束后再删除")
-    deployments = db.scalars(select(ProbeDeployment).where(or_(
-        ProbeDeployment.probe_id == probe_id, ProbeDeployment.id == probe.deployment_id,
-    ))).all()
-    if any(item.status not in {"ONLINE", "FAILED", "CANCELLED"} for item in deployments):
-        raise HTTPException(409, "探针部署尚未结束，请等待部署结束后再删除")
-    # Preserve collected records and deployment history, clearing foreign keys.
-    for model in (Asset, FileRecord, PcapRecord, Incident, Alert, ProbeDeployment, ProbeEnrollment):
-        db.execute(update(model).where(model.probe_id == probe_id).values(probe_id=None))
-    # The object model is a different case: an instance identity *is*
-    # (probe_id, normalised path), so it cannot survive as a detached row.
-    # Its own observation state is removed while the logical objects, the
-    # legacy data_assets projection and every other collected record stay.
-    data_object_service.forget_probe(db, probe_id)
-    if probe.deployment_id:
-        db.execute(update(ProbeEnrollment).where(
-            ProbeEnrollment.deployment_id == probe.deployment_id,
-        ).values(expires_at=datetime.now(UTC)))
-    db.delete(probe)
+    if payload is None or not payload.remove_remote:
+        try:
+            return delete_probe_record(db, probe_id)
+        except ProbeNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ProbeInUseError as exc:
+            raise HTTPException(409, exc.message) from exc
+    host, port, username = _probe_removal_target(db, probe, payload)
+    try:
+        deployment = create_removal_deployment(
+            db,
+            host=host,
+            port=port,
+            username=username,
+            auth_type=payload.auth_type,
+            password=payload.password,
+            private_key=payload.private_key,
+            key_passphrase=payload.key_passphrase,
+            name=f"remove-{probe.name}",
+            idempotency_key=f"probe-{probe_id}-removal-{secrets.token_hex(8)}",
+            created_by=user.username,
+            probe_id=probe_id,
+            options={
+                "keep_data": payload.keep_data,
+                "keep_user": payload.keep_user,
+                "remove_user": payload.remove_user,
+                "delete_record": True,
+            },
+        )
+    except DeploymentError as exc:
+        raise HTTPException(409, exc.message) from exc
     db.commit()
-    return {"status": "ok"}
+    dispatch_probe_deployment(deployment.id)
+    return {"status": "queued", "action": "uninstall", "deployment_id": deployment.id}
 
 
 @router.post("/probes/{probe_id}/analyze")

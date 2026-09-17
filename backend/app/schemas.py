@@ -140,6 +140,24 @@ class TaskCreate(BaseModel):
     payload: dict[str, Any] = {}
 
 
+def _validate_ssh_credential(auth_type: str, password: str | None, private_key: str | None) -> None:
+    """Reject an ambiguous or incomplete SSH credential.
+
+    Shared by every request that carries one - deploy, retry, remove - so a new
+    entry point cannot quietly accept a password for key auth, or neither.
+    """
+    if auth_type == "password":
+        if not password:
+            raise ValueError("password is required for password auth")
+        if private_key:
+            raise ValueError("private_key and password are mutually exclusive")
+        return
+    if not private_key:
+        raise ValueError("private_key is required for key auth")
+    if password:
+        raise ValueError("private_key and password are mutually exclusive")
+
+
 class ProbeDeploymentPreflightRequest(BaseModel):
     host: str = Field(min_length=1, max_length=255)
     port: int = Field(default=22, ge=1, le=65535)
@@ -178,16 +196,7 @@ class ProbeDeploymentPreflightRequest(BaseModel):
             if parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or any(ord(c) < 32 for c in self.backend_url):
                 raise ValueError('回连地址必须是有效 HTTP/HTTPS 平台地址，不含账号、查询参数或控制字符')
             self.backend_url = self.backend_url.rstrip('/')
-        if self.auth_type == "password":
-            if not self.password:
-                raise ValueError("password is required for password auth")
-            if self.private_key:
-                raise ValueError("private_key and password are mutually exclusive")
-        else:
-            if not self.private_key:
-                raise ValueError("private_key is required for key auth")
-            if self.password:
-                raise ValueError("private_key and password are mutually exclusive")
+        _validate_ssh_credential(self.auth_type, self.password, self.private_key)
         return self
 
 
@@ -196,9 +205,72 @@ class ProbeDeploymentCreate(ProbeDeploymentPreflightRequest):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+class ProbeRemovalCreate(BaseModel):
+    """Remove a probe from a target host.
+
+    Reaching the host needs the same credential a deployment needs, but not a
+    profile or a callback URL: the uninstaller only stops the service, deletes
+    the files the installer created and reports what it found. The flags default
+    to the strictest reading, and the service account is only deleted when the
+    installer's own marker proves this probe created it, so a shared ``dstprobe``
+    survives unless ``remove_user`` says otherwise.
+    """
+
+    name: str = Field(default="", max_length=128)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=128)
+    auth_type: Literal["password", "private_key"] = "password"
+    password: str | None = None
+    private_key: str | None = None
+    key_passphrase: str | None = None
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    probe_id: int | None = Field(default=None, description="平台探针记录 ID；带上后删除成功会一并清除该记录")
+    keep_data: bool = False
+    keep_user: bool = False
+    remove_user: bool = False
+    delete_record: bool = Field(default=False, description="远端清理成功后同时删除平台探针记录")
+
+    @model_validator(mode="after")
+    def credential_exclusive(self) -> "ProbeRemovalCreate":
+        _validate_ssh_credential(self.auth_type, self.password, self.private_key)
+        return self
+
+
+class ProbeDeleteRequest(BaseModel):
+    """Delete a probe record, optionally stripping its host in the same step.
+
+    ``remove_remote`` turns a record deletion into a removal deployment: the
+    platform connects to the probe's last known host with the credential given
+    here, deletes the probe's files, and only then drops the record. Host and
+    user override the values recorded at deploy time, which is what makes the
+    button work for a probe that was registered by hand or whose deployment row
+    is gone.
+    """
+
+    remove_remote: bool = False
+    host: str | None = Field(default=None, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = Field(default=None, max_length=128)
+    auth_type: Literal["password", "private_key"] = "password"
+    password: str | None = None
+    private_key: str | None = None
+    key_passphrase: str | None = None
+    keep_data: bool = False
+    keep_user: bool = False
+    remove_user: bool = False
+
+    @model_validator(mode="after")
+    def credential_required_when_remote(self) -> "ProbeDeleteRequest":
+        if self.remove_remote:
+            _validate_ssh_credential(self.auth_type, self.password, self.private_key)
+        return self
+
+
 class ProbeDeploymentOut(BaseModel):
     id: int
     name: str
+    action: str
     host: str
     port: int
     username: str
@@ -217,6 +289,7 @@ class ProbeDeploymentOut(BaseModel):
     registered_at: datetime | None
     first_heartbeat_at: datetime | None
     preflight_result: dict[str, Any]
+    removal_options: dict[str, Any]
     result: dict[str, Any]
     created_at: datetime
     updated_at: datetime
