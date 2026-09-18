@@ -45,8 +45,10 @@ def test_retains_non_sensitive_files_with_exact_bytes_and_bounded_preview(storag
 
 def test_multipart_upload_extracts_file_without_http_envelope(storage):
     body = b'file content\x00\xff'
-    multipart = (b'--BOUND\r\nContent-Disposition: form-data; name="file"; filename="../../example.bin"'
-                 b'\r\nContent-Type: application/octet-stream\r\n\r\n' + body + b'\r\n--BOUND--\r\n')
+    multipart = (b'--BOUND\r\nContent-Disposition: form-data; '
+                 b'name="file"; filename="../../example.bin"\r\n'
+                 b'Content-Type: application/octet-stream\r\n\r\n'
+                 + body + b'\r\n--BOUND--\r\n')
     path = capture(storage / 'upload.pcap', [('10.0.0.1', 51000, '10.0.0.2', 80,
                    b'POST /upload HTTP/1.1\r\nHost: example.test\r\n'
                    b'Content-Type: multipart/form-data; boundary=BOUND\r\nContent-Length: '
@@ -104,8 +106,10 @@ def test_manual_duplicate_returns_existing_capture_even_when_queue_busy(storage,
 def test_file_preview_download_and_capture_scope(storage):
     path = http_capture(storage / 'scope.pcap', b'bounded preview body')
     with SessionLocal() as db:
-        p = PcapRecord(filename='scope.pcap', storage_path=str(path), size=path.stat().st_size, sha256='scope')
-        other = PcapRecord(filename='other.pcap', storage_path=str(path), size=path.stat().st_size, sha256='other')
+        p = PcapRecord(filename='scope.pcap', storage_path=str(path),
+                       size=path.stat().st_size, sha256='scope')
+        other = PcapRecord(filename='other.pcap', storage_path=str(path),
+                           size=path.stat().st_size, sha256='other')
         db.add_all([p, other])
         db.flush()
         result = pcap_files.extract_capture_files(path, p.id, {})
@@ -122,7 +126,8 @@ def test_file_preview_download_and_capture_scope(storage):
         preview = client.get(f'/api/v1/pcaps/{pid}/files/{file_id}?offset=2&limit=7')
         assert preview.status_code == 200
         assert preview.json()['text'] == 'unded p'
-        assert client.get(f'/api/v1/pcaps/{pid}/files/{file_id}/download').content == b'bounded preview body'
+        download = client.get(f'/api/v1/pcaps/{pid}/files/{file_id}/download')
+        assert download.content == b'bounded preview body'
         assert client.get(f'/api/v1/pcaps/{other_id}/files/{file_id}').status_code == 404
         assert client.get(f'/api/v1/pcaps/{pid}/files/{file_id}?limit=999999').status_code == 422
         assert client.get(f'/api/v1/pcaps/{pid}/files/not-a-hash').status_code == 404
@@ -152,7 +157,8 @@ def test_ipv6_packet_addresses_are_preserved(storage, monkeypatch):
     fields = ['1', '1234.25', '', '', '443', '60000', '', '', '100',
               'eth:ipv6:tcp', 'TCP', 'payload', '2001:db8::1', '2001:db8::2', '', '']
     monkeypatch.setattr(protocol_service, 'capinfos', lambda _: {})
-    monkeypatch.setattr(protocol_service, 'stream_tshark', lambda *a, **k: iter(['\t'.join(fields)]))
+    monkeypatch.setattr(protocol_service, 'stream_tshark',
+                        lambda *a, **k: iter(['\t'.join(fields)]))
     parsed = parse_pcap(storage / 'ipv6.pcap')
     assert parsed['packets'][0]['src_ip'] == '2001:db8::1'
     assert parsed['packets'][0]['dst_ip'] == '2001:db8::2'

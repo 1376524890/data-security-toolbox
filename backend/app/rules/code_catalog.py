@@ -28,7 +28,8 @@ def definitions() -> tuple[dict, ...]:
             entries.append({
                 'rule_id': rule['rule_id'], 'engine': engine, 'type': 'builtin',
                 'title': rule.get('name') or rule['rule_id'], 'severity': rule.get('level', ''),
-                'condition': rule.get('pattern', ''), 'recommendation': '核实敏感数据用途与访问权限。',
+                'condition': rule.get('pattern', ''),
+                'recommendation': '核实敏感数据用途与访问权限。',
                 'source': 'shared/sensitive_detection/rules.py',
                 'path': 'shared/sensitive_detection/rules.py', 'file': 'rules.py',
                 'content': json.dumps(rule, ensure_ascii=False, indent=2), 'detection': rule,
@@ -45,7 +46,8 @@ def definitions() -> tuple[dict, ...]:
                         and call.func.id == "finding" and len(call.args) >= 6):
                     continue
                 identifier = call.args[1]
-                if not isinstance(identifier, ast.Constant) or not isinstance(identifier.value, str):
+                if (not isinstance(identifier, ast.Constant)
+                        or not isinstance(identifier.value, str)):
                     continue
                 recommendation = call.args[5]
                 title = (recommendation.value if isinstance(recommendation, ast.Constant)

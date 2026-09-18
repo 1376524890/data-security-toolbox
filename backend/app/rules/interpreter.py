@@ -1,4 +1,3 @@
-import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,7 +114,8 @@ def _eval_condition(condition: str, context: DetectionContext) -> bool:
     return _compare(_resolve(context, name), op, right)
 
 
-def interpret_rules(context: DetectionContext, rule_dir: Path, engine: str) -> list[DetectionResult]:
+def interpret_rules(context: DetectionContext, rule_dir: Path,
+                    engine: str) -> list[DetectionResult]:
     results: list[DetectionResult] = []
     for rule in load_rules(rule_dir):
         if _eval_condition(rule.condition, context):

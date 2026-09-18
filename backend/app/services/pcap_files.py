@@ -57,7 +57,8 @@ def _export(path: Path, directory: Path, protocols: dict, coverage: dict) -> Non
                     break
                 except subprocess.TimeoutExpired:
                     files = [p for p in directory.rglob('*') if p.is_file()]
-                    if len(files) > MAX_FILES or sum(p.stat().st_size for p in files) > MAX_TOTAL_BYTES:
+                    if (len(files) > MAX_FILES
+                            or sum(p.stat().st_size for p in files) > MAX_TOTAL_BYTES):
                         coverage['export_limit'] = True
                         break
                     if time.monotonic() - started > 120:
@@ -85,7 +86,8 @@ def extract_capture_files(path: Path, pcap_id: int, protocols: dict) -> dict[str
         digest = hashlib.sha256(body).hexdigest()
         if digest in objects:
             return
-        if len(objects) >= MAX_FILES or len(body) > MAX_FILE_BYTES or total + len(body) > MAX_TOTAL_BYTES:
+        if (len(objects) >= MAX_FILES or len(body) > MAX_FILE_BYTES
+                or total + len(body) > MAX_TOTAL_BYTES):
             coverage['object_limit'] = True
             return
         # Filenames from the wire are display labels; storage uses only hashes.
@@ -137,7 +139,8 @@ def extract_capture_files(path: Path, pcap_id: int, protocols: dict) -> dict[str
             body = file.read_bytes()
             # Multipart envelopes are not files; their individual file parts
             # were retained above, without scalar form fields or MIME headers.
-            if file.parent.name == 'http' and body.startswith(b'--') and b'Content-Disposition: form-data' in body[:4096]:
+            if (file.parent.name == 'http' and body.startswith(b'--')
+                    and b'Content-Disposition: form-data' in body[:4096]):
                 continue
             retain(body, {'filename': file.name, 'source': file.parent.name, 'complete': None})
     return {'items': list(objects.values()), 'coverage': coverage}

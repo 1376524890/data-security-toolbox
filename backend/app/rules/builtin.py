@@ -90,7 +90,8 @@ BUILTIN_RULES: dict[str, dict[str, Any]] = {
         "title": "文件/文本包含个人信息（PII）",
         "severity": "High",
         "condition": "PII 命中数 > 0（身份证、手机号、银行卡、邮箱等）",
-        "recommendation": "对包含身份证、手机号、银行卡、邮箱等 PII 的文件实施加密、脱敏和访问控制。",
+        "recommendation": "对包含身份证、手机号、银行卡、邮箱等 PII 的文件实施加密、脱敏和"
+                          "访问控制。",
         "source": "app/engine/data_engine/engine.py",
     },
     "DATA_SECRET_001": {
@@ -121,7 +122,8 @@ BUILTIN_RULES: dict[str, dict[str, Any]] = {
         "engine": "asset_engine",
         "title": "数据库服务弱认证",
         "severity": "High",
-        "condition": "服务类别 in {redis,mysql,postgresql,mongodb,oracle} 且 weak_auth = true（空密码/匿名/无认证标识）",
+        "condition": "服务类别 in {redis,mysql,postgresql,mongodb,oracle} 且 "
+                     "weak_auth = true（空密码/匿名/无认证标识）",
         "recommendation": "启用强认证、最小权限和访问审计，禁止空密码或匿名认证。",
         "source": "app/engine/asset_engine/engine.py",
     },
@@ -194,7 +196,8 @@ def dlp_rule_definition(rule_id: str, policy: dict[str, Any] | None) -> dict[str
         "title": "敏感数据外发（被动 DLP）",
         "severity": "High",
         "condition": condition,
-        "recommendation": "核查传输目的地和业务授权；对敏感内容脱敏、加密，必要时通过网关或终端策略阻断。",
+        "recommendation": "核查传输目的地和业务授权；对敏感内容脱敏、加密，"
+                          "必要时通过网关或终端策略阻断。",
         "detection": {
             "categories": categories,
             "keywords": keywords,
@@ -207,7 +210,8 @@ def dlp_rule_definition(rule_id: str, policy: dict[str, Any] | None) -> dict[str
     }
 
 
-def cve_rule_definition(rule_id: str, evidence: dict[str, Any] | None = None, record: dict[str, Any] | None = None) -> dict[str, Any] | None:
+def cve_rule_definition(rule_id: str, evidence: dict[str, Any] | None = None,
+                        record: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Describe a CVE hit from the vulnerability record the engine matched.
 
     ``record`` is the matching row of the platform's local CVE library when one
@@ -231,7 +235,8 @@ def cve_rule_definition(rule_id: str, evidence: dict[str, Any] | None = None, re
     if isinstance(description, dict):
         description = description.get("text") or ""
     score = record.get("cvss_score") or 0
-    condition = f"资产服务关键字 '{keyword}' 命中本地漏洞库记录 {cve_id}" if named else f"资产服务关键字命中本地漏洞库记录 {cve_id}"
+    hit = f"命中本地漏洞库记录 {cve_id}"
+    condition = f"资产服务关键字 '{keyword}' {hit}" if named else f"资产服务关键字{hit}"
     if score:
         condition += f"（CVSS {score:g}）"
     if named:
@@ -245,7 +250,8 @@ def cve_rule_definition(rule_id: str, evidence: dict[str, Any] | None = None, re
         "engine": "threat_intel",
         "type": "cve",
         "path": "local_cves" if record else "nvd:cve_lookup",
-        "file": "本地漏洞库（local_cves，按资产服务/版本查表）" if record else "NVD 漏洞库（按资产服务/版本查表）",
+        "file": ("本地漏洞库（local_cves，按资产服务/版本查表）" if record
+                 else "NVD 漏洞库（按资产服务/版本查表）"),
         "content": "",
         "title": title,
         "severity": str(record.get("severity") or "High"),

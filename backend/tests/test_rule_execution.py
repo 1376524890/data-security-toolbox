@@ -1,7 +1,6 @@
 import io
 import json
 import zipfile
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,7 +24,8 @@ def sigma_rule():
 def test_sigma_matches_one_record_and_honors_modifiers():
     rule = sigma_rule()
     assert evaluate_sigma(rule, [json.dumps({'CommandLine': 'base64 payload | sh', 'User': 'www'})])
-    assert not evaluate_sigma(rule, [json.dumps({'CommandLine': 'base64 payload | sh', 'User': 'root'})])
+    assert not evaluate_sigma(rule, [json.dumps({'CommandLine': 'base64 payload | sh',
+                                                 'User': 'root'})])
     assert not evaluate_sigma(rule, [json.dumps({'CommandLine': 'base64 payload'}),
                                      json.dumps({'CommandLine': '| sh'})])
     assert not evaluate_sigma(rule, ['base64 payload | sh'])
@@ -48,8 +48,8 @@ def test_sigma_requires_matching_logsource():
 
 
 def test_zeek_json_logs_keep_their_event_type(tmp_path):
-    from app.integrations.zeek.parser import parse_zeek_dir
     from app.integrations.zeek.adapter import ZeekAdapter
+    from app.integrations.zeek.parser import parse_zeek_dir
 
     (tmp_path / 'notice.log').write_text(json.dumps({
         'note': 'DST::Sensitive_URI', 'msg': 'Credential parameter in HTTP URI'}))
@@ -83,8 +83,10 @@ def test_native_runner_arguments_and_failure_are_not_silent(tmp_path, monkeypatc
 
 
 def test_suricata_sll2_translation_preserves_payload_and_timestamp(tmp_path):
-    import dpkt
     from decimal import Decimal
+
+    import dpkt
+
     from app.integrations.suricata.runner import compatible_capture
 
     original = tmp_path / 'original.pcap'
@@ -151,10 +153,12 @@ def test_all_registered_engines_have_real_rule_inventory():
             assert engine['rule_count'] == len(own)
             assert engine['active_rule_files'] == sum(item['execution'] == 'active' for item in own)
         item = next(item for item in items if item['type'] == 'builtin')
-        response = client.get('/api/v1/rules/content', params={'engine': item['engine'], 'path': item['path']})
+        response = client.get('/api/v1/rules/content',
+                              params={'engine': item['engine'], 'path': item['path']})
         assert response.status_code == 200
         assert response.json()['content']
-        assert client.get('/api/v1/rules/content', params={'engine': 'zeek', 'path': '/etc/passwd'}).status_code == 404
+        assert client.get('/api/v1/rules/content',
+                          params={'engine': 'zeek', 'path': '/etc/passwd'}).status_code == 404
 
 
 def test_registry_respects_disabled_rule_and_captures_definition(monkeypatch):
@@ -168,9 +172,10 @@ def test_registry_respects_disabled_rule_and_captures_definition(monkeypatch):
 
 
 def test_alert_uses_historical_snapshot_and_current_dlp_policy():
+    from sqlalchemy import select
+
     from app.api.v1 import _rule_definition
     from app.models import SystemSetting
-    from sqlalchemy import select
 
     with SessionLocal() as db:
         snapshot = {'rule_id': 'PROTO_HTTP_UA_001', 'engine': 'protocol_engine',

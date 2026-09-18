@@ -71,7 +71,8 @@ def _supported_selector(selector) -> bool:
             return False
         if not isinstance(value, (str, int, float, bool, list, type(None))):
             return False
-        if isinstance(value, list) and (not value or any(isinstance(v, (dict, list)) for v in value)):
+        if (isinstance(value, list)
+                and (not value or any(isinstance(v, (dict, list)) for v in value))):
             return False
     return True
 
@@ -176,10 +177,12 @@ def matching_lines(rule: SigmaRule, lines: list[str], logsource: dict | None = N
             record = json.loads(line) if isinstance(line, str) else line
         except (ValueError, TypeError):
             record = line
-        source = record.get('_logsource', logsource or {}) if isinstance(record, dict) else logsource or {}
+        source = (record.get('_logsource', logsource or {}) if isinstance(record, dict)
+                  else logsource or {})
         required = {key: value for key, value in rule.logsource.items()
                     if key in {'product', 'category', 'service'}}
-        if not isinstance(source, dict) or any(source.get(key) != value for key, value in required.items()):
+        if (not isinstance(source, dict)
+                or any(source.get(key) != value for key, value in required.items())):
             continue
         selectors = {key: selector_matches(value, record) for key, value in rule.detection.items()
                      if key not in {'condition', 'timeframe'}}

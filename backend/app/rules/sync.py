@@ -20,9 +20,10 @@ import tarfile
 import tempfile
 import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import requests
 import yaml
@@ -122,6 +123,14 @@ def _valid_zeek(text: str) -> bool:
     return "event " in text or "@load" in text or "redef " in text
 
 
+def _valid_openscap_datastream(text: str) -> bool:
+    # A datastream collection is valid XML rooted at the collection element; an
+    # unparsable or truncated download propagates so the refresh fails loudly.
+    import xml.etree.ElementTree as element_tree
+
+    return element_tree.fromstring(text).tag.endswith('data-stream-collection')
+
+
 # One validator per file type, keyed by suffix: an upstream file that does not
 # parse in its own format is dropped instead of being served to an engine.
 VALIDATORS: dict[str, Callable[[str], bool]] = {
@@ -194,8 +203,7 @@ def _store_archive(engine: str, url: str, include: Callable[[str], bool],
                 content = raw.decode("utf-8")
                 validator = VALIDATORS.get(Path(name).suffix.lower())
                 if engine == 'openscap':
-                    import xml.etree.ElementTree as ET
-                    validator = lambda value: ET.fromstring(value).tag.endswith('data-stream-collection')
+                    validator = _valid_openscap_datastream
                 if validator is None or not validator(content):
                     skipped += 1
                     continue
@@ -213,7 +221,8 @@ def _store_archive(engine: str, url: str, include: Callable[[str], bool],
                 raise ValueError("缺少 Suricata，无法校验规则，保留旧版本")
             merged = staging / 'validation.rules'
             paths = sorted(staging.rglob('*.rules'))
-            merged.write_text('\n'.join(p.read_text(encoding='utf-8') for p in paths), encoding='utf-8')
+            merged.write_text('\n'.join(p.read_text(encoding='utf-8') for p in paths),
+                              encoding='utf-8')
             check = subprocess.run([binary, '-T', '-S', str(merged), '-l', str(staging)],
                                    capture_output=True, text=True, timeout=180)
             merged.unlink()
@@ -225,7 +234,8 @@ def _store_archive(engine: str, url: str, include: Callable[[str], bool],
 
         atomic_json(directory / 'active.json', {'generation': generation, 'source': url})
         library.clear_cache()
-        mode = '已激活' if engine in {'sigma_log_engine', 'suricata'} else '已下载，外部组件规则待部署'
+        mode = ('已激活' if engine in {'sigma_log_engine', 'suricata'}
+                else '已下载，外部组件规则待部署')
         result.detail = f'{mode} {result.files} 个文件；跳过不兼容文件 {skipped} 个'
     finally:
         if staging.exists():
@@ -235,7 +245,8 @@ def _store_archive(engine: str, url: str, include: Callable[[str], bool],
 def _refresh_sigma(engine: str, result: SyncResult) -> None:
     _store_archive(
         engine, SIGMA_URL,
-        include=lambda name: "/rules/" in name and "/deprecated/" not in name and "/unsupported/" not in name,
+        include=lambda name: ("/rules/" in name and "/deprecated/" not in name
+                              and "/unsupported/" not in name),
         allowed=(".yml", ".yaml"), result=result,
     )
 
@@ -294,7 +305,8 @@ def _refresh_openscap(engine: str, result: SyncResult) -> None:
         'https://api.github.com/repos/ComplianceAsCode/content/releases/latest', 2 * 1024 * 1024
     ))
     asset = next(item for item in release['assets']
-                 if item['name'].startswith('scap-security-guide-') and item['name'].endswith('.zip'))
+                 if (item['name'].startswith('scap-security-guide-')
+                     and item['name'].endswith('.zip')))
     platforms = {'ssg-debian12-ds.xml', 'ssg-debian13-ds.xml',
                  'ssg-ubuntu2204-ds.xml', 'ssg-ubuntu2404-ds.xml'}
     _store_archive(engine, asset['browser_download_url'],
@@ -319,7 +331,8 @@ def refresh(engine: str) -> SyncResult:
     if source is None:
         return SyncResult(engine=engine, status="failed", detail="未知引擎")
     if not source.refreshable:
-        return SyncResult(engine=engine, status="skipped", detail="该引擎的规则由平台维护，无上游可拉取")
+        return SyncResult(engine=engine, status="skipped",
+                          detail="该引擎的规则由平台维护，无上游可拉取")
     refresher = REFRESHERS.get(source.fetch)
     if refresher is None:
         return SyncResult(engine=engine, status="failed", detail=f"未实现的拉取方式 {source.fetch}")

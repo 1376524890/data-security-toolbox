@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from app.rules.catalog import RuleSource, for_engine
+
 from app.core.config import settings
+from app.rules.catalog import RuleSource, for_engine
 
 logger = logging.getLogger(__name__)
 
