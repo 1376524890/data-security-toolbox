@@ -1,0 +1,25 @@
+# 威胁情报规则：IOC 命中与 CVE 关联参数。
+# 情报数据本身来自情报源（/intelligence/providers）与本地漏洞库 local_cves；
+# 本文件只定义这两个规则的判定参数与阈值。
+- rule_id: TI_IOC_001
+  title: 命中威胁情报 IOC
+  severity: High
+  confidence: 0.9
+  enabled: true
+  condition: 观测值（ip/domain/url/hash）命中情报库 IOC
+  params:
+    max_matches: 100
+    observed_types: [ip, domain, url, hash]
+  recommendation: 对命中 IOC 的通信进行阻断、隔离和取证。
+
+- rule_id: CVE_LOOKUP
+  title: 资产服务命中 CVE 漏洞库
+  severity: High
+  confidence: 0.7
+  enabled: true
+  condition: 资产服务/版本关键字命中本地漏洞库 local_cves（无本地记录时回退 NVD 在线查询）
+  params:
+    results_per_page: 10
+    local_limit: 10
+    nvd_url: https://services.nvd.nist.gov/rest/json/cves/2.0
+  recommendation: 结合资产版本评估影响面，按厂商修复建议升级或缓解。

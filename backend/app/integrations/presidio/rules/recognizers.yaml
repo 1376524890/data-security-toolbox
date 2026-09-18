@@ -1,0 +1,47 @@
+# 平台下发的 Presidio 识别器配置：识别器 = 实体 + 正则 + 上下文词 + 校验器。
+# PresidioAdapter 在分析文本时按此配置匹配；未在此声明的实体不会产生 finding。
+version: 1
+language: zh
+recognizers:
+  - entity: CN_ID_CARD
+    name: 中国大陆居民身份证号
+    patterns:
+      - name: 18 位身份证
+        regex: '[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]'
+        score: 0.9
+    context: [身份证, 证件号, idcard, identity]
+    validator: cn_id_checksum
+  - entity: CN_PHONE
+    name: 中国大陆手机号
+    patterns:
+      - name: 11 位手机号
+        regex: '1[3-9]\d{9}'
+        score: 0.7
+    context: [手机, 电话, 联系方式, mobile, phone]
+  - entity: CN_BANK_CARD
+    name: 银行卡号
+    patterns:
+      - name: 16-19 位卡号
+        regex: '\b\d{16,19}\b'
+        score: 0.5
+    context: [银行卡, 卡号, 账号, bank, card]
+    validator: luhn
+  - entity: CN_USCC
+    name: 统一社会信用代码
+    patterns:
+      - name: 18 位统一社会信用代码
+        regex: '[0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10}'
+        score: 0.85
+    context: [信用代码, 营业执照, uscc]
+  - entity: API_KEY
+    name: API 密钥 / 访问令牌
+    patterns:
+      - name: 常见密钥前缀
+        regex: '(?:sk|ak|ghp|xox[baprs])[-_][A-Za-z0-9]{16,}'
+        score: 0.95
+      - name: JWT
+        regex: 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+        score: 0.9
+    context: [token, secret, apikey, 密钥, 令牌]
+# 命中但不足以告警的识别器（仅作证据）
+evidence_only: [IP_ADDRESS, MAC_ADDRESS, DATE_TIME, URL]

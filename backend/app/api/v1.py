@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import shutil
 from collections import Counter
@@ -79,6 +80,7 @@ from app.models import (
     OfflineResource,
     LocalCve,
     Report,
+    SystemSetting,
     Task,
     User,
     Vulnerability,
@@ -102,6 +104,8 @@ from app.services.alert_service import (
     serialize_alert,
 )
 from app.services.asset_service import asset_relations
+from app.rules.catalog import CATALOG
+from app.rules import library
 from app.services.audit_service import audit_summary, log_analysis
 from app.services.crypto_profile import build_crypto_profile
 from app.services.protocol_service import packet_detail, protocol_layer, protocol_tree, tcp_stream_follow
@@ -1158,7 +1162,6 @@ def analyze_file(file_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.post("/pcaps/upload")
 async def upload_pcap(request: Request, file: UploadFile = File(...), probe_id: int | None = Form(None), metadata_json: str | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
     probe_id = _upload_probe_id(request, db, probe_id)
-    _queue_backpressure(db)
     try:
         meta: dict[str, Any] = json.loads(metadata_json) if metadata_json else {}
     except (TypeError, json.JSONDecodeError) as exc:
@@ -1172,6 +1175,14 @@ async def upload_pcap(request: Request, file: UploadFile = File(...), probe_id: 
             raise HTTPException(413, "pcap too large") from exc
         raise
     path = Path(stored["path"])
+    with path.open('rb') as capture:
+        header = capture.read(24)
+    if len(header) < 24 or header[:4] not in {
+        b'\xd4\xc3\xb2\xa1', b'\xa1\xb2\xc3\xd4',
+        b'\x4d\x3c\xb2\xa1', b'\xa1\xb2\x3c\x4d', b'\x0a\x0d\x0d\x0a',
+    }:
+        path.unlink(missing_ok=True)
+        raise HTTPException(422, '文件不是有效的 PCAP/PCAPNG 抓包文件')
     digest = str(stored["sha256"])
     segment_id = str(meta.get("segment_id") or digest)
     existing = db.scalar(select(PcapRecord).where(PcapRecord.probe_id == probe_id, PcapRecord.segment_id == segment_id))
@@ -1179,7 +1190,13 @@ async def upload_pcap(request: Request, file: UploadFile = File(...), probe_id: 
         existing = db.scalar(select(PcapRecord).where(PcapRecord.probe_id == probe_id, PcapRecord.sha256 == digest))
     if existing:
         path.unlink(missing_ok=True)
-        return {"id": existing.id, "task_id": None, "filename": existing.filename, "size": existing.size, "duplicate": True}
+        return {"id": existing.id, "task_id": None, "filename": existing.filename,
+                "size": existing.size, "duplicate": True, "status": existing.status}
+    try:
+        _queue_backpressure(db)
+    except HTTPException:
+        path.unlink(missing_ok=True)
+        raise
     record = PcapRecord(
         probe_id=probe_id,
         segment_id=segment_id,
@@ -1243,7 +1260,7 @@ def pcap_flows(pcap_id: int, protocol: str | None = None, ip: str | None = None,
 
 
 @router.get("/pcaps/{pcap_id}/packets")
-def pcap_packets(pcap_id: int, protocol: str | None = None, ip: str | None = None, port: int | None = None, page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=5000), db: Session = Depends(get_db)) -> dict[str, Any]:
+def pcap_packets(pcap_id: int, protocol: str | None = None, ip: str | None = None, port: int | None = None, page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=5000), search: str | None = None, db: Session = Depends(get_db)) -> dict[str, Any]:
     query = select(PacketRecord).where(PacketRecord.pcap_id == pcap_id)
     if protocol:
         query = query.where(PacketRecord.protocol == protocol)
@@ -1251,6 +1268,10 @@ def pcap_packets(pcap_id: int, protocol: str | None = None, ip: str | None = Non
         query = query.where(or_(PacketRecord.src_ip == ip, PacketRecord.dst_ip == ip))
     if port:
         query = query.where(or_(PacketRecord.src_port == port, PacketRecord.dst_port == port))
+    if search:
+        pattern = f'%{search}%'
+        query = query.where(or_(PacketRecord.info.ilike(pattern), PacketRecord.protocol.ilike(pattern),
+                                PacketRecord.src_ip.ilike(pattern), PacketRecord.dst_ip.ilike(pattern)))
     result = paginate(db, query.order_by(PacketRecord.number), page, page_size)
     return page_response([_serialize_packet(item) for item in result["items"]], page, page_size, result["total"])
 
@@ -1351,7 +1372,48 @@ def pcap_tls(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @router.get("/pcaps/{pcap_id}/files")
 def pcap_files(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return {"items": _external_details(pcap_id, db)["files"]}
+    if not db.get(PcapRecord, pcap_id):
+        raise HTTPException(404, 'pcap not found')
+    result = _captured_files(pcap_id, db)
+    if result is not None:
+        from app.services.pcap_files import object_path
+        items = [{**item, 'binary_available': object_path(pcap_id, item['id']).is_file()}
+                 for item in result.get('items', [])]
+        return {**result, 'items': items, 'needs_analysis': False}
+    return {'items': [{**item, 'binary_available': False}
+                      for item in _external_details(pcap_id, db)['files']],
+            'coverage': {}, 'needs_analysis': True}
+
+
+def _captured_files(pcap_id: int, db: Session) -> dict[str, Any] | None:
+    row = db.scalar(select(AnalysisResult).where(
+        AnalysisResult.module == 'pcap_files',
+        AnalysisResult.task_id.in_(select(Task.id).where(
+            Task.payload['pcap_id'].as_integer() == pcap_id)),
+    ).order_by(AnalysisResult.id.desc()))
+    return row.content if row else None
+
+
+def _captured_file(pcap_id: int, file_id: str, db: Session) -> tuple[dict, Path]:
+    from app.services.pcap_files import object_path
+    result = _captured_files(pcap_id, db) or {}
+    item = next((item for item in result.get('items', [])
+                 if str(item.get('id')) == file_id), None)
+    if item is None:
+        raise HTTPException(404, '该文件未提取，请重新分析抓包')
+    path = object_path(pcap_id, file_id)
+    if not path.is_file():
+        raise HTTPException(410, '提取文件已不存在，请重新分析抓包')
+    return item, path
+
+
+@router.get('/pcaps/{pcap_id}/files/{file_id}')
+def pcap_file_preview(pcap_id: int, file_id: str, offset: int = Query(0, ge=0),
+                      limit: int = Query(16384, ge=1, le=65536),
+                      db: Session = Depends(get_db)) -> dict[str, Any]:
+    from app.services.pcap_files import preview
+    item, path = _captured_file(pcap_id, file_id, db)
+    return {**item, **preview(path, offset, limit)}
 
 
 @router.get("/pcaps/{pcap_id}/alerts")
@@ -1632,10 +1694,10 @@ def engine_registry(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     # Count each engine's own rule files so the number always matches the rule
     # list the console renders for that engine.
     rule_counts: dict[str, int] = {}
-    for item in _rule_file_entries(db):
+    inventory = _rule_file_entries(db, include_content=False)
+    for item in inventory:
         rule_key = str(item.get("engine") or "")
         rule_counts[rule_key] = rule_counts.get(rule_key, 0) + 1
-    capability_rules = _merge_capability(_read_worker_capabilities())
     finding_counts = {
         str(name): int(total)
         for name, total in db.execute(
@@ -1648,12 +1710,15 @@ def engine_registry(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
         name = str(entry.get("name") or "")
         slug, label = ENGINE_PRESENTATION.get(name, (name, name))
         rule_count = rule_counts.get(name)
-        if rule_count is None and name in {"zeek", "suricata"}:
-            rule_count = int((capability_rules.get(name) or {}).get("rule_count") or 0)
+        source = next((item for item in CATALOG if item.engine == name), None)
         entry.update({
             "slug": slug,
             "label": label,
             "rule_count": int(rule_count or 0),
+            "active_rule_files": sum(item['execution'] == 'active' for item in inventory
+                                     if item['engine'] == name),
+            "rule_source": source.source_name or '平台检查规则' if source else '平台检查规则',
+            "refreshable": bool(source and source.refreshable),
             "detection_engine": name,
             "detection_count": finding_counts.get(name, 0),
         })
@@ -1928,6 +1993,9 @@ def alert_detail(alert_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
     return {
         "alert": serialize_alert(alert),
         "finding": _serialize_detection(finding) if finding else None,
+        # The authored rule behind this alert, so the console can show what
+        # matched instead of only the rule id.
+        "rule": _rule_definition(db, finding.rule_id, finding.engine, finding.evidence) if finding else None,
         "incident": _serialize_incident(incident) if incident else None,
         "probe": _serialize_probe(probe) if probe else None,
         "pcap": _serialize_pcap(pcap) if pcap else None,
@@ -2267,9 +2335,9 @@ def incident_trend(range: str = Query("7d"), db: Session = Depends(get_db)) -> d
 
 
 @router.get("/rules")
-def list_rules(rule_type: str | None = Query(None), engine: str | None = Query(None), db: Session = Depends(get_db)) -> dict[str, Any]:
+def list_rules(rule_type: str | None = Query(None), engine: str | None = Query(None), include_content: bool = Query(True), db: Session = Depends(get_db)) -> dict[str, Any]:
     """List Sigma / Suricata / YARA rules with content."""
-    items = _rule_file_entries(db)
+    items = _rule_file_entries(db, engine=engine or '', include_content=include_content)
     if rule_type:
         items = [item for item in items if item["type"] == rule_type]
     if engine:
@@ -2277,47 +2345,72 @@ def list_rules(rule_type: str | None = Query(None), engine: str | None = Query(N
     return {"items": items, "total": len(items)}
 
 
-def _rule_file_entries(db: Session) -> list[dict[str, Any]]:
-    """Every rule file in the platform rule library, tagged with its engine.
+@router.get('/rules/content')
+def rule_content(path: str, engine: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    item = next((item for item in _rule_file_entries(db, engine, include_content=False)
+                 if item['path'] == path), None)
+    if item is None:
+        raise HTTPException(404, '规则不存在')
+    if item['type'] == 'builtin':
+        from app.rules.code_catalog import definition
+        item['content'] = definition(engine, item['rule_id'])['content']
+    else:
+        item['content'] = Path(path).read_text(encoding='utf-8', errors='replace')
+    return item
 
-    The engine tag is what keeps the console truthful: a file is listed once,
-    under the engine that actually loads it, instead of being grouped by file
-    extension. ``/rules`` and the per-engine rule counter share this source so
-    a rule list and its count can never disagree.
+
+def _rule_file_entries(db: Session, engine: str = "", include_content: bool = True) -> list[dict[str, Any]]:
+    """Every rule file the platform library holds, with its engine and content.
+
+    The directories come from ``app.rules.catalog`` so the rule list, the rule
+    count and the files the engines actually load can never disagree. Files
+    imported at runtime (data/integrations/...) are listed on top of the ones
+    shipped with the platform.
     """
-    base = Path(__file__).resolve().parents[1] / "rules"
     items: list[dict[str, Any]] = []
 
     def _add(path: Path, rtype: str, engine_name: str) -> None:
+        if engine and engine != engine_name:
+            return
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")
+            content = path.read_text(encoding="utf-8", errors="replace") if include_content else ''
         except Exception:
             content = ""
         try:
             size = path.stat().st_size
         except OSError:
             size = 0
-        items.append({"type": rtype, "engine": engine_name, "name": path.name, "path": str(path), "content": content, "size": size})
+        execution = 'active'
+        if engine_name in {'osquery', 'wazuh', 'openscap', 'misp', 'presidio'}:
+            execution = 'external'
+        if engine_name == 'zeek' and path.name != 'site_security.zeek':
+            execution = 'external'
+        if engine_name == 'sigma_log_engine':
+            from app.rules.sigma import load_sigma_rules
+            if not load_sigma_rules(path):
+                execution = 'unsupported'
+        if engine_name == 'openscap' and path.name == 'dst_baseline_xccdf.xml':
+            execution = 'incomplete'
+        items.append({"type": rtype, "engine": engine_name, "name": path.name,
+                      "path": str(path), "content": content if include_content else '',
+                      "size": size, "execution": execution})
 
-    for path in sorted((base / "logs").glob("*.yaml")):
-        _add(path, "sigma", "sigma_log_engine")
-    for path in sorted((base / "data").glob("*.yar")):
+    # ``library.rule_files`` resolves both the rule files shipped with the
+    # platform and the ones an online refresh downloaded into the runtime dir.
+    for source in CATALOG:
+        if engine and source.engine != engine:
+            continue
+        for path in library.rule_files(source.engine):
+            _add(path, source.rule_type, source.engine)
+    # Operator-imported libraries live under the runtime integration directory.
+    for path in sorted((settings.integration_dir / "yara_rules").glob("*.yar")):
         _add(path, "yara", "data_engine")
-    for path in sorted((settings.integration_dir / 'yara_rules').glob('*.yar')):
-        _add(path, 'yara', "data_engine")
-    for path in sorted((base / 'logs').glob('*.yml')):
-        _add(path, 'sigma', "sigma_log_engine")
-    for path in sorted((base / "data").glob("*.yaml")):
-        _add(path, "sigma", "data_engine")
-    for path in sorted((base / "network").glob("*.yaml")):
-        _add(path, "sigma", "traffic_engine")
-    for path in sorted((base / "compliance").glob("*.yaml")):
-        _add(path, "sigma", "compliance_engine")
-    for path in sorted((Path(__file__).resolve().parents[1] / "integrations" / "suricata" / "rules").rglob("*.rules")):
-        _add(path, "suricata", "suricata")
+    for path in sorted((settings.integration_dir / 'dlp_rules').glob('*.json')):
+        _add(path, 'dlp', 'dlp_engine')
+    for path in sorted((settings.integration_dir / "sigma_rules").glob("*.y*ml")):
+        _add(path, "sigma", "sigma_log_engine")
     for path in sorted((settings.integration_dir / "suricata_rules").glob("*.rules")):
         _add(path, "suricata", "suricata")
-    # Offline-imported Suricata rules
     resources = db.scalars(select(OfflineResource).where(OfflineResource.resource_type == "suricata_rules")).all()
     for resource in resources:
         path = Path(resource.storage_path)
@@ -2326,7 +2419,131 @@ def _rule_file_entries(db: Session) -> list[dict[str, Any]]:
         elif path.exists() and path.is_dir():
             for rule_file in sorted(path.glob("*.rules")):
                 _add(rule_file, "suricata", "suricata")
-    return list({item['path']: item for item in items}.values())
+    from app.rules.code_catalog import definitions
+
+    for definition in definitions():
+        if engine and definition['engine'] != engine:
+            continue
+        items.append({
+            'type': 'builtin', 'engine': definition['engine'], 'name': definition['title'],
+            'rule_id': definition['rule_id'],
+            'path': definition['path'] + '#' + definition['rule_id'],
+            'content': definition['content'] if include_content else '',
+            'size': len(definition['content'].encode()), 'execution': 'active',
+        })
+    return list({(item["engine"], item["path"]): item for item in items}.values())
+
+
+
+def _rule_definition(db: Session, rule_id: str, engine: str = "", evidence: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Find the authored definition of ``rule_id``.
+
+    An alert must be able to show *which rule* matched, not only its id, so the
+    lookup returns the rule's title, condition/recommendation and raw text along
+    with where it lives. Three kinds of rule exist and all three are resolved:
+    rule files in the platform library, code-implemented rules declared in
+    ``app.rules.builtin``, and data-driven rules (the DLP policy, NVD records).
+    """
+    if not rule_id:
+        return None
+    evidence = evidence if isinstance(evidence, dict) else {}
+    snapshot = evidence.get('rule_snapshot')
+    if isinstance(snapshot, dict) and snapshot.get('rule_id') == rule_id and snapshot.get('engine') == engine:
+        return {**snapshot, 'resolution': 'matched_snapshot'}
+    # Stored DLP policy overrides the shipped defaults. Never let its YAML file
+    # hide the actual configured policy in an alert.
+    if rule_id == 'DLP_TRANSFER_001':
+        from app.rules.builtin import dlp_rule_definition
+        from app.services.dlp_service import normalize_policy
+
+        row = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
+        return {**dlp_rule_definition(rule_id, normalize_policy(row.value if row else {})),
+                'resolution': 'current_definition'}
+    configured = library.rule_snapshot(engine, rule_id) if engine else None
+    if configured:
+        return {**configured, 'resolution': 'current_definition'}
+    # Imported here rather than at module scope so this optional parser stays off
+    # the API import path.
+    import yaml
+
+    lookup_id = rule_id.removeprefix('SURICATA_') if engine == 'suricata' else rule_id
+    for item in _rule_file_entries(db, engine=engine):
+        content = str(item.get("content") or "")
+        # Cheap prefilter: only parse the files that mention this rule id.
+        if lookup_id not in content or item['type'] == 'builtin':
+            continue
+        rtype = str(item.get("type") or "")
+        definition: dict[str, Any] = {
+            "rule_id": rule_id,
+            "engine": str(item.get("engine") or ""),
+            "type": rtype,
+            "path": str(item.get("path") or ""),
+            "file": str(item.get("name") or ""),
+            "content": content,
+            "title": "",
+            "severity": "",
+            "condition": "",
+            "recommendation": "",
+            "detection": None,
+        }
+        if rtype == "yara":
+            if re.search(rf"^\s*rule\s+{re.escape(rule_id)}\b", content, re.MULTILINE):
+                definition["title"] = rule_id
+                return definition
+            continue
+        if rtype == "suricata":
+            for line in content.splitlines():
+                if not line.lstrip().startswith('#') and re.search(rf"\bsid\s*:\s*{re.escape(lookup_id)}\s*;", line):
+                    title = re.search(r'msg\s*:\s*"([^"\n]+)"', line)
+                    definition.update(title=title.group(1) if title else rule_id,
+                                      content=line, condition=line, resolution='current_definition')
+                    return definition
+            continue
+        try:
+            document = yaml.safe_load(content)
+        except Exception:
+            continue
+        for entry in document if isinstance(document, list) else [document]:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("rule_id") or entry.get("id") or "") != rule_id:
+                continue
+            definition.update({
+                "title": str(entry.get("title") or rule_id),
+                "severity": str(entry.get("severity") or entry.get("level") or ""),
+                "condition": str(entry.get("condition") or (entry.get("detection") or {}).get("condition") or ""),
+                "recommendation": str(entry.get("recommendation") or ""),
+                "detection": entry.get("detection") if isinstance(entry.get("detection"), dict) else None,
+            })
+            return definition
+    # No rule file carries this id: resolve the rules the engines apply
+    # themselves, so an alert never renders an empty rule block.
+    from app.rules import builtin as builtin_rules
+
+    record: dict[str, Any] = {}
+    if rule_id.startswith("CVE_"):
+        row = db.scalar(select(LocalCve).where(LocalCve.cve_id == rule_id[4:]))
+        if row:
+            record = {
+                "cve_id": row.cve_id,
+                "severity": row.severity,
+                "cvss_score": row.cvss_score,
+                "published": row.published,
+                "description": row.description,
+            }
+    definition = builtin_rules.cve_rule_definition(rule_id, evidence, record)
+    if definition:
+        return definition
+    policy = None
+    if rule_id == "DLP_TRANSFER_001":
+        row = db.scalar(select(SystemSetting).where(SystemSetting.key == "dlp_policy"))
+        from app.services.dlp_service import DEFAULT_POLICY, normalize_policy
+
+        policy = normalize_policy(row.value if row else DEFAULT_POLICY)
+    definition = builtin_rules.dlp_rule_definition(rule_id, policy)
+    if definition:
+        return definition
+    return builtin_rules.builtin_rule_definition(rule_id)
 
 
 @router.get("/probes/{probe_id}/metrics")
@@ -2384,23 +2601,7 @@ def pcap_tcp_stream(pcap_id: int, stream_id: int, db: Session = Depends(get_db))
 
 
 @router.get("/pcaps/{pcap_id}/files/{file_id}/download")
-def pcap_file_download(pcap_id: int, file_id: int, db: Session = Depends(get_db)) -> FileResponse:
-    """Best-effort download for a network file extracted by Zeek/Suricata.
-
-    The per-analysis workspace is transient, so a stored extracted file is only
-    available when the integration retained it. Returns 404 otherwise.
-    """
-    pcap = db.get(PcapRecord, pcap_id)
-    if not pcap:
-        raise HTTPException(404, "pcap not found")
-    rows = db.scalars(select(AnalysisResult).where(AnalysisResult.module == "integrations", AnalysisResult.task_id.in_(select(Task.id).where(Task.payload["pcap_id"].as_integer() == pcap_id)))).all()
-    for row in rows:
-        for name, events in (row.content or {}).items():
-            if not isinstance(events, list):
-                continue
-            for item in events:
-                if str(item.get("id", item.get("fuid", ""))) == str(file_id) or item.get("fuid") == file_id:
-                    storage = item.get("storage_path") or item.get("extracted_path") or item.get("path") or item.get("filename")
-                    if storage and Path(storage).exists():
-                        return FileResponse(storage, filename=item.get("filename") or item.get("name") or Path(storage).name)
-    raise HTTPException(404, "file content not retained (transient workspace)")
+def pcap_file_download(pcap_id: int, file_id: str, db: Session = Depends(get_db)) -> FileResponse:
+    item, path = _captured_file(pcap_id, file_id, db)
+    return FileResponse(path, filename=item['filename'], media_type='application/octet-stream',
+                        headers={'X-Content-Type-Options': 'nosniff'})

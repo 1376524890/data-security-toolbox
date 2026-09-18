@@ -1,0 +1,22 @@
+# 平台下发的 MISP 情报过滤规则：从情报事件中挑出可用于本平台匹配的属性。
+# MISPAdapter 按此过滤属性，避免把结构性元数据当成 IOC。
+version: 1
+# 参与匹配的属性类型 -> 本平台观测类型
+attribute_types:
+  ip-src: ip
+  ip-dst: ip
+  domain: domain
+  hostname: domain
+  url: url
+  md5: hash
+  sha1: hash
+  sha256: hash
+# 明确排除的属性类型（结构性/易误报）
+exclude_types: [comment, text, datetime, filename, email-header, user-agent, AS, telfhash, imphash]
+# 归属流量分析的标签：命中这些标签的属性才进入检测上下文
+include_tags: [tlp:white, tlp:green, tlp:amber, type:osint]
+exclude_tags: [tlp:red, do-not-deploy, false-positive:1]
+# 情报时效：早于该天数的属性不再参与匹配（0 表示不限制）
+max_age_days: 365
+# 单次加载的属性上限
+max_attributes: 5000

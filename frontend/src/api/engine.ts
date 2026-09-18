@@ -15,6 +15,22 @@ export interface EngineInfo {
   detection_engine?: string
   /** Findings this engine has already produced. */
   detection_count?: number
+  /** Set on engines bridged from a third-party adapter (Zeek/Suricata/...). */
+  bridge?: string
+  active_rule_files?: number
+  rule_source?: string
+  refreshable?: boolean
+}
+
+export interface RuleSyncResult {
+  engine: string
+  status: string
+  files: number
+  detail: string
+}
+
+export function syncEngineRules(engine: string): Promise<{ results: RuleSyncResult[] }> {
+  return apiPost('/rules/sync', { engines: [engine] }, { timeout: 900000 })
 }
 
 export function getEngineRegistry(): Promise<EngineInfo[]> {

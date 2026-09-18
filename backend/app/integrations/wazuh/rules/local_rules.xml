@@ -1,0 +1,36 @@
+<!-- 平台下发的 Wazuh 本地规则（local_rules.xml 语义）。
+     由 WazuhAdapter 在主机审计时加载；规则编号段 100000-100099 为本地保留段。 -->
+<group name="data-security-toolbox,">
+
+  <!-- 敏感文件被读取/复制（auditd 文件监视） -->
+  <rule id="100001" level="10">
+    <if_sid>80700</if_sid>
+    <field name="audit.key">sensitive_file</field>
+    <description>敏感数据文件被访问，可能存在数据外带风险。</description>
+    <mitre><id>T1005</id></mitre>
+  </rule>
+
+  <!-- 数据库服务异常外联 -->
+  <rule id="100002" level="12">
+    <if_sid>80792</if_sid>
+    <field name="audit.key">db_egress</field>
+    <description>数据库进程发起对外连接，疑似数据外传。</description>
+    <mitre><id>T1041</id></mitre>
+  </rule>
+
+  <!-- 认证失败暴破 -->
+  <rule id="100003" level="10" frequency="8" timeframe="120">
+    <if_matched_sid>5710</if_matched_sid>
+    <same_source_ip />
+    <description>短时间内多次认证失败，疑似口令暴破。</description>
+    <mitre><id>T1110</id></mitre>
+  </rule>
+
+  <!-- 审计服务被停用（合规基线） -->
+  <rule id="100004" level="12">
+    <if_sid>80700</if_sid>
+    <field name="audit.key">audit_stopped</field>
+    <description>主机审计服务被停用，检查记录可能残缺。</description>
+  </rule>
+
+</group>

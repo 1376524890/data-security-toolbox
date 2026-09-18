@@ -8,6 +8,16 @@ from app.core.config import settings
 from app.engine.core.base import DetectionEngine
 from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
+from app.rules.library import rule_params
+
+
+# 判定参数来自平台规则库（app/rules/intel）；下列取值是引擎原本硬编码的默认值，
+# 仅在规则文件缺失或规则被禁用时回退使用。
+TI_IOC_DEFAULTS = {"max_matches": 100, "severity": "High", "confidence": 0.9}
+CVE_RULE_DEFAULTS = {
+    "local_limit": 10, "results_per_page": 10, "severity": "High", "confidence": 0.7,
+    "nvd_url": "https://services.nvd.nist.gov/rest/json/cves/2.0",
+}
 
 
 class ThreatIntelEngine(DetectionEngine):
@@ -15,19 +25,23 @@ class ThreatIntelEngine(DetectionEngine):
     version = "1.0.0"
 
     def cve_lookup(self, keyword: str, api_key: str = "") -> list[dict[str, Any]]:
-        local = self._local_cve_lookup(keyword)
+        rule = rule_params("threat_intel", "CVE_LOOKUP", CVE_RULE_DEFAULTS)
+        local = self._local_cve_lookup(keyword, int(rule.get("local_limit") or 10))
         if local:
             return local
         headers = {"apiKey": api_key} if api_key else {}
         try:
-            response = requests.get("https://services.nvd.nist.gov/rest/json/cves/2.0", params={"keywordSearch": keyword, "resultsPerPage": 10}, headers=headers, timeout=15)
+            response = requests.get(str(rule.get("nvd_url") or CVE_RULE_DEFAULTS["nvd_url"]),
+                                    params={"keywordSearch": keyword,
+                                            "resultsPerPage": int(rule.get("results_per_page") or 10)},
+                                    headers=headers, timeout=15)
             response.raise_for_status()
             data = response.json()
             return [{"cve_id": item.get("cve", {}).get("id", ""), "published": item.get("published", ""), "description": next(iter(item.get("cve", {}).get("descriptions", [{}])), {}).get("value", "")} for item in data.get("vulnerabilities", [])]
         except Exception:
             return []
 
-    def _local_cve_lookup(self, keyword: str) -> list[dict[str, Any]]:
+    def _local_cve_lookup(self, keyword: str, limit: int = 10) -> list[dict[str, Any]]:
         from sqlalchemy import or_, select
         from app.core.database import SessionLocal
         from app.models import LocalCve
@@ -35,7 +49,7 @@ class ThreatIntelEngine(DetectionEngine):
             rows = db.scalars(select(LocalCve).where(or_(
                 LocalCve.cve_id.ilike(f'%{keyword}%'),
                 LocalCve.description['text'].as_string().ilike(f'%{keyword}%'),
-            )).order_by(LocalCve.cvss_score.desc()).limit(10)).all()
+            )).order_by(LocalCve.cvss_score.desc()).limit(max(1, limit))).all()
             if rows:
                 return [{'cve_id': row.cve_id, 'published': row.published, 'description': row.description.get('text', ''),
                          'severity': row.severity, 'cvss_score': row.cvss_score, 'source': row.source} for row in rows]
@@ -84,39 +98,42 @@ class ThreatIntelEngine(DetectionEngine):
                 ioc_type = "ip"
             if value:
                 iocs[value] = ioc_type
-        observed: dict[str, set[str]] = {"ip": set(), "domain": set(), "url": set(), "hash": set()}
+        ioc_rule = rule_params("threat_intel", "TI_IOC_001", TI_IOC_DEFAULTS)
+        observed_types = [str(item).lower() for item in (ioc_rule.get("observed_types") or ["ip", "domain", "url", "hash"])]
+        observed: dict[str, set[str]] = {kind: set() for kind in observed_types}
         for key, values in context.data.get('transfer_observations', {}).items():
             if key in observed:
                 observed[key].update(str(v).lower() for v in values)
         for row in context.data.get('dns', {}).get('queries', []):
             if row.get('name'):
-                observed['domain'].add(row['name'].rstrip('.').lower())
+                observed.setdefault('domain', set()).add(row['name'].rstrip('.').lower())
         for row in context.data.get('tls', {}).get('handshakes', []):
             if row.get('sni'):
-                observed['domain'].add(row['sni'].rstrip('.').lower())
+                observed.setdefault('domain', set()).add(row['sni'].rstrip('.').lower())
         for flow in context.flows:
             for key, value in (("ip", flow.get("src_ip")), ("ip", flow.get("dst_ip")), ("domain", flow.get("dns_query")), ("url", flow.get("url"))):
                 if value:
-                    observed[key].add(str(value).lower())
+                    observed.setdefault(key, set()).add(str(value).lower())
         for packet in context.packets:
             for value in (packet.get("src_ip"), packet.get("dst_ip")):
                 if value:
-                    observed["ip"].add(str(value).lower())
+                    observed.setdefault("ip", set()).add(str(value).lower())
         for line in context.log_lines:
-            observed["url"].add(line.strip().lower())
+            observed.setdefault("url", set()).add(line.strip().lower())
         for asset in context.assets:
             for key, value in (("ip", asset.get("ip")), ("domain", asset.get("hostname"))):
                 if value:
-                    observed[key].add(str(value).lower())
+                    observed.setdefault(key, set()).add(str(value).lower())
         matched = sorted(value for value, ioc_type in iocs.items() if value in observed.get(ioc_type, set()))
         if matched:
             findings.append(DetectionResult(
                 engine=self.name,
                 rule_id="TI_IOC_001",
-                severity="High",
-                confidence=0.9,
-                evidence={"matched_iocs": matched[:100], "observed": {key: sorted(values)[:100] for key, values in observed.items()}},
-                recommendation="对命中 IOC 的通信进行阻断、隔离和取证。",
+                severity=str(ioc_rule.get("severity") or "High"),
+                confidence=float(ioc_rule.get("confidence") or 0.9),
+                evidence={"matched_iocs": matched[:int(ioc_rule.get("max_matches") or 100)],
+                          "observed": {key: sorted(values)[:int(ioc_rule.get("max_matches") or 100)] for key, values in observed.items()}},
+                recommendation="对命中 IOC 的通信进行隔离和取证，核实业务授权。",
             ).normalize())
         if context.data.get("cve_lookup_enabled"):
             for service in context.assets:

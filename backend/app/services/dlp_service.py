@@ -16,6 +16,7 @@ from urllib.parse import unquote_plus, urlsplit
 import dpkt
 
 from app.core.config import settings
+from app.rules.library import rule_policy
 
 from app.services.rule_library import DEFAULT_CONFIDENCE, MIN_ALERT_CONFIDENCE
 
@@ -24,12 +25,17 @@ MAX_TOTAL = 32 * 1024 * 1024
 MAX_STREAMS = 256
 MAX_PACKETS = 200000
 MAX_OBJECTS = 500
-DEFAULT_POLICY = {'enabled': True, 'categories': ['phone', 'id_card', 'email', 'api_key'],
-                  'keywords': [], 'fingerprints': [], 'min_matches': 1,
-                  'min_confidence': MIN_ALERT_CONFIDENCE,
-                  'exclude_cidrs': ['127.0.0.0/8', '::1/128'],
-                  # The toolbox talking to itself is not data loss.
-                  'self_endpoints': [], 'ignore_own_traffic': True}
+# Built-in fallback, used only when the DLP rule file is absent from the library.
+_BUILTIN_DEFAULT_POLICY = {'enabled': True, 'categories': ['phone', 'id_card', 'email', 'api_key'],
+                          'keywords': [], 'fingerprints': [], 'min_matches': 1,
+                          'min_confidence': MIN_ALERT_CONFIDENCE,
+                          'exclude_cidrs': ['127.0.0.0/8', '::1/128'],
+                          # The toolbox talking to itself is not data loss.
+                          'self_endpoints': [], 'ignore_own_traffic': True}
+# The default policy the engine applies is the DLP rule in the platform
+# library (app/rules/dlp), so the rule an operator tunes and the policy the
+# engine runs are one document instead of two drifting copies.
+DEFAULT_POLICY = rule_policy('dlp_engine', 'DLP_TRANSFER_001', _BUILTIN_DEFAULT_POLICY)
 # Our own management channel authenticates with fixed header/cookie names, so a
 # captured stream carrying them is the toolbox talking to itself no matter which
 # address it uses (platform URL, DHCP change, hostname vs IP, ...).
@@ -41,7 +47,8 @@ BUILTIN_CONFIDENCE = {'phone': .7, 'id_card': .9, 'bank_card': .85, 'email': .85
 
 def normalize_policy(config):
     """Fill policy defaults so stored policies written before a key existed stay usable."""
-    policy = {**DEFAULT_POLICY, **(config or {})}
+    policy = {**rule_policy('dlp_engine', 'DLP_TRANSFER_001', _BUILTIN_DEFAULT_POLICY),
+              **(config or {})}
     try:
         policy['min_matches'] = max(1, int(policy['min_matches']))
     except (TypeError, ValueError):
@@ -317,6 +324,7 @@ def http_objects(data):
                 if part.is_multipart():
                     continue
                 results.append({**base, 'filename': (part.get_filename() or part.get_param('name', header='content-disposition') or 'form-field')[:255],
+                                'is_file': bool(part.get_filename()),
                                 'content_type': part.get_content_type(), 'body': (part.get_payload(decode=True) or b'')[:MAX_STREAM]})
                 if len(results) >= 50:
                     break

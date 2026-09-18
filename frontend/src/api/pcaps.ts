@@ -17,12 +17,28 @@ export function getPcap(id: number): Promise<PcapRecord> {
   return apiGet(`/pcaps/${id}`)
 }
 
-export function analyzePcap(id: number): Promise<unknown> {
+export function analyzePcap(id: number): Promise<{ id: number }> {
   return apiPost(`/pcaps/${id}/analyze`)
 }
 
-export function uploadPcap(file: File, probeId?: number): Promise<unknown> {
-  return apiUpload('/pcaps/upload', file, probeId ? { probe_id: probeId } : {})
+export interface PcapUploadResult {
+  id: number
+  task_id: number | null
+  filename: string
+  size: number
+  duplicate: boolean
+}
+
+export function uploadPcap(file: File, probeId?: number, onProgress?: (percent: number) => void): Promise<PcapUploadResult> {
+  // Large captures outlive the short timeout used by ordinary JSON requests.
+  return apiUpload('/pcaps/upload', file, probeId ? { probe_id: probeId } : {}, {
+    timeout: 30 * 60 * 1000,
+    onUploadProgress: (event) => {
+      if (event.total) {
+        onProgress?.(Math.round((event.loaded / event.total) * 100))
+      }
+    },
+  })
 }
 
 export function getTraffic(id: number): Promise<TrafficOverview> {
@@ -33,8 +49,8 @@ export function getPcapFlows(id: number, page = 1, pageSize = 50): Promise<PageR
   return apiGet(`/pcaps/${id}/flows`, { page, page_size: pageSize })
 }
 
-export function getPcapPackets(id: number, page = 1, pageSize = 100): Promise<PageResult<Packet>> {
-  return apiGet(`/pcaps/${id}/packets`, { page, page_size: pageSize })
+export function getPcapPackets(id: number, page = 1, pageSize = 100, search = ''): Promise<PageResult<Packet>> {
+  return apiGet(`/pcaps/${id}/packets`, { page, page_size: pageSize, search })
 }
 
 export function getPcapAlerts(id: number): Promise<{ items: AlertItem[] }> {
@@ -53,7 +69,7 @@ export function getPcapTls(id: number): Promise<{ items: Array<Record<string, un
   return apiGet(`/pcaps/${id}/tls`)
 }
 
-export function getPcapFiles(id: number): Promise<{ items: NetworkFile[] }> {
+export function getPcapFiles(id: number): Promise<{ items: NetworkFile[]; needs_analysis?: boolean; coverage?: Record<string, unknown> }> {
   return apiGet(`/pcaps/${id}/files`)
 }
 
@@ -85,6 +101,20 @@ export function getPcapStream(pcapId: number, streamId: number): Promise<TcpStre
   return apiGet(`/pcaps/${pcapId}/streams/${streamId}`)
 }
 
-export function getPcapFileDownloadUrl(pcapId: number, fileId: number): string {
-  return downloadUrl(`/pcaps/${pcapId}/files/${fileId}/download`)
+export interface FilePreview extends NetworkFile {
+  offset: number
+  length: number
+  hex: string
+  text: string
+  encoding: string
+  binary: boolean
+  has_more: boolean
+}
+
+export function getPcapFilePreview(pcapId: number, fileId: string, offset = 0): Promise<FilePreview> {
+  return apiGet(`/pcaps/${pcapId}/files/${encodeURIComponent(fileId)}`, { offset, limit: 16384 })
+}
+
+export function getPcapFileDownloadUrl(pcapId: number, fileId: string | number): string {
+  return downloadUrl(`/pcaps/${pcapId}/files/${encodeURIComponent(fileId)}/download`)
 }

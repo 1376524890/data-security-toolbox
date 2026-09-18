@@ -24,6 +24,10 @@ TSHARK_FIELDS = [
     "frame.protocols",
     "_ws.col.Protocol",
     "_ws.col.Info",
+    "ipv6.src",
+    "ipv6.dst",
+    "_ws.col.Source",
+    "_ws.col.Destination",
 ]
 
 
@@ -198,7 +202,7 @@ def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | No
     protocol_counter: Counter[str] = Counter()
     field_args = [item for field in TSHARK_FIELDS for item in ("-e", field)]
     seen_packets = 0
-    for line in stream_tshark(["-r", str(path), "-T", "fields", *field_args], timeout=timeout):
+    for line in stream_tshark(["-n", "-r", str(path), "-T", "fields", "-E", "occurrence=f", *field_args], timeout=timeout):
         seen_packets += 1
         parts = line.split("\t")
         if len(parts) < 12:
@@ -209,6 +213,9 @@ def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | No
         except ValueError:
             timestamp = 0.0
         src_ip, dst_ip = parts[2], parts[3]
+        if len(parts) >= 16:
+            src_ip = src_ip or parts[12] or parts[14]
+            dst_ip = dst_ip or parts[13] or parts[15]
         src_port = int(parts[4] or 0) if parts[4] else 0
         dst_port = int(parts[5] or 0) if parts[5] else 0
         src_port = int(parts[6] or 0) if src_port == 0 and parts[6] else src_port
@@ -375,7 +382,8 @@ def packet_detail(path: Path, number: int, timeout: int = 60) -> dict[str, Any] 
     """
     if not shutil.which("tshark"):
         return None
-    args = ["-r", str(path), "-Y", f"frame.number=={int(number)}", "-T", "json", "-x"]
+    args = ["-n", "-r", str(path), "-c", str(int(number)),
+            "-Y", f"frame.number=={int(number)}", "-T", "json", "-x"]
     try:
         proc = subprocess.run(["tshark", *args], capture_output=True, text=True, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):

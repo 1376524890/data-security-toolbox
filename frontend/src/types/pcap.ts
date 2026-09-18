@@ -78,6 +78,9 @@ export interface TrafficOverview {
 }
 
 export interface NetworkFile {
+  id?: string
+  binary_available?: boolean
+  complete?: boolean | null
   filename?: string
   name?: string
   mime_type?: string

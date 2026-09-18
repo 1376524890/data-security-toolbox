@@ -25,10 +25,29 @@ export interface Alert {
 export interface AlertDetail {
   alert: Alert
   finding?: DetectionFinding | null
+  /** The authored rule behind the finding, when it lives in the rule library. */
+  rule?: RuleDefinition | null
   incident?: Incident | null
   probe?: { id: number; name: string; ip_address: string; status: string } | null
   pcap?: PcapRecord | null
   deliveries: Array<{ id: number; channel: string; target: string; status: string; attempts: number; last_error: string; sent_at?: string | null }>
+}
+
+/** A rule as authored in the platform rule library. */
+export interface RuleDefinition {
+  resolution?: 'matched_snapshot' | 'current_definition'
+  sha256?: string
+  rule_id: string
+  engine: string
+  type: string
+  path: string
+  file: string
+  content: string
+  title: string
+  severity: string
+  condition: string
+  recommendation: string
+  detection?: Record<string, unknown> | null
 }
 
 export interface AlertSummary {

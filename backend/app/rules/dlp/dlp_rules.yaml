@@ -1,0 +1,20 @@
+# 被动 DLP 规则：默认策略参数与规则定义。
+# DlpEngine 执行的就是这份策略本身（无规则文件式匹配），
+# 控制台保存的策略（system_setting: dlp_policy）会覆盖这里的默认值。
+- rule_id: DLP_TRANSFER_001
+  title: 敏感数据外发（被动 DLP）
+  severity: High
+  confidence: 0.6
+  enabled: true
+  condition: 命中数 >= min_matches 且 置信度 >= min_confidence
+  params:
+    enabled: true
+    categories: [phone, id_card, email, api_key]
+    keywords: []
+    fingerprints: []
+    min_matches: 1
+    min_confidence: 0.6
+    exclude_cidrs: ['127.0.0.0/8', '::1/128']
+    self_endpoints: []
+    ignore_own_traffic: true
+  recommendation: 核查传输目的地和业务授权；对敏感内容脱敏、加密，必要时通过网关或终端策略阻断。

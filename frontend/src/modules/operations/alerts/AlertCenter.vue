@@ -9,6 +9,7 @@ import SeverityTag from '../../../components/security/SeverityTag.vue'
 import StatusBadge from '../../../components/security/StatusBadge.vue'
 import RiskBadge from '../../../components/security/RiskBadge.vue'
 import EvidenceViewer from '../../../components/evidence/EvidenceViewer.vue'
+import RuleMatchPanel from '../../../components/evidence/RuleMatchPanel.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
 import Timeline from '../../../components/common/Timeline.vue'
 import { formatDateTime, formatRiskScore } from '../../../utils/format'
@@ -135,13 +136,7 @@ onMounted(load)
 
           <div class="inv-sections">
             <div class="inv-section">
-              <div class="sec-title">检测来源</div>
-              <el-descriptions :column="2" border size="small">
-                <el-descriptions-item label="引擎">{{ detail.finding?.engine || detail.alert.source || '-' }}</el-descriptions-item>
-                <el-descriptions-item label="规则 ID"><span class="mono">{{ detail.finding?.rule_id || '-' }}</span></el-descriptions-item>
-                <el-descriptions-item label="目标">{{ detail.finding?.target_type }} / {{ detail.finding?.target_id }}</el-descriptions-item>
-                <el-descriptions-item label="处置建议">{{ detail.finding?.recommendation || '-' }}</el-descriptions-item>
-              </el-descriptions>
+              <RuleMatchPanel :rule="detail.rule" :finding="detail.finding" />
             </div>
 
             <div class="inv-section">

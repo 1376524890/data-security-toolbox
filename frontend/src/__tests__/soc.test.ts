@@ -39,7 +39,10 @@ describe('navigation menu', () => {
     const flat = flatMenu()
     expect(flat.length).toBeGreaterThanOrEqual(20)
     expect(flat.some((m) => m.path === '/network/pcap')).toBe(true)
-    expect(flat.some((m) => m.path === '/engines/zeek')).toBe(true)
+    // The engines live behind one sidebar entry; the per-engine pages are
+    // reached from the overview, not from the menu.
+    expect(flat.some((m) => m.path === '/engines')).toBe(true)
+    expect(flat.some((m) => m.path.startsWith('/engines/'))).toBe(false)
   })
   it('defines security operations group', () => {
     const groups = menuGroups.filter((g) => 'group' in g).map((g) => (g as any).group)

@@ -6,6 +6,13 @@ from typing import Any
 from app.engine.core.base import DetectionEngine
 from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
+from app.rules.library import rule_enabled, rule_params
+
+# 判定参数来自平台规则库（app/rules/asset）。下列取值即引擎原本硬编码的阈值，
+# 仅在规则文件缺失或规则被禁用时作为回退使用。
+DATABASE_CATEGORIES = ["redis", "mysql", "postgresql", "mongodb", "oracle"]
+WEAK_AUTH_BANNER_PATTERNS = ["noauth", "authentication not required", "no password"]
+WEB_CATEGORIES = ["web", "nginx", "apache", "iis", "tomcat"]
 
 
 SERVICE_PATTERNS: dict[str, list[str]] = {
@@ -77,15 +84,27 @@ class AssetEngine(DetectionEngine):
         services = context.data.get("services", [])
         if not isinstance(services, list):
             services = []
+        db_rule = rule_params("asset_engine", "ASSET_PUBLIC_DB_001", {"categories": DATABASE_CATEGORIES})
+        weak_rule = rule_params("asset_engine", "ASSET_DB_WEAK_AUTH_001", {
+            "categories": DATABASE_CATEGORIES, "banner_patterns": WEAK_AUTH_BANNER_PATTERNS,
+        })
+        web_rule = rule_params("asset_engine", "ASSET_PUBLIC_WEB_001", {"categories": WEB_CATEGORIES})
+        database_categories = {str(item) for item in (db_rule.get("categories") or DATABASE_CATEGORIES)}
+        weak_categories = {str(item) for item in (weak_rule.get("categories") or DATABASE_CATEGORIES)}
+        weak_banner_patterns = [str(item).lower() for item in (weak_rule.get("banner_patterns") or WEAK_AUTH_BANNER_PATTERNS)]
+        web_categories = {str(item) for item in (web_rule.get("categories") or WEB_CATEGORIES)}
+        db_rule_on = rule_enabled("asset_engine", "ASSET_PUBLIC_DB_001")
+        weak_rule_on = rule_enabled("asset_engine", "ASSET_DB_WEAK_AUTH_001")
+        web_rule_on = rule_enabled("asset_engine", "ASSET_PUBLIC_WEB_001")
         for item in services:
             port = int(item.get("port", 0))
             service = str(item.get("service", ""))
             banner = str(item.get("banner", "")) or banner_probe(host, port)
             category = classify_service(port, service, banner)
             weak_auth = bool(item.get("weak_auth", False))
-            if any(word in banner.lower() for word in ["noauth", "authentication not required", "no password"]):
+            if any(word in banner.lower() for word in weak_banner_patterns):
                 weak_auth = True
-            if category in {"redis", "mysql", "postgresql", "mongodb", "oracle"} and public_exposed:
+            if db_rule_on and category in database_categories and public_exposed:
                 findings.append(DetectionResult(
                     engine=self.name,
                     rule_id="ASSET_PUBLIC_DB_001",
@@ -94,7 +113,7 @@ class AssetEngine(DetectionEngine):
                     evidence={"host": host, "port": port, "service": service, "category": category, "banner": banner},
                     recommendation="数据库服务不得暴露在公网，应限制来源网段并启用加密认证。",
                 ).normalize())
-            if category in {"redis", "mysql", "postgresql", "mongodb", "oracle"} and weak_auth:
+            if weak_rule_on and category in weak_categories and weak_auth:
                 findings.append(DetectionResult(
                     engine=self.name,
                     rule_id="ASSET_DB_WEAK_AUTH_001",
@@ -103,7 +122,7 @@ class AssetEngine(DetectionEngine):
                     evidence={"host": host, "port": port, "category": category, "banner": banner, "weak_auth": True},
                     recommendation="启用强认证、最小权限和访问审计，禁止空密码或匿名认证。",
                 ).normalize())
-            if category in {"web", "nginx", "apache", "iis", "tomcat"} and public_exposed:
+            if web_rule_on and category in web_categories and public_exposed:
                 findings.append(DetectionResult(
                     engine=self.name,
                     rule_id="ASSET_PUBLIC_WEB_001",

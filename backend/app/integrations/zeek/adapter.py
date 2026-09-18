@@ -87,6 +87,12 @@ class ZeekAdapter(IntegrationAdapter):
                 findings.extend(self._weird(record))
             elif event_type == "conn":
                 findings.extend(self._conn(record))
+            elif event_type == "notice" and str(record.get('note', '')).startswith('DST::'):
+                findings.append(finding(
+                    self.name, 'ZEEK_' + str(record['note']).replace('::', '_'),
+                    'Medium', 0.8, {'record': record, 'condition': record.get('msg', '')},
+                    '结合原始流量核查异常查询、明文凭据或扫描行为。',
+                ))
         return AdapterResult(self.name, records, findings, {"events": len(records), "findings": len(findings)})
 
     def _dns(self, record: dict[str, Any]) -> list[Any]:

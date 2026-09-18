@@ -371,22 +371,13 @@ def _worker_capability() -> dict[str, Any]:
         # loads the shipped rule set (``integrations/suricata/rules``) plus the
         # resolved offline set; reading only the offline directory reported
         # "0 rules" while Suricata ran with rules loaded.
-        rule_dirs = [
-            Path(__file__).resolve().parents[1] / "integrations" / "suricata" / "rules",
-            settings.integration_dir / "suricata_rules",
-        ]
-        seen: set[Path] = set()
-        for directory in rule_dirs:
-            if not directory.is_dir():
-                continue
-            for rule_file in sorted(directory.glob("*.rules")):
-                if rule_file in seen:
-                    continue
-                seen.add(rule_file)
-                try:
-                    rule_count += rule_file.read_text(encoding="utf-8", errors="replace").count("sid:")
-                except Exception:
-                    pass
+        from app.rules.library import rule_files, _suricata_lines
+
+        for rule_file in rule_files('suricata'):
+            try:
+                rule_count += len(_suricata_lines(str(rule_file), rule_file.stat().st_mtime_ns))
+            except OSError:
+                pass
     return {
         "worker_id": f"analysis-{_socket.gethostname()}",
         "heartbeat": datetime.now(UTC).isoformat(),
@@ -571,6 +562,12 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
             record.duration = parsed["packets"][-1]["timestamp"] - parsed["packets"][0]["timestamp"]
         db.add_all([Flow(pcap_id=pcap_id, **{k: v for k, v in flow.items() if k != "app_protocol"}) for flow in parsed["flows"]])
         db.add_all([PacketRecord(pcap_id=pcap_id, **packet) for packet in parsed["packets"]])
+        from app.services.pcap_files import extract_capture_files
+
+        update_task(task_id, progress=60, current_stage="传输文件提取")
+        captured_files = extract_capture_files(path, pcap_id, parsed['protocol_summary'])
+        db.add(AnalysisResult(task_id=task_id, module='pcap_files', content=captured_files,
+                              risk_level='Low'))
         update_task(task_id, progress=70, current_stage="流量与异常分析")
         anomalies = detect_anomalies(parsed["flows"], parsed["packets"])
         db.add_all([Anomaly(pcap_id=pcap_id, **item) for item in anomalies])

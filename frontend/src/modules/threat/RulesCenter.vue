@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, reactive } from 'vue'
+import { onMounted, ref, computed, reactive, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiPost } from '../../api/client'
-import { listRules, type RuleItem } from '../../api/rules'
+import { listRules, getRuleContent, type RuleItem } from '../../api/rules'
+import { getEngineRegistry, type EngineInfo } from '../../api/engine'
 import StateBox from '../../components/common/StateBox.vue'
 import StatusBadge from '../../components/security/StatusBadge.vue'
-import JsonViewer from '../../components/evidence/JsonViewer.vue'
 import RawViewer from '../../components/evidence/RawViewer.vue'
 
 const loading = ref(true)
 const error = ref('')
 const rules = ref<RuleItem[]>([])
-const activeType = ref<'sigma' | 'suricata' | 'yara'>('sigma')
+const activeType = ref('')
+const activeEngine = ref('')
+const engines = ref<EngineInfo[]>([])
+const keyword = ref('')
+const page = ref(1)
 const dialog = ref(false), saving = ref(false)
 const draft = reactive({rule_type:'suricata' as 'suricata'|'yara', name:'', content:''})
 function openAdd() { draft.rule_type = activeType.value === 'yara' ? 'yara' : 'suricata'; dialog.value = true }
@@ -27,15 +31,29 @@ async function saveRule() {
   catch(e) { ElMessage.error(String(e)) } finally { saving.value = false }
 }
 
-const filtered = computed(() => rules.value.filter((r: RuleItem) => r.type === activeType.value))
-const types = computed(() => ['sigma', 'suricata', 'yara'].map((t) => ({ label: t, value: t, count: rules.value.filter((r: RuleItem) => r.type === t).length })))
+const filtered = computed(() => rules.value.filter((r: RuleItem) =>
+  (!activeType.value || r.type === activeType.value) &&
+  (!activeEngine.value || r.engine === activeEngine.value) &&
+  `${r.name} ${r.rule_id || ''} ${r.path}`.toLowerCase().includes(keyword.value.toLowerCase())))
+const visible = computed(() => filtered.value.slice((page.value - 1) * 30, page.value * 30))
+const types = computed(() => [...new Set(rules.value.map(r => r.type))].sort())
+const executionLabels: Record<string, string> = {
+  active: '已接入执行', external: '待外部部署', unsupported: '语法不兼容', incomplete: '缺少依赖',
+}
+watch([activeType, activeEngine, keyword], () => { page.value = 1 })
+async function expandRule(row: RuleItem, expanded: RuleItem[]): Promise<void> {
+  if (!expanded.includes(row) || row.content) return
+  try { row.content = (await getRuleContent(row)).content }
+  catch (err) { ElMessage.error(err instanceof Error ? err.message : String(err)) }
+}
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const result = await listRules()
+    const [result, registry] = await Promise.all([listRules({ include_content: false }), getEngineRegistry()])
     rules.value = result.items
+    engines.value = registry
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -49,9 +67,13 @@ onMounted(load)
 <template>
   <div>
     <div class="toolbar">
-      <el-radio-group v-model="activeType">
-        <el-radio-button v-for="t in types" :key="t.value" :value="t.value">{{ t.label }} ({{ t.count }})</el-radio-button>
-      </el-radio-group>
+      <el-select v-model="activeEngine" clearable filterable placeholder="全部引擎" style="width: 230px">
+        <el-option v-for="engine in engines" :key="engine.name" :value="engine.name" :label="`${engine.label || engine.name} (${engine.rule_count || 0})`" />
+      </el-select>
+      <el-select v-model="activeType" clearable placeholder="全部类型" style="width: 150px">
+        <el-option v-for="type in types" :key="type" :value="type" :label="type" />
+      </el-select>
+      <el-input v-model="keyword" clearable placeholder="搜索规则名称或 ID" style="width: 230px" />
       <div class="toolbar-spacer" />
       <el-button type="primary" @click="openAdd">添加 / 导入检查规则</el-button>
     </div>
@@ -65,20 +87,15 @@ onMounted(load)
       <template #footer><el-button @click="dialog=false">取消</el-button><el-button :loading="saving" type="primary" @click="saveRule">校验并添加</el-button></template>
     </el-dialog>
     <StateBox :loading="loading" :error="error" :empty="!filtered.length" @retry="load">
-      <div class="grid cols-2">
-        <div v-for="(r, idx) in filtered" :key="r.path" class="soc-card rule-card">
-          <div class="rule-head">
-            <div class="rule-name">{{ r.name }}</div>
-            <StatusBadge :value="r.type" />
-          </div>
-          <div class="rule-meta">
-            <span>类型 <span class="mono">{{ r.type }}</span></span>
-            <span>大小 <span class="mono">{{ r.size }} B</span></span>
-          </div>
-          <div class="rule-path mono">{{ r.path }}</div>
-          <RawViewer :value="r.content" language="yaml" :height="220" />
-        </div>
-      </div>
+      <el-table :data="visible" :row-key="(row: RuleItem) => `${row.engine}:${row.path}`" @expand-change="expandRule">
+        <el-table-column type="expand"><template #default="{ row }"><RawViewer :value="row.content" language="plaintext" :height="280" /></template></el-table-column>
+        <el-table-column prop="name" label="规则 / 文件" min-width="260" show-overflow-tooltip />
+        <el-table-column prop="engine" label="引擎" min-width="170" />
+        <el-table-column prop="type" label="类型" width="110" />
+        <el-table-column label="接入状态" width="140"><template #default="{ row }">{{ executionLabels[row.execution] || '待核实' }}</template></el-table-column>
+        <el-table-column prop="size" label="大小 (B)" width="120" />
+      </el-table>
+      <el-pagination v-model:current-page="page" :page-size="30" :total="filtered.length" layout="total, prev, pager, next" style="margin-top: 12px" />
     </StateBox>
   </div>
 </template>

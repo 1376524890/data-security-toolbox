@@ -3,15 +3,51 @@
 > 项目整体状态快照。长期稳定信息见 `AGENTS.md`，当前任务见 `TASK.md`，架构见 `docs/architecture.md`。
 > 数据均为实测，采集时间：2026-09-17。
 
-## 当前版本
+## 2026-09-18 v2.11.0 发布
+
+平台版本 2.11.0（探针保持 3.5.0），发布标签 `v2.11.0`，数据库迁移仍为 `0014_probe_removal (head)`，升级无需迁移。
+本版把「引擎规则库」与「PCAP 工作台」两块未提交改动纳入发布：规则文件真实加载与上游在线同步、
+命中规则快照与告警规则解释、引擎总览页、抓包内传输文件提取与文本/Hex 预览、手动上传定位与包列表分页。
+更新内容见 `CHANGELOG.md` 的 `v2.11.0` 段，版本策略见 `docs/versioning.md`。
+发布前验证：前端 34 passed + `vue-tsc --noEmit` 通过；后端定向回归通过，全量后端 16 项失败与既有基线一致
+（探针包缺失、Windows/Linux 行尾、容器内 Suricata 能力等环境相关）。本版未改动探针代码，探针包无需重建。
+
+## 2026-09-18 09:10 PCAP 最新状态
+
+手动重复上传现在直接打开已有记录；原问题已用 `2.pcapng -> duplicate=true, id=651` 复现。
+上传进度、独立超时、任务跟踪、包列表分页/布局/IPv6、传输文件持久化及文本/Hex/下载已部署。
+真实手动上传 #2112 / 任务 #2144 成功并提取 5 项内容，全部下载与预览字节验证一致；
+既有 #651 / 任务 #2145 成功，284 包，第二页从 101 开始，单包字节和协议树正常。
+最新测试：后端相关 49 passed、前端 34 passed，类型检查与构建通过；无浏览器截图验收。
+新文件预览端点及原下载端点按抓包清单校验文件 ID，详见 `docs/architecture.md` 和 `TASK.md`。
+
+## 2026-09-18 规则库状态
+
+规则展示、在线同步、命中快照及原生执行修复已部署到本机全部应用容器，详见 `TASK.md` 顶部。
+通过前端网关实测：15 个引擎均有规则，共 3,512 项资源；Suricata 实际加载 52,270 条签名。
+历史告警 #1 / #5 可解释；真实 PCAP 重分析 #2080 成功，新 Finding #834 含规则快照。
+规则中心已支持引擎筛选、搜索、分页和懒加载，不再使用旧类型页签混淆引擎。
+在线源完成初次拉取；外部组件规则与实际接入状态分别标识，不能把下载当作目标机检测已完成。
+测试：后端最新定向 33 passed / 1 deselected，前端 31 passed，类型检查及生产构建通过；
+全量后端仍有既有 16 项失败，尚未逐项修复，不能笼统认定全部与代码无关。
+本机 backend/worker 健康；无测试数据导入、无真实探针主机操作。工作区尚未提交。
+下方原快照中的未部署、规则数、检测规则页签、全量测试仍在运行等描述已被本段覆盖。
+
+## 当前版本（原快照）
+
+> 2026-09-17 恢复会话实测更新：运行后端已包含内置规则解析，DLP 告警 #1 和端口扫描
+> 告警 #5 均返回规则与命中条件；`/test/status` 为 `present=false`。工作区另有未部署的
+> 规则目录、在线同步及引擎参数接入改动，超出下方原快照范围，详见 `TASK.md` 顶部恢复核验。
+> 挂载当前工作区的全量 pytest 仍在运行，旧测试基线不能证明这些新增改动已通过。
 
 | 项 | 值 | 来源 |
 | --- | --- | --- |
-| 平台 | 2.10.0 | `backend/app/main.py`（FastAPI version）、`frontend/package.json` |
+| 平台 | 2.11.0 | `backend/app/main.py`（FastAPI version）、`frontend/package.json` |
 | 探针 | 3.5.0 | `probe/probe.py:AGENT_VERSION`、`backend/app/core/config.py:probe_agent_version` |
 | 数据库迁移 | `0014_probe_removal (head)` | `alembic current` |
-| 分支 / 最新提交 | `develop` / `573d9e9`（本轮引擎归属修复） | `git log --oneline` |
-| 工作区 | 干净 | `git status` |
+| 分支 / 最新提交 | `develop` / 发布提交（tag `v2.11.0`） | `git log --oneline` |
+| 工作区 | 干净（发布提交后） | `git status` |
+| 未推送提交 | 含发布提交在内的本地提交均未推送，远端 `origin/develop` 停在 `e815a54` | `git log origin/develop..HEAD --oneline` |
 | 远端 | `origin` = `https://github.com/1376524890/data-security-toolbox.git` | `git remote -v` |
 
 ## 已实现模块
@@ -152,8 +188,13 @@
 - 页面分包：9 个业务域模块；驾驶舱、资产中心、PCAP 工作台、协议分析、事件中心、告警中心、IOC 情报、情报源、规则库等。
 - 近期修复：驾驶舱环形图（统一 `severityOrder` / `severityLabels` / `severityTagColors`）、
   协议分布只显示应用层、PCAP 告警证据改用命中规则的真实 evidence。
-- 本轮修复：安全引擎页/检测中心/敏感发现的引擎选项与过滤全部改读注册表；引擎页新增「规则清单」
-  （可按引擎列出真实规则文件、展开看规则正文）；安全引擎菜单新增 6 个平台引擎入口。
+- 上一轮：安全引擎页/检测中心/敏感发现的引擎选项与过滤全部改读注册表；引擎页新增「规则清单」
+  （可按引擎列出真实规则文件、展开看规则正文）。
+- 本轮：安全引擎组菜单由 12 个逐引擎入口**收敛为单一「引擎总览」**（`/engines` 路由 +
+  `modules/engines/EnginesOverview.vue`，一张表列出全部引擎的名称/类型/版本/状态/规则文件数/检测数/来源，
+  行点击进 `/engines/<slug>`）；告警详情新增 `components/evidence/RuleMatchPanel.vue`
+  （上半「命中规则」含命中条件、处置建议、规则来源与规则原文，下半「命中内容」按证据键渲染表格/标签并脱敏），
+  取代 `AlertCenter.vue` 原先的「检测来源」描述块。
 - 单测 31/31 通过，`vue-tsc --noEmit` 干净（本轮复跑）。
 
 ## 后端状态
@@ -179,7 +220,7 @@
 
 | 套件 | 命令 | 基线 |
 | --- | --- | --- |
-| 后端全量（固定口径） | 见下方 `docker run` 说明 | HEAD `e815a54` = 521 用例 / 16 失败；本轮 = **531 用例 / 16 失败，失败集合逐条一致** |
+| 后端全量（固定口径） | 见下方 `docker run` 说明 | HEAD `e815a54` = 521 用例 / 16 失败；本轮 = **532 用例 / 16 失败，失败集合逐条一致（零回归）** |
 | 前端单测 | `frontend/` 下 `npx vitest run`（本机 node 22.19 + 仓库 `node_modules`） | 31/31 通过 |
 | 前端类型 | `frontend/` 下 `npx vue-tsc --noEmit` | 干净 |
 
@@ -223,6 +264,12 @@ docker run --rm -v "${src}\backend\app:/app/app" -v "${src}\backend\tests:/app/t
    `slug` / `label` / `detection_engine`，前端不再持有任何引擎名单。
 10. **规则库单一来源**：`_rule_file_entries()` 是规则文件与引擎归属的唯一枚举点，`/rules` 与注册表的
     规则数共用它；"规则数"必须等于该引擎的规则清单条数。
+11. **告警必须能自我解释**：`AlertDetail` 追加 `rule` 字段，由 `_rule_definition()` 三层解析——
+    规则库文件 → 代码内置规则（`app/rules/builtin.py`）→ 数据驱动规则（DLP 策略、本地 CVE 库）。
+    「代码实现的规则没有规则文件」不再是显示空白的理由：定义就写在实现它的模块旁边，
+    `source` 指向那个 `.py`，条件文本与代码里的阈值逐条对齐。
+12. **导航按「谁在用」收敛，不按引擎数量展开**：引擎是平台的实现细节，逐引擎单列菜单会随引擎增长而膨胀，
+    且与「引擎总览」重复。导航只留一个入口，引擎的差异化信息放到总览表格与详情页里。
 
 ## 兼容性变更记录
 
@@ -235,6 +282,9 @@ docker run --rm -v "${src}\backend\app:/app/app" -v "${src}\backend\tests:/app/t
 | 新增 `POST /api/v1/incidents/rebuild-attribution` | 新增端点 | 只重算已有事件的 `asset`/`assets`/`stages`/`title`，不增删事件、不改 `fingerprint`；写 `audit_logs` |
 | `asset_detail` 的「关联检测」匹配范围扩大 | 同一资产可能返回比以前更多的 findings | 由「只看 `evidence.asset.ip`/`evidence.ip`」扩大到所有主机拼写，实测 192.168.191.130 由 0 变 99 |
 | `/api/v1/engine/registry` 每项追加 `slug` / `label` / `rule_count` / `detection_engine` / `detection_count` | 新增字段，纯追加 | 旧消费者只读 `name`/`version` 不受影响；`detection_engine` 是该引擎真正落库的引擎名 |
+| `/api/v1/alerts/{id}` 追加 `rule` 字段 | 新增字段，纯追加 | 值为命中规则的 `rule_id`/`engine`/`type`/`title`/`severity`/`condition`/`recommendation`/`file`/`content`/`detection`；规则库文件、代码内置规则、DLP 策略与本地 CVE 库四种来源统一成同一形状，解析不到时为 `null` |
+| 控制台新增前端路由 `/engines` | 仅前端路由 | 「引擎总览」；`/engines/:name` 详情页与后端接口未变 |
+| 安全引擎导航组由 12 项收敛为 1 项 | 仅前端导航 | 引擎入口不再逐个出现在侧边栏，全部经由 `/engines` 进入；原有 `/engines/<slug>` 链接仍可直接访问 |
 | `/api/v1/rules` 每项追加 `engine`，并新增 `engine=` 查询参数 | 新增字段 + 新增可选参数 | 原有 `rule_type` 参数保留；返回项新增 1 个字段 |
 | `/api/v1/rules` 的 `type` 取值分布 | 规则归类变化 | `app/rules/network`、`app/rules/compliance` 下的规则此前被标成 `sigma`（按扩展名猜的），现按**加载它的引擎**给出 `engine` 标签，`type` 仍保留扩展名语义 |
 | 历史数据的引擎归属纠正 | `detection_findings.engine` 79 行、`incidents.findings.items[*].engine` 18 条、`alerts.source` 66 行 | 仅纠正错误归属，不新增/不删除记录，不改 `fingerprint`/`id` |

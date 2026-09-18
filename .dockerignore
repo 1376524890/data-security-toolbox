@@ -12,6 +12,8 @@
 .git
 .gitignore
 .venv
+.local
+**/node_modules
 venv
 node_modules
 *.log

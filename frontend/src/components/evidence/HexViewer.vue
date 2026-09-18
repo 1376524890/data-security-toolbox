@@ -52,9 +52,9 @@ const rows = computed(() => {
 .hex-viewer { font-family: var(--soc-font-mono); font-size: 12px; background: #0e1626; border: 1px solid var(--soc-border); border-radius: var(--soc-radius-sm); overflow: auto; max-height: 100%; }
 .hv-empty { padding: 20px; color: var(--soc-text-dim); text-align: center; }
 .hv-body { padding: 8px; }
-.hv-header, .hv-row { display: grid; grid-template-columns: 90px 1fr 1fr; gap: 8px; padding: 1px 0; }
+.hv-header, .hv-row { display: grid; grid-template-columns: 10ch 48ch 16ch; gap: 12px; padding: 1px 0; min-width: max-content; }
 .hv-header { color: var(--soc-text-dim); font-weight: 600; border-bottom: 1px solid var(--soc-border); padding-bottom: 4px; margin-bottom: 4px; }
 .hv-offset { color: var(--soc-primary); }
-.hv-hex { color: var(--soc-text); word-break: break-all; }
+.hv-hex { color: var(--soc-text); white-space: pre; }
 .hv-ascii { color: var(--soc-text-muted); }
 </style>

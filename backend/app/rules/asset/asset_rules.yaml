@@ -1,0 +1,36 @@
+# 资产暴露面规则：服务分类结果 + 暴露面/认证状态判定。
+# 类别集合与弱认证特征来自 AssetEngine 实际执行的判定逻辑；
+# 修改后无需重新构建镜像，文件缺失时引擎回退到代码内置默认值。
+- rule_id: ASSET_PUBLIC_DB_001
+  title: 数据库服务暴露公网
+  severity: Critical
+  confidence: 0.95
+  enabled: true
+  condition: service_category in {redis,mysql,postgresql,mongodb,oracle} and public_exposed
+  params:
+    categories: [redis, mysql, postgresql, mongodb, oracle]
+  recommendation: 数据库服务不得暴露在公网，应限制来源网段并启用加密认证。
+
+- rule_id: ASSET_DB_WEAK_AUTH_001
+  title: 数据库弱认证 / 空口令
+  severity: High
+  confidence: 0.9
+  enabled: true
+  condition: service_category in {redis,mysql,postgresql,mongodb,oracle} and weak_auth
+  params:
+    categories: [redis, mysql, postgresql, mongodb, oracle]
+    banner_patterns:
+      - noauth
+      - authentication not required
+      - no password
+  recommendation: 启用强认证、最小权限和访问审计，禁止空密码或匿名认证。
+
+- rule_id: ASSET_PUBLIC_WEB_001
+  title: 公网 Web 服务暴露
+  severity: Medium
+  confidence: 0.8
+  enabled: true
+  condition: service_category in {web,nginx,apache,iis,tomcat} and public_exposed
+  params:
+    categories: [web, nginx, apache, iis, tomcat]
+  recommendation: 公网 Web 服务应启用 TLS、WAF、补丁管理和访问日志。

@@ -18,11 +18,13 @@ def run_zeek(pcap_path: Path, output_dir: Path, binary: str = "", timeout: int =
     command = [binary, "-C", "-r", str(pcap_path), "local"]
     # Zeek accepts LogAscii::use_json=T to emit JSON logs on recent versions.
     if shutil.which("zeek"):
-        command = [binary, "-C", "-r", str(pcap_path), "-e", "LogAscii::use_json=T", "local"]
-    try:
-        subprocess.run(command, cwd=str(output_dir), check=False, timeout=timeout, capture_output=True)
-    except Exception:
-        return []
+        command = [binary, "-C", "-r", str(pcap_path), "-e", "redef LogAscii::use_json = T;", "local"]
+    command.append(str(Path(__file__).parent / 'rules' / 'site_security.zeek'))
+    completed = subprocess.run(command, cwd=str(output_dir), check=False, timeout=timeout,
+                               capture_output=True)
+    if getattr(completed, 'returncode', 0):
+        error = completed.stderr.decode('utf-8', errors='replace')[-1500:]
+        raise RuntimeError(f'Zeek analysis failed: {error}')
     return parse_zeek_dir(output_dir)
 
 

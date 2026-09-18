@@ -64,7 +64,10 @@ def parse_zeek_dir(directory: Path) -> list[dict[str, Any]]:
         if path.suffix in {".json", ".jsonl", ".ndjson"}:
             records.extend(parse_json_file(path))
         elif path.suffix == ".log":
-            records.extend(parse_tsv_log(path))
+            with path.open(encoding='utf-8', errors='replace') as handle:
+                first = handle.readline().lstrip()
+            # Zeek JSON output retains the .log extension.
+            records.extend(parse_json_file(path) if first.startswith('{') else parse_tsv_log(path))
     return records
 
 

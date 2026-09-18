@@ -1,0 +1,48 @@
+# 协议分析规则：应用层异常行为判定。
+# 阈值即 ProtocolEngine 执行时使用的参数，修改后无需重新构建镜像；
+# 文件缺失、规则 disabled 或解析失败时引擎回退到代码内置默认值。
+- rule_id: PROTO_DNS_TUNNEL_001
+  title: DNS 隧道 / 异常编码域名
+  severity: High
+  confidence: 0.8
+  enabled: true
+  condition: entropy(dns.qry.name) >= 3.5 or len(dns.qry.name) >= 40
+  params:
+    min_name_entropy: 3.5
+    min_name_length: 40
+    max_evidence: 20
+  recommendation: 排查是否存在 DNS 隧道、DGA 域名或异常编码域名。
+
+- rule_id: PROTO_DNS_TXT_001
+  title: 大 TXT 记录（疑似隐蔽信道）
+  severity: Medium
+  confidence: 0.75
+  enabled: true
+  condition: len(dns.txt) > 200
+  params:
+    min_txt_length: 200
+    max_evidence: 20
+  recommendation: 检查大 TXT 记录是否用于数据外传或隐蔽通信。
+
+- rule_id: PROTO_HTTP_UA_001
+  title: 可疑 User-Agent（扫描/自动化工具）
+  severity: Medium
+  confidence: 0.8
+  enabled: true
+  condition: http.user_agent ~ (sqlmap|nikto|nmap|python-requests|curl/|wget/)
+  params:
+    user_agent_pattern: '(sqlmap|nikto|nmap|python-requests|curl/|wget/)'
+    max_evidence: 20
+  recommendation: 识别异常 User-Agent 来源，结合请求序列判断是否为扫描或自动化攻击。
+
+- rule_id: PROTO_HTTP_UPLOAD_001
+  title: 动态脚本上传（疑似 WebShell）
+  severity: High
+  confidence: 0.85
+  enabled: true
+  condition: http.request.method in {POST,PUT,PATCH} 且 uri 含 .php/.jsp/.asp
+  params:
+    methods: [POST, PUT, PATCH]
+    extensions: [.php, .jsp, .asp]
+    max_evidence: 20
+  recommendation: 对动态脚本上传请求进行审计，结合文件内容判断是否存在 WebShell 上传。

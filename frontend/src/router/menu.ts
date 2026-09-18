@@ -35,21 +35,10 @@ export const menuGroups: MenuNode[] = [
     { path: '/threat/offline', title: '离线资源', icon: 'Files' },
   ]},
   { group: '安全引擎', items: [
-    { path: '/engines/zeek', title: 'Zeek', icon: 'Cpu' },
-    { path: '/engines/suricata', title: 'Suricata', icon: 'Cpu' },
-    { path: '/engines/sigma', title: 'Sigma', icon: 'Cpu' },
-    { path: '/engines/wazuh', title: 'Wazuh', icon: 'Cpu' },
-    { path: '/engines/osquery', title: 'osquery', icon: 'Cpu' },
-    { path: '/engines/openscap', title: 'OpenSCAP', icon: 'Cpu' },
-    // Platform engines that own the rule library and produce the findings the
-    // console reports. Without these entries the menu only reached the
-    // third-party adapters, which are not the engines behind the detections.
-    { path: '/engines/protocol', title: '协议检测引擎', icon: 'Cpu' },
-    { path: '/engines/traffic', title: '流量检测引擎', icon: 'Cpu' },
-    { path: '/engines/data', title: '数据检测引擎', icon: 'Coin' },
-    { path: '/engines/dlp', title: '防泄露检测引擎', icon: 'Lock' },
-    { path: '/engines/compliance', title: '合规检测引擎', icon: 'DocumentChecked' },
-    { path: '/engines/ioc', title: '威胁情报引擎', icon: 'Aim' },
+    // One entry only: every engine is listed on a single overview page, and the
+    // per-engine detail page is opened from there. Listing each engine in the
+    // sidebar buried the rest of the navigation.
+    { path: '/engines', title: '引擎总览', icon: 'Cpu' },
   ]},
   { group: '运维管理', items: [
     { path: '/probes', title: '探针管理', icon: 'Connection' },

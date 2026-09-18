@@ -8,6 +8,17 @@ from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
 from app.services.protocol_service import stream_tshark
 from app.engine.data_engine.engine import shannon_entropy
+from app.rules.library import rule_params
+
+# Detection parameters come from the platform rule library (app/rules/protocol),
+# so an operator can retune a rule without rebuilding the image. These literals
+# are the values the engine has always used and apply when the rule file is
+# missing, disabled or malformed.
+DNS_TUNNEL_DEFAULTS = {"min_name_entropy": 3.5, "min_name_length": 40}
+DNS_TXT_DEFAULTS = {"min_txt_length": 200}
+HTTP_UA_DEFAULTS = {"user_agent_pattern": r"(sqlmap|nikto|nmap|python-requests|curl/|wget/)"}
+HTTP_UPLOAD_DEFAULTS = {"methods": ["POST", "PUT", "PATCH"], "extensions": [".php", ".jsp", ".asp"]}
+
 
 def _first_num(value: object, cast: type = int, default: int = 0):
     """Parse a numeric tshark field that may be a comma-separated list (e.g.
@@ -89,6 +100,11 @@ def app_analysis(path: Path, max_rows: int = MAX_PROTOCOL_DETAIL_ROWS, timeout: 
     tls_rows: list[dict[str, Any]] = []
     high_entropy: list[dict[str, Any]] = []
     txt_large: list[dict[str, Any]] = []
+    dns_tunnel_rule = rule_params("protocol_engine", "PROTO_DNS_TUNNEL_001", DNS_TUNNEL_DEFAULTS)
+    dns_txt_rule = rule_params("protocol_engine", "PROTO_DNS_TXT_001", DNS_TXT_DEFAULTS)
+    min_name_entropy = float(dns_tunnel_rule.get("min_name_entropy", 3.5))
+    min_name_length = int(dns_tunnel_rule.get("min_name_length", 40))
+    min_txt_length = int(dns_txt_rule.get("min_txt_length", 200))
     dns_names: Counter[str] = Counter()
     dns_types: Counter[str] = Counter()
     http_ua: Counter[str] = Counter()
@@ -111,9 +127,12 @@ def app_analysis(path: Path, max_rows: int = MAX_PROTOCOL_DETAIL_ROWS, timeout: 
                 dns_names[dns_name] += 1
             if dns_type:
                 dns_types[dns_type] += 1
-            if dns_name and (shannon_entropy(dns_name) >= 3.5 or len(dns_name) >= 40) and len(high_entropy) < MAX_EVIDENCE_ROWS:
+            encoded_name = bool(dns_name) and (
+                shannon_entropy(dns_name) >= min_name_entropy or len(dns_name) >= min_name_length
+            )
+            if encoded_name and len(high_entropy) < MAX_EVIDENCE_ROWS:
                 high_entropy.append(row)
-            if len(dns_txt) > 200 and len(txt_large) < MAX_EVIDENCE_ROWS:
+            if len(dns_txt) > min_txt_length and len(txt_large) < MAX_EVIDENCE_ROWS:
                 txt_large.append(row)
         ua = parts[4] if len(parts) > 4 else ""
         method = parts[5] if len(parts) > 5 else ""
@@ -198,7 +217,17 @@ class ProtocolEngine(DetectionEngine):
                 evidence={"txt": dns["txt_large"][:20]},
                 recommendation="检查大 TXT 记录是否用于数据外传或隐蔽通信。",
             ).normalize())
-        suspicious_ua = [row for row in http["requests"] if re.search(r"(sqlmap|nikto|nmap|python-requests|curl/|wget/)", row["user_agent"], re.I)]
+        ua_rule = rule_params("protocol_engine", "PROTO_HTTP_UA_001", HTTP_UA_DEFAULTS)
+        upload_rule = rule_params("protocol_engine", "PROTO_HTTP_UPLOAD_001", HTTP_UPLOAD_DEFAULTS)
+        try:
+            ua_pattern = re.compile(str(ua_rule.get("user_agent_pattern") or HTTP_UA_DEFAULTS["user_agent_pattern"]), re.I)
+        except re.error:
+            ua_pattern = re.compile(HTTP_UA_DEFAULTS["user_agent_pattern"], re.I)
+        upload_methods = {str(item).upper() for item in (upload_rule.get("methods") or HTTP_UPLOAD_DEFAULTS["methods"])}
+        upload_extensions = tuple(
+            str(item).lower() for item in (upload_rule.get("extensions") or HTTP_UPLOAD_DEFAULTS["extensions"])
+        )
+        suspicious_ua = [row for row in http["requests"] if ua_pattern.search(row["user_agent"])]
         if suspicious_ua:
             findings.append(DetectionResult(
                 engine=self.name,
@@ -208,7 +237,7 @@ class ProtocolEngine(DetectionEngine):
                 evidence={"requests": suspicious_ua[:20]},
                 recommendation="识别异常 User-Agent 来源，结合请求序列判断是否为扫描或自动化攻击。",
             ).normalize())
-        uploads = [row for row in http["requests"] if row["method"].upper() in {"POST", "PUT", "PATCH"} and (".php" in row["uri"] or ".jsp" in row["uri"] or ".asp" in row["uri"])]
+        uploads = [row for row in http["requests"] if row["method"].upper() in upload_methods and any(ext in row["uri"].lower() for ext in upload_extensions)]
         if uploads:
             findings.append(DetectionResult(
                 engine=self.name,

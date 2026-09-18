@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { listIntegrations } from '../../api/integrations'
 import { getHealth, type HealthResponse } from '../../api/health'
 import { getEngineRegistry, type EngineInfo } from '../../api/engine'
 import { listTasks } from '../../api/tasks'
 import { listDetections } from '../../api/detections'
-import { listRules, type RuleItem } from '../../api/rules'
+import { listRules, getRuleContent, type RuleItem } from '../../api/rules'
 import type { IntegrationStatus } from '../../types/integration'
 import type { Task } from '../../types/task'
 import type { DetectionFinding } from '../../types/finding'
@@ -31,6 +31,21 @@ const tasks = ref<Task[]>([])
 const findings = ref<DetectionFinding[]>([])
 const findingsTotal = ref(0)
 const rules = ref<RuleItem[]>([])
+const ruleKeyword = ref('')
+const rulePage = ref(1)
+const filteredRules = computed(() => rules.value.filter(item =>
+  `${item.name} ${item.rule_id || ''} ${item.path}`.toLowerCase().includes(ruleKeyword.value.toLowerCase())))
+const visibleRules = computed(() => filteredRules.value.slice((rulePage.value - 1) * 30, rulePage.value * 30))
+const executionLabels: Record<string, string> = {
+  active: '已接入执行', external: '待外部部署', unsupported: '语法不兼容', incomplete: '缺少依赖',
+}
+async function expandRule(row: RuleItem, expanded: RuleItem[]): Promise<void> {
+  if (!expanded.includes(row) || row.content) return
+  try { row.content = (await getRuleContent(row)).content }
+  catch (err) { error.value = err instanceof Error ? err.message : String(err) }
+}
+watch(ruleKeyword, () => { rulePage.value = 1 })
+watch(name, () => { rulePage.value = 1; void load() })
 
 // ``/engines/sigma`` is a console route while a finding stores the engine's own
 // name (``sigma_log_engine``). Resolving the route through the registry is what
@@ -78,7 +93,7 @@ async function load(): Promise<void> {
     // Rules and detections are fetched by the engine's own name, which is only
     // known once the registry has answered.
     const [ruleResult, found] = await Promise.all([
-      listRules({ engine: detectionEngine.value }),
+      listRules({ engine: detectionEngine.value, include_content: false }),
       listDetections({ engine: detectionEngine.value, page: 1, page_size: 20 }),
     ])
     rules.value = ruleResult.items
@@ -97,6 +112,7 @@ onMounted(load)
 <template>
   <div>
     <div class="toolbar">
+      <el-button @click="router.push('/engines')">← 引擎总览</el-button>
       <el-select :model-value="name" style="width: 240px" filterable @change="(v: string) => router.push(`/engines/${v}`)">
         <el-option v-for="e in engineOptions" :key="e.value" :label="e.label" :value="e.value" />
       </el-select>
@@ -149,16 +165,20 @@ onMounted(load)
         <div class="soc-card-title">
           <span class="dot" />{{ isSigma ? 'Sigma 规则清单' : '规则清单' }}（{{ rules.length }}）
         </div>
-        <el-table v-if="rules.length" :data="rules" size="small" row-key="path">
+        <el-input v-model="ruleKeyword" placeholder="搜索规则名称、ID 或路径" clearable style="max-width: 360px; margin-bottom: 12px" />
+        <el-table v-if="rules.length" :data="visibleRules" size="small" row-key="path" @expand-change="expandRule">
           <el-table-column type="expand">
             <template #default="{ row }"><RawViewer :value="row.content" :language="row.type === 'yara' ? 'plaintext' : 'yaml'" :height="260" /></template>
           </el-table-column>
-          <el-table-column prop="name" label="规则文件" min-width="200" show-overflow-tooltip />
+          <el-table-column prop="name" label="规则 / 文件" min-width="200" show-overflow-tooltip />
+          <el-table-column label="接入状态" width="120"><template #default="{ row }">{{ executionLabels[row.execution] || '待核实' }}</template></el-table-column>
           <el-table-column prop="type" label="类型" width="100"><template #default="{ row }"><StatusBadge :value="row.type" /></template></el-table-column>
           <el-table-column prop="engine" label="生效引擎" width="170" />
           <el-table-column prop="size" label="大小" width="90" />
           <el-table-column prop="path" label="路径" min-width="220" show-overflow-tooltip />
         </el-table>
+        <el-pagination v-if="filteredRules.length > 30" v-model:current-page="rulePage" :page-size="30"
+          :total="filteredRules.length" layout="total, prev, pager, next" style="margin-top: 12px" />
         <div v-else class="text-dim">该引擎没有平台内置规则文件；适配器型引擎的规则由第三方组件自带规则库提供。</div>
       </div>
 

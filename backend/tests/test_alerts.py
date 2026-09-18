@@ -155,3 +155,89 @@ def test_event_type_mapping() -> None:
     assert event_type_for_status("resolved") == "alert.resolved"
     assert event_type_for_status("suppressed") == "alert.suppressed"
     assert event_type_for_status("something") == "alert.updated"
+
+
+def test_alert_detail_exposes_the_matched_rule_and_its_content() -> None:
+    """An alert must show which rule matched, and on what.
+
+    The detail payload carries the authored rule (title/condition/raw text) so
+    the console can render the rule next to the concrete evidence it matched.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    rule_id = "NET_SCAN_001"
+    with SessionLocal() as db:
+        db.execute(delete(DetectionFinding).where(DetectionFinding.rule_id == rule_id))
+        # An earlier test may leave behind an alert with the same
+        # (rule, engine, asset, ioc) fingerprint. Creating this finding would
+        # then be suppressed into that stale alert whose finding no longer
+        # exists, and the detail payload would legitimately carry no rule.
+        # Clear it so this test does not depend on execution order.
+        stale = db.scalars(select(Alert).where(Alert.fingerprint == alert_fingerprint(rule_id, "traffic_engine", "", ""))).all()
+        for row in stale:
+            db.execute(delete(AlertDelivery).where(AlertDelivery.alert_id == row.id))
+            db.delete(row)
+        db.commit()
+        finding = DetectionFinding(
+            target_type="pcap",
+            target_id="1",
+            engine="traffic_engine",
+            rule_id=rule_id,
+            severity="High",
+            confidence=0.9,
+            evidence={"rule": "端口扫描", "condition": "port_count > 20", "port_count": 26},
+            recommendation="排查源 IP",
+            risk_score=81,
+            risk_level="Critical",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        db.add(finding)
+        db.commit()
+        db.refresh(finding)
+        alert, _ = create_finding_alert(db, finding)
+        db.commit()
+        assert alert is not None
+        alert_id = alert.id
+    try:
+        with TestClient(app) as client:
+            body = client.get(f"/api/v1/alerts/{alert_id}").json()
+        rule = body["rule"]
+        assert body["finding"] is not None
+        assert rule is not None
+        assert rule["rule_id"] == rule_id
+        assert rule["title"] == "端口扫描"
+        assert "port_count > 20" in rule["condition"]
+        assert rule["engine"] == "traffic_engine"
+        assert rule["content"]
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(Alert).where(Alert.id == alert_id))
+            db.execute(delete(DetectionFinding).where(DetectionFinding.rule_id == rule_id))
+            db.commit()
+
+
+def test_alert_detail_reports_no_rule_file_for_code_built_engines() -> None:
+    """Rules implemented in engine code have no file; the field stays empty."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    _cleanup()
+    with SessionLocal() as db:
+        finding = _make_finding()
+        db.add(finding)
+        db.commit()
+        db.refresh(finding)
+        alert, _ = create_finding_alert(db, finding)
+        db.commit()
+        assert alert is not None
+        alert_id = alert.id
+    try:
+        with TestClient(app) as client:
+            body = client.get(f"/api/v1/alerts/{alert_id}").json()
+        assert body["rule"] is None
+        assert body["finding"]["rule_id"] == RULE
+    finally:
+        _cleanup()

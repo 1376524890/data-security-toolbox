@@ -44,6 +44,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/threat/rules', component: () => import('../modules/threat/RulesCenter.vue'), meta: { title: 'Rules', group: 'Threat Intelligence' } },
   { path: '/threat/offline', component: () => import('../modules/threat/OfflineResource.vue'), meta: { title: 'Offline Resource', group: 'Threat Intelligence' } },
   // Security Engines
+  { path: '/engines', component: () => import('../modules/engines/EnginesOverview.vue'), meta: { title: 'Engines', group: 'Security Engines' } },
   { path: '/engines/:name', component: () => import('../modules/engines/EngineDetail.vue'), meta: { title: 'Engine', group: 'Security Engines' } },
   // Operations
   { path: '/probes', component: () => import('../modules/operations-admin/ProbeCenter.vue'), meta: { title: 'Probe', group: 'Operations' } },

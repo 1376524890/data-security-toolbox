@@ -31,6 +31,38 @@ V2.1 新增 `Integration Adapter Layer`，统一第三方组件输入：
 
 适配器包括 Zeek、Suricata、Presidio、MISP、osquery/Wazuh、OpenSCAP。事件关联由 `incident_engine` 对多个 Finding 按时间、资产、IOC、攻击链聚合为 Incident。
 
+## PCAP 工作台与传输文件
+
+- 手动上传返回 `id/task_id/duplicate`。重复上传直接定位已有记录，新上传跟踪分析任务；
+  去重查询先于队列背压检查。前端与上传网关使用独立 30 分钟超时。
+- 包列表使用 `/pcaps/{id}/packets` 的分页及 `search` 参数，计数区分捕获总数与索引数；
+  TShark 索引包含 IPv6 与非 IP 帧地址。包详情读取截止目标帧的原始字节和协议树。
+- `services/pcap_files.py` 在 worker 中独立于 DLP 告警提取文件：复用 HTTP 重组与 MIME
+  解析，并调用 TShark HTTP/FTP-DATA/SMB/TFTP/IMF 原生对象导出。普通文件也会保留。
+- 文件保存到 `STORAGE_DIR/pcap_objects/{pcap_id}/{sha256}`，清单与提取覆盖状态写入
+  `AnalysisResult(module='pcap_files')`。文件名只作显示，原始传输内容不作为路径。
+- `/pcaps/{id}/files` 返回最新提取清单；`/files/{sha256}` 返回分页文本/Hex 预览，
+  `/files/{sha256}/download` 返回附件。两者均须满足管理员认证、抓包归属与清单关联。
+- 每次最多处理 200,000 帧、保留 500 对象 / 128 MiB（单文件 32 MiB），原生导出限时
+  120 秒；HTTP 重组沿用既有 2 MiB/流、32 MiB 总预算。达到限制或缺包明确显示不完整。
+  二进制文本视图是字节解码，Hex 保留原始值；不进行 TLS 解密。
+- 旧抓包无提取清单时显示需重新分析；不根据第三方事件中的任意路径下载文件。
+
+## 规则加载与告警追溯
+
+- `rules/catalog.py` 声明 15 个引擎的规则来源；`library.py` 统一枚举随包文件和运行期规则，
+  `code_catalog.py` 将实际代码检查和共享敏感检测定义加入清单。清单计数是资源数，不是签名数。
+- 在线同步先下载到隔离暂存目录，校验体积、路径、格式和兼容性，再原子切换 `active.json`
+  指向的新版本；失败保留原版本。Suricata 使用原生命令校验，Sigma 仅接入支持的条件子集。
+- Sigma 逐事件匹配字段和条件，上游 logsource 需要输入事件的 `_logsource` 或上下文对应信息；
+  不把不同事件拼接成一次命中，不猜测日志来源。
+- Wazuh、osquery、OpenSCAP 等外部资源与已接入检查分别标识；下载不等于目标主机已执行。
+  Zeek 上游策略作为参考资源，本机执行已接入的站点脚本，不自动执行整库脚本。
+- 引擎结果保存命中规则快照和 SHA256，告警优先展示快照。旧告警无快照时，明确展示当前定义，
+  不冒充历史版本。规则列表采用元数据查询，原文通过受清单限制的 `/rules/content` 按需读取。
+- Suricata 在临时工作目录将 Linux cooked-v2 抓包转换为兼容头格式，保留原始载荷和时间戳，
+  不修改源 PCAP；Zeek/Suricata 原生命令失败向上报告，不再吞成空结果。
+
 ## 统一检测引擎
 
 所有检测器实现 `DetectionEngine.analyze(context) -> list[DetectionResult]`，通过 `EngineRegistry` 注册，由 `DetectionPipeline` 统一调度。

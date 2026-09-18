@@ -53,6 +53,7 @@ class PresidioAdapter(IntegrationAdapter):
         return context.target_type in {"file", "text"} or bool(context.data.get("text"))
 
     def health(self) -> dict[str, Any]:
+        from app.core.config import settings
         try:
             import presidio_analyzer  # noqa: F401
 
@@ -67,7 +68,7 @@ class PresidioAdapter(IntegrationAdapter):
             "name": self.name,
             "adapter_version": self.version,
             "installed": True,
-            "enabled": True,
+            "enabled": bool(settings.presidio_enabled),
             "healthy": True,
             "runtime_version": runtime,
             "supported_types": list(self.supported_types),
