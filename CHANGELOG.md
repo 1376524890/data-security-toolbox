@@ -1,5 +1,53 @@
 # Changelog
 
+## v2.11.0（探针 3.5.0）
+
+- **规则库不再是空壳**：此前控制台里多数引擎的规则列显示为空，因为阈值以字面量写在引擎代码里，磁盘上没有对应规则文件。
+  现在每个引擎都有自己的规则目录，并真正从规则文件读取参数（`app/rules/library.py`、`app/rules/catalog.py`）：
+  引擎按目录枚举规则文件，新增规则无需改代码；文件缺失、被禁用或格式损坏时回退到代码里的原值，
+  一次错误编辑不会让检测停下来。规则值带 mtime 缓存，按分析任务读取。
+- **「代码即规则」也进清单**：`app/rules/code_catalog.py` 用 AST 读取适配器源码，把实现检查逻辑的代码项列进规则清单；
+  `app/rules/builtin.py` 为引擎内置规则声明 id、引擎、严重度、条件与建议，并标出实现它的 `.py`。
+  实测 15 个引擎规则数全部非 0，清单共 3,512 项资源（含规则文件、代码检查与敏感检测定义，不等于单条签名数）。
+- **在线更新上游规则集**：新增 `app/rules/sync.py` 与 `POST /api/v1/rules/sync`，从上游拉取 Sigma、
+  Suricata ET Open、Zeek、osquery、Wazuh、OpenSCAP、Presidio 的规则；下载先按引擎自身格式校验，
+  通过后才原子替换，失败保留旧规则集并回报失败，而不是静默沿用陈旧规则。文件数与字节数有上限，
+  离线或出网被拦时不会破坏现有规则。实测 Suricata ET Open 52 份文件、本机实际加载 52,270 条签名。
+- **命中可追溯到规则原文**：分析时把命中的规则原文与 SHA256 存入 `rule_snapshot`；告警详情新增 `rule` 字段，
+  按「规则库文件 → 代码内置规则 → 数据驱动规则（DLP 策略、本地 CVE 库）」三层解析，
+  `resolution` 标明是 `matched_snapshot`（当时命中的版本）还是 `current_definition`（无快照时的当前定义）。
+  「代码实现的规则没有规则文件」不再导致规则列空白；规则中心支持按引擎筛选、搜索、分页与原文懒加载
+  （新增 `GET /api/v1/rules/content`，`GET /api/v1/rules` 增加 `engine` 参数与 `include_content`）。
+- **引擎归属与规则数口径统一**：`interpret_rules()` 不再硬编码注册表里不存在的幽灵引擎 `rules`，引擎名由调用方传入；
+  `GET /api/v1/engine/registry` 每项追加 `slug` / `label` / `rule_count` / `detection_engine` / `detection_count`，
+  前端的引擎下拉与过滤全部改读注册表，不再各自硬编码名单。规则数与 `/rules` 清单共用同一个枚举点。
+- **引擎总览页**：安全引擎菜单由 12 个逐引擎入口收敛为单一「引擎总览」（前端路由 `/engines`），
+  一张表列出全部引擎的名称、类型、版本、状态、规则文件数、检测数与来源；`/engines/:name` 详情页保留。
+  导航按「谁在用」收敛，引擎差异化信息放进总览与详情，不再随引擎数量膨胀。
+- **资产与事件归属修复**：事件的 `evidence.assets` 记录该事件覆盖的全部主机（`evidence.asset` 仍是展示标签）；
+  资产详情的「关联检测」从只匹配 `evidence.asset.ip` / `evidence.ip` 扩大到所有主机拼写，并补读情报引擎的
+  `matched_iocs`；finding 去重签名复用同一套身份解析，不再把不同主机的结果误合并。
+  新增 `POST /api/v1/incidents/rebuild-attribution`，只按原始数据重算既有事件的 `asset` / `assets` / `stages` / `title`，
+  不增删事件、不改 `fingerprint`，并写审计。实测资产 192.168.191.130 关联检测 0 → 99、关联事件 0 → 20，
+  库内 `engine='rules'` 归零。
+- **PCAP 工作台**：
+  - 手动上传返回并直接打开 `id` 与 `duplicate`，上传有进度与独立 30 分钟超时，网关对上传关闭请求缓冲；
+    重复文件先确认再走队列背压检查。原先页面忽略返回 ID、只刷新按新旧排序的当前页，造成「上传没有成功」的观感。
+  - 包列表改为上方全宽表、下方协议树/字节视图，支持分页与搜索，概览显示真实总数并标明已索引数；
+    补齐 IPv6 / 非 IP 帧地址，时间保留微秒，Hex 列固定字符宽度防止错位。
+  - 新增 `app/services/pcap_files.py`：抓包内传输文件（HTTP / FTP-data / SMB / TFTP / IMF）独立于 DLP 告警落盘，
+    标明缺包、配额限制与加密流，并保留 TShark 原生对象导出；新增
+    `GET /api/v1/pcaps/{id}/files/{file_id}` 分页文本/Hex 预览与下载端点。
+    下载与预览按本抓包的文件清单校验文件 ID 归属，不再信任事件里的任意存储路径。
+    文件预览是字节解码，不承诺 PDF / Office 等格式的正文渲染。
+- **集成与解析修复**：Zeek JSON 开关与 JSON `.log` 解析、Suricata 误用 `-q`、Linux cooked-v2（`LINUX_SLL2`）
+  抓包兼容，原生命令错误不再被吞成空结果。
+- **部署阶段标签与演示文档**：探针下发/回收各阶段显示中文标签，新增 `docs/领导演示方案.md`。
+- **版本**：平台升至 2.11.0，探针保持 3.5.0（本版未改动探针代码）；
+  数据库迁移仍为 `0014_probe_removal (head)`，升级无需执行迁移。
+- **验证**：前端 `vitest` 34 passed、`vue-tsc --noEmit` 通过；后端定向回归（规则执行、告警、PCAP 工作台）通过，
+  全量后端仍有既有 16 项失败（探针包缺失、Windows/Linux 行尾、容器内 Suricata 能力等环境相关），与上一版基线一致。
+
 ## v2.10.0（探针 3.5.0）
 
 - **探针卸载（远程回收主机）**：此前只能删除平台记录，主机上的服务、systemd 单元与生产文件必须人工清理，
