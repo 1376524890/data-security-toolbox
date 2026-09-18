@@ -11,6 +11,10 @@
 更新内容见 `CHANGELOG.md` 的 `v2.11.0` 段，版本策略见 `docs/versioning.md`。
 发布前验证：前端 34 passed + `vue-tsc --noEmit` 通过；后端定向回归通过，全量后端 16 项失败与既有基线一致
 （探针包缺失、Windows/Linux 行尾、容器内 Suricata 能力等环境相关）。本版未改动探针代码，探针包无需重建。
+发布提交与 `v2.11.0` 标签已推送 `origin`（`develop` → `f85a024`）；推送前用 ruff 清零了本版新增文件的 lint
+（26 处 E501、6 处可自动修复项、1 处 E731、1 处未使用导入），仅剩 2 处 2026-09-02 的历史 E501 按 `AGENTS.md`
+惯例不动。运行中的容器仍是发布前镜像（`/openapi.json` 报 2.10.0），除版本号外已是本版代码；要显示 2.11.0
+需按 `AGENTS.md` 用 legacy builder 重建 backend / frontend 并重建容器。
 
 ## 2026-09-18 09:10 PCAP 最新状态
 
@@ -45,9 +49,9 @@
 | 平台 | 2.11.0 | `backend/app/main.py`（FastAPI version）、`frontend/package.json` |
 | 探针 | 3.5.0 | `probe/probe.py:AGENT_VERSION`、`backend/app/core/config.py:probe_agent_version` |
 | 数据库迁移 | `0014_probe_removal (head)` | `alembic current` |
-| 分支 / 最新提交 | `develop` / 发布提交（tag `v2.11.0`） | `git log --oneline` |
+| 分支 / 最新提交 | `develop` / `f85a024`（发布提交 + lint 清零，tag `v2.11.0`） | `git log --oneline` |
 | 工作区 | 干净（发布提交后） | `git status` |
-| 未推送提交 | 含发布提交在内的本地提交均未推送，远端 `origin/develop` 停在 `e815a54` | `git log origin/develop..HEAD --oneline` |
+| 未推送提交 | 无：`develop` 与标签 `v2.11.0` 均已推送（`e815a54..f85a024`） | `git log origin/develop..HEAD --oneline` |
 | 远端 | `origin` = `https://github.com/1376524890/data-security-toolbox.git` | `git remote -v` |
 
 ## 已实现模块

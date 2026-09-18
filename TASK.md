@@ -11,12 +11,13 @@
   探针未改代码，保持 **3.5.0**；迁移仍为 `0014_probe_removal (head)`，无需执行迁移。
 - 文档：`CHANGELOG.md` 新增 `v2.11.0` 段（规则库、上游同步、命中快照、引擎总览、归属修复、PCAP 工作台、
   集成修复、验证结论）；`docs/versioning.md` 追加 `v2.11` 版本行；`PROJECT_STATUS.md` 更新版本表与发布状态。
-- 标签：`v2.11.0`（注释标签，打在发布提交上）。
+- 标签与推送：`v2.11.0`（注释标签）与 `develop` 已推送 `origin`；推送前用 ruff 清零本版新增文件的 lint
+  （26 处 E501、6 处可自动修复项、1 处 E731、1 处未使用导入），仅剩 2 处历史 E501 按 `AGENTS.md` 惯例不动。
 - 验证：前端 `npx vitest run` 34 passed、`npx vue-tsc --noEmit` 通过；后端在 `source-backend-1` 容器内
   （镜像自带 tshark）跑规则执行/告警/PCAP 工作台定向回归通过；全量后端 16 项失败与既有环境基线逐条一致。
   本机 Windows 直跑 `tests/test_pcap_workbench.py::test_native_exporter_retains_response_without_python_reassembly`
   会因缺 tshark 失败，属环境差异，容器内通过。
-- 未做：未推送远端、未重建镜像（运行容器仍是发布前构建的镜像）、未操作真实探针主机、未导入测试数据。
+- 未做：未重建镜像（运行容器仍是发布前构建的镜像，`/openapi.json` 报 2.10.0）、未操作真实探针主机、未导入测试数据。
 
 ## PCAP 工作台修复结果（2026-09-18 09:10，优先于下方快照）
 
@@ -250,13 +251,9 @@ docker run --rm -v "${src}\backend\app:/app/app" -v "${src}\backend\tests:/app/t
 
 ## Next Step
 
-1. 推送远端：本地发布提交与 `v2.11.0` 标签尚未推送，`origin/develop` 仍停在 `e815a54`。
-   ```powershell
-   git -C "00-数据安全工具箱/source" push origin develop
-   git -C "00-数据安全工具箱/source" push origin v2.11.0
-   ```
-2. 需要在别的机器复现本版时，按 `AGENTS.md` 用 legacy builder 重建 backend / deployment-worker / frontend 镜像；
+1. 需要在别的机器复现本版时，按 `AGENTS.md` 用 legacy builder 重建 backend / deployment-worker / frontend 镜像；
    探针代码未变，无需重建探针包。
+2. 若要让本机运行栈报 2.11.0，重建 backend / frontend 镜像并重建容器（会让 8088 短暂中断）。
 3. 全量后端套件按下方「测试基线口径」的挂载命令复跑，确认 16 项环境失败基线不变、新增用例转绿。
 
 ## Task History
