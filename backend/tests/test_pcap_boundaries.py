@@ -106,9 +106,12 @@ def test_upload_guards_live_in_the_shared_dependency_module():
         if isinstance(node, ast.FunctionDef)
     }
     assert set(UPLOAD_GUARDS) <= defined
-    for path in (V1, PCAPS):
+    assert "from app.api.dependencies import" in PCAPS.read_text(encoding="utf-8")
+    # No route module may keep a private copy once the guard is shared.
+    for path in (APP / "api").rglob("*.py"):
+        if path == DEPENDENCIES:
+            continue
         source = path.read_text(encoding="utf-8")
-        assert "from app.api.dependencies import" in source, path.name
         for guard in UPLOAD_GUARDS:
             assert f"def {guard}(" not in source, (path.name, guard)
 

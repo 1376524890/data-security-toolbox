@@ -105,9 +105,43 @@
   也未写入任务行（不涉及派发，故未做队列往返）。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-pcap-route-split-20260920`。
 
+## 第四批：文件域路由拆分（2026-09-20）
+
+基线 `22fc303`，同一分支。目标：按指南 §C 把文件证据域路由从 `api/v1.py` 独立，路径/方法/鉴权/分页不变；
+对应后续批次第 1 项（继续按域拆其余 v1 路由）的第二个域。
+
+已完成代码：
+
+- 文件路由与专用序列化移至 `api/files.py`：`POST /files/upload`、`GET /files`、`GET /files/{file_id}`、
+  `GET /files/{file_id}/download`、`POST /files/{file_id}/analyze` 共 5 条路径，连同扩展名/MIME 过滤器
+  （`FILE_TYPE_ALIASES`、`_file_type_candidates`）；原 `_serialize_file` 改名导出为 `serialize_file`。
+- 共享边界不复制：上传归属复用 `api/dependencies.py::upload_probe_id`，Task 行序列化复用
+  `api/task_presenter.py::serialize_task`，派发直接走 `services/task_dispatch.dispatch_task_row`；
+  文件哈希与元数据仍在 `services/metadata_service.py`，检测仍在 worker。
+- `v1.router` 以 `include_router(files_router)` 只注册一次，`/api/v1` 前缀只叠加一次；v1 内对
+  `serialize_file` 的调用改为从新模块导入，不保留重复实现。
+- 新增 `tests/test_file_boundaries.py`（7 项）：5 条路径/方法冻结、仅由 `api/files.py` 声明、仍挂 `/api/v1` 下、
+  全应用无重复「方法 + 路径」、文件域不导入 workers/extensions、不复制共享守卫、v1 只聚合一次。
+- 上一批 PCAP 边界测试里「v1 必须直接导入某共享符号」的断言改为按域模块检查，避免后续域拆分误伤。
+
+验证：
+
+- 本机 .venv 隔离全量 621 项：614 passed / 6 failed / 1 skipped；6 项失败与第三批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute / 148 路径），
+  端点函数名集合一致；移动符号的 AST 逐节点比对只差序列化器改名与派发端口调用；无数据库变更，
+  迁移仍 `0015_alert_hits`（head）。
+- 新增/拆出文件（`api/files.py`、`tests/test_file_boundaries.py`）ruff check 与 ruff format 通过；
+  `v1.py` 2121 → 1985 行，只减不增，另清理了拆分造成的 3 处未使用导入。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 注册任务名与上一批一致。
+- 真实环境只读复验：登录后 16 个只读接口全部 200（含文件域列表/详情/下载与 PCAP 域接口），
+  `/test/status present=false`、迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-file-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 继续按域拆其余 v1 路由（PCAP 域已完成）：files → assets → alerts → tasks/audit/reports →
+1. 继续按域拆其余 v1 路由（PCAP、files 域已完成）：assets → alerts → tasks/audit/reports →
    incidents/iocs → dashboard，重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。

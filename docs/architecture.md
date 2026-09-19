@@ -1,7 +1,8 @@
 # 架构
 
 当前实现见本文；后续拆分步骤见 [解耦操作指南](解耦操作指南.md)。该指南按批次实施；下面第一批（数据资产边界）
-与第二批（分析编排与任务入口）已落地，其他拟新增模块仍按计划描述。
+与第二批（分析编排与任务入口）边界已落地，第三批（PCAP 域）与第四批（文件证据域）为按域拆出的路由模块
+（见「域路由模块」一节），其他拟新增模块仍按计划描述。
 
 ## 数据资产采集与展示边界（2026-09-19 第一批）
 
@@ -29,6 +30,15 @@
 worker 任务按职责分为 `workers/{analysis,notification,maintenance}_tasks.py`，生命周期在 `workers/task_runtime.py`，
 注册名集中在 `workers/task_names.py`，旧 `workers/tasks.py` 仅兼容重导出。
 Celery 任务名、参数顺序与队列路由属于兼容边界，不随文件位置改变。
+
+## 域路由模块（2026-09-20 第三、四批）
+
+`api/pcaps.py`（18 条路径）与 `api/files.py`（5 条路径）分别承载 PCAP 抓包域与文件证据域，
+都由 `v1.router` 只 include 一次、`/api/v1` 前缀只叠加一次，路径/方法/鉴权/分页与拆分前逐一对应。
+跨域复用的上传归属（`api/dependencies.py`）、Task 行序列化（`api/task_presenter.py`）与检测结果序列化
+（`api/finding_presenter.py`）只保留一份实现；解析、提取、哈希仍在 `services/*`，
+域路由只做鉴权、分页与响应结构。各域路径/方法由 `tests/test_pcap_boundaries.py`、
+`tests/test_file_boundaries.py` 冻结，全应用不允许重复「方法 + 路径」。
 
 系统由三部分组成：
 
@@ -110,8 +120,8 @@ V2.1 新增 `Integration Adapter Layer`，统一第三方组件输入：
 | 模块 | 依赖 | 边界 |
 | --- | --- | --- |
 | `app/api/*` | `app/services/*`、`app/models.py`、`app/core/*` | 只做鉴权、参数校验、查询编排，不做检测计算 |
-| `app/api/v1.py` | `app/api/data_assets.py`、`app/api/pcaps.py` 等域模块 | 只聚合子路由（`include_router`），不重复声明路径 |
-| 域路由（`data_assets.py`、`data_collection.py`、`pcaps.py`…） | 共享 `app/api/dependencies.py`、`app/api/*_presenter.py` | 每个域只声明自己的路径与响应结构；共享鉴权/守卫与序列化下沉到依赖与 presenter |
+| `app/api/v1.py` | `app/api/data_assets.py`、`app/api/pcaps.py`、`app/api/files.py` 等域模块 | 只聚合子路由（`include_router`），不重复声明路径 |
+| 域路由（`data_assets.py`、`data_collection.py`、`pcaps.py`、`files.py`…） | 共享 `app/api/dependencies.py`、`app/api/*_presenter.py` | 每个域只声明自己的路径与响应结构；共享鉴权/守卫与序列化下沉到依赖与 presenter |
 | `app/workers/tasks.py` | `app/engine`（pipeline）、`app/incident_engine`、`app/services/*`、`app/integrations/*` | 任务入口，负责事务与回写 |
 | `app/engine/*` | `app/engine/core/*` | 每个引擎实现 `analyze(context) -> list[DetectionResult]` |
 | `app/incident_engine` | 仅依赖 `DetectionResult` | 对外暴露 `evidence_asset_keys()` / `evidence_ioc_keys()` 供他人复用 |

@@ -80,7 +80,7 @@ source/
 ## API 规范
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
-- 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、
+- 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、
   `extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
@@ -179,6 +179,14 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 子路由由 `app/api/v1.py` 的 `include_router` 只注册一次，`/api/v1` 前缀只叠加一次；
 解析与提取仍在 `services/protocol_service.py`、`services/pcap_files.py`，路由只做鉴权、分页与响应结构。
 边界由 `tests/test_pcap_boundaries.py` 检查（路径/方法冻结、全应用无重复注册）。
+
+## 文件证据域路由入口
+
+文件上传/列表/详情/下载/重新分析共 5 条路径在 `api/files.py`（含扩展名/MIME 过滤器与 `serialize_file`）；
+上传归属复用 `api/dependencies.py::upload_probe_id`，Task 行序列化复用 `api/task_presenter.py::serialize_task`，
+派发走 `services/task_dispatch.dispatch_task_row`。哈希与元数据仍在 `services/metadata_service.py`，检测仍在 worker；
+路由只做鉴权、分页与响应结构。PCAP 内提取文件的预览/下载是另一套路径，仍在 `api/pcaps.py`，不要混在一起。
+边界由 `tests/test_file_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
 
 ## 与其他文档的关系
 
