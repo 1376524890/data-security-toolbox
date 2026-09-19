@@ -387,6 +387,17 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 事件中心的手工关联整块进 composable。回归：
 `frontend/src/__tests__/incident-alert-center-state.test.ts`（17 项）。
 
+## 资产中心页状态边界
+
+资产中心（`frontend/src/modules/asset/AssetCenter.vue`）的状态在
+`modules/asset/composables/useAssetCenter.ts`（171 行），页面只保留模板（290 → 147 行）；
+去掉缩进后，迁入的 145 行脚本逐行未改，模板逐字节未改。页面保留筛选字段配置
+（`filterFields`）与 `formatDateTime`/`formatRiskScore` 这类静态展示；资产列表、详情抽屉、
+关系图投影（`graphNodes`/`graphEdges`）与网络扫描控制台（平台/探针两种来源、3 秒轮询到终态、
+`scanSummary` 汇总）整块进 composable。本批删除了页面里从未使用的 `useRouter()`（模板与脚本
+都没有引用它），其余为机械搬迁；`loadProbes` 只在 composable 的 `onMounted` 里调用，视图不再
+解构它。回归：`frontend/src/__tests__/asset-center-state.test.ts`（15 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

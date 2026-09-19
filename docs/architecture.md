@@ -28,6 +28,9 @@
 `IncidentCenter.vue -> useIncidentCenter -> api/incidents`（事件行 + 详情 + 状态流转 + 手工关联）与
 `AlertCenter.vue -> useAlertCenter -> api/alerts`（告警行 + 汇总 + 详情 + 状态流转）同样只渲染，
 两个页面都只保留筛选字段配置与攻击阶段标签这类静态展示。
+`AssetCenter.vue -> useAssetCenter -> api/assets`（资产行 + 详情抽屉 + 关系图投影）与
+`api/probes`/`api/scan`（探针下拉与网络扫描控制台）同样只渲染，页面只保留筛选字段配置与
+格式化函数这类静态展示。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

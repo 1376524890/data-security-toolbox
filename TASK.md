@@ -799,12 +799,50 @@
   均 200；本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-incident-alert-center-state-20260920`。
 
+## 第二十二批：前端资产中心页状态解耦（2026-09-20）
+
+基线 `c9ddf01`，同一分支。目标：按指南 §F 把资产中心的状态抽到 composable，模板与交互不变。
+本批没有模板改动。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/asset/composables/useAssetCenter.ts`（171 行）；`AssetCenter.vue`
+  290 → 147 行。去掉缩进后，迁入的 145 行脚本逐行比对未改。
+- 资产列表 + 详情抽屉 + 关系图投影 + 网络扫描控制台整块进 composable；视图保留
+  `filterFields`、`formatDateTime`/`formatRiskScore` 与组件导入，`load`/`open`/`reset`/`runScan`
+  由模板直接绑定。
+- 扫描控制台：平台/探针两种来源、3 秒间隔轮询（平台 240 次、探针 200 次）、终态判定、
+  失败与超时提示、完成后重载列表全部原样迁移。
+- 本批唯一非机械改动：删除页面里从未使用的 `useRouter()`（模板与脚本都没有引用它）；
+  `loadProbes` 只在 composable 的 `onMounted` 里调用，视图不再解构它。
+- 新增 `frontend/src/__tests__/asset-center-state.test.ts`（15 项）：首屏加载与筛选条件、
+  探针下拉只保留选项标签用到的字段、探针请求失败时列表为空、重置回第一页、点击行打开详情并回到
+  「基础」页签、详情失败把服务端原因写进页面状态、列表失败进页面状态、关系图由资产/数据资产/IOC/
+  事件拼出且无详情时为空、`scanSummary` 的存活主机来源（`alive_hosts` 或 `hosts`）、未填目标或
+  未选探针时拒绝下发、平台扫描的下发参数（去空格目标、CIDR 判定、端口解析过滤非法端口）与轮询到
+  终态后的计数提示和列表重载、探针扫描的提示与阶段名脱敏、扫描失败、永不终态时的超时提示。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 19 个文件 141 项通过（原 126 项 + 本批 15 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与 `AssetCenter` chunk 均 200，chunk 名与本地
+  构建一致、线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/health`、`/test/status`（`present=false`）、`/auth/me`、`/assets`（214 条）、
+  `/assets/{id}`（findings 100、incidents 28、relations 200）、`/probes`（1 台 `test123` online）、
+  `/incidents`、`/alerts`、`/alerts/summary`、`/files`、`/dlp/policy`、`/dlp/transfers`、`/dlp/rules`、
+  `/scan-profiles`、`/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、
+  `/sensitive/findings`、`/sensitivity-levels` 均 200；本批未导入测试数据、未操作真实探针主机；
+  后端未重建，迁移仍 `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-asset-centre-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端其余页面（资产中心、引擎详情、检测中心、看板、审计、探针页等）按实际改动需求
-   再拆（同一模式：先抽状态，再抽视图；数据安全域与事件/告警中心已完成）。
+1. 前端其余页面（引擎详情、检测中心、看板、审计、探针页等）按实际改动需求
+   再拆（同一模式：先抽状态，再抽视图；数据安全域与事件/告警中心、资产中心已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。
