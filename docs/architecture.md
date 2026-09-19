@@ -25,6 +25,9 @@
 `NetworkDlp.vue -> useNetworkDlp -> api/client`（策略表单 + 传输记录 + 正则规则 + 证据竞态守卫）与
 `SensitiveDiscovery.vue -> useSensitiveDiscovery -> api/dataAssets`（服务端发现统计 + 图表投影）
 同样只渲染。
+`IncidentCenter.vue -> useIncidentCenter -> api/incidents`（事件行 + 详情 + 状态流转 + 手工关联）与
+`AlertCenter.vue -> useAlertCenter -> api/alerts`（告警行 + 汇总 + 详情 + 状态流转）同样只渲染，
+两个页面都只保留筛选字段配置与攻击阶段标签这类静态展示。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

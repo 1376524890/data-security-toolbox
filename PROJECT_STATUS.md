@@ -10,12 +10,22 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 38efb98 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 978f113 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第二十批：前端文件分析、网络 DLP 与敏感发现页状态解耦；前十九批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态）见下方记录 |
+| 本批范围 | 第二十一批：前端事件中心与告警中心页状态解耦；前二十批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态）见下方记录 |
 
 ## 本批已落地结构
 
+- 事件中心与告警中心的状态收拢到
+  `frontend/src/modules/operations/incidents/composables/useIncidentCenter.ts`（117 行）与
+  `modules/operations/alerts/composables/useAlertCenter.ts`（84 行），两个页面只保留模板
+  （`IncidentCenter.vue` 268 → 193、`AlertCenter.vue` 215 → 164 行）；去掉缩进后，被移动的
+  75 行与 51 行脚本逐行未改，两个页面模板逐字节未改（本批没有模板改动）。
+- 两个页面的筛选字段配置（`filterFields`）与攻击阶段标签（`stages`）留在视图，属于静态展示；
+  `activeStages`/`findings`/`confidence` 这些投影随列表、详情、状态流转与
+  `load`/`open`/`reset` 一起进 composable，`ElMessage` 提示也留在 composable 里。
+- 事件中心的手工关联（`correlateOpen`/`correlateFindings`/`correlateWindow`/`correlateResult`
+  与 `runCorrelate()`）整块迁入 composable，包含「发现必须是一个数组」的校验。
 - 文件分析页、网络 DLP 页与敏感发现页的状态收拢到
   `frontend/src/modules/data-security/composables/useFileAnalysis.ts`（110 行）、
   `useNetworkDlp.ts`（106 行）与 `useSensitiveDiscovery.ts`（63 行），三个页面只保留模板
@@ -157,6 +167,10 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
+| frontend/src/modules/operations/incidents/IncidentCenter.vue | 268 | 193 |
+| frontend/src/modules/operations/alerts/AlertCenter.vue | 215 | 164 |
+| frontend/src/modules/operations/incidents/composables/useIncidentCenter.ts | 0（本批新增） | 117 |
+| frontend/src/modules/operations/alerts/composables/useAlertCenter.ts | 0（本批新增） | 84 |
 | frontend/src/modules/data-security/FileAnalysis.vue | 185 | 115 |
 | frontend/src/modules/data-security/NetworkDlp.vue | 142 | 83 |
 | frontend/src/modules/data-security/SensitiveDiscovery.vue | 102 | 71 |
@@ -211,6 +225,19 @@
 
 ## 验证与已知限制
 
+- 第二十一批（前端）：`npm run typecheck` 通过；全量 vitest 18 个文件 126 项通过（原 109 项 + 本批新增
+  `incident-alert-center-state.test.ts` 17 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+  逐行比对：去掉缩进后，两个页面迁入 composable 的 75 行与 51 行脚本逐行未改，模板逐字节未改。
+- 第二十一批镜像（前端）：legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/`、入口 chunk 与 `IncidentCenter`/`AlertCenter` chunk
+  均 200，chunk 名与本地构建一致、线上字节与本地构建 SHA256 相同、无 demo/mock 代码；
+  回退标签 `source-frontend:pre-incident-alert-center-state-20260920`。
+- 第二十一批真实环境只读复验（后端未改）：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/incidents`、`/incidents/{id}`、`/alerts`、`/alerts/{id}`、`/alerts/summary`、`/files`、
+  `/dlp/policy`、`/dlp/transfers`、`/dlp/rules`、`/scan-profiles`、`/rulesets`、`/probes`、
+  `/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、`/sensitive/findings`、
+  `/sensitivity-levels` 均 200；未调用测试数据导入接口，未操作真实探针主机，迁移仍
+  `0015_alert_hits`（head）。
 - 第二十批（前端）：`npm run typecheck` 通过；全量 vitest 17 个文件 109 项通过（原 87 项 + 本批新增
   `file-analysis-state.test.ts` 9 项与 `network-dlp-discovery-state.test.ts` 13 项）；生产构建
   `npm run build`（未启用 `VITE_DEMO_MODE`）通过。逐行比对：去掉缩进后，三个页面迁入 composable 的
@@ -475,8 +502,8 @@
 - 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
-  其余待办：前端其余页面（资产中心、事件/告警/检测中心、引擎详情、看板、探针页等）按实际改动
-  需求再拆（数据安全域的页面已全部抽入 composable）、模型包拆分，最后是探针模块与分发包。
+  其余待办：前端其余页面（资产中心、引擎详情、检测中心、看板、审计、探针页等）按实际改动需求
+  再拆（数据安全域与事件/告警中心的状态已抽入 composable）、模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

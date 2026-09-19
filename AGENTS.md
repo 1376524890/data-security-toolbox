@@ -376,6 +376,17 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 回归：`frontend/src/__tests__/file-analysis-state.test.ts`（9 项）与
 `frontend/src/__tests__/network-dlp-discovery-state.test.ts`（13 项）。
 
+## 事件中心与告警中心页状态边界
+
+事件中心与告警中心（`IncidentCenter.vue`、`AlertCenter.vue`）的状态分别在
+`modules/operations/incidents/composables/useIncidentCenter.ts`（117 行）与
+`modules/operations/alerts/composables/useAlertCenter.ts`（84 行），页面只保留模板
+（268 → 193、215 → 164 行）；去掉缩进后，被移动的 75 行与 51 行脚本逐行未改，
+两个页面模板逐字节未改。列表的筛选字段配置（`filterFields`）与攻击阶段标签（`stages`）
+留在视图，属于静态展示；`activeStages`/`findings`/`confidence` 这类投影、全部 API 调用与
+事件中心的手工关联整块进 composable。回归：
+`frontend/src/__tests__/incident-alert-center-state.test.ts`（17 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

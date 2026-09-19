@@ -765,12 +765,46 @@
   迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-data-security-pages-state-20260920`。
 
+## 第二十一批：前端事件中心与告警中心页状态解耦（2026-09-20）
+
+基线 `978f113`，同一分支。目标：按指南 §F 把事件中心与告警中心的状态抽到 composable，
+模板与交互不变。本批没有模板改动。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/operations/incidents/composables/useIncidentCenter.ts`（117 行）与
+  `modules/operations/alerts/composables/useAlertCenter.ts`（84 行）；`IncidentCenter.vue`
+  268 → 193 行、`AlertCenter.vue` 215 → 164 行。去掉缩进后，迁入的 75 行与 51 行脚本逐行比对未改。
+- 事件中心：列表+详情+状态流转+手工关联整块进 composable；视图保留 `filterFields` 与
+  `stages`（攻击阶段标签）以及 `formatDateTime`/`formatRiskScore`。
+- 告警中心：列表+汇总卡+详情+状态流转进 composable；视图保留 `filterFields` 与格式化函数。
+- 两个 composable 都从 `../../../..` 回到 `src`，路径深度与数据安全域不同，移交时容易写错。
+- 新增 `frontend/src/__tests__/incident-alert-center-state.test.ts`（17 项）：事件中心的
+  首屏加载与服务端 total、重置回第一页、详情成功/失败（保留上一次 detail 与 selected 分离）、
+  攻击阶段回退到选中行、状态流转后重读详情与列表、未选中时不请求、手工关联成功/非数组/非法 JSON、
+  失败进页面状态；告警中心的列表+汇总一起加载、重置、详情与 confidence、详情失败、状态流转、
+  未选中时不请求、失败进页面状态。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 18 个文件 126 项通过（原 109 项 + 本批 17 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与两个页面 chunk 均 200，chunk 名与本地构建一致、
+  线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/health`、`/test/status`（`present=false`）、`/auth/me`、`/incidents`、
+  `/incidents/{id}`、`/alerts`、`/alerts/{id}`、`/alerts/summary`、`/files`、`/dlp/policy`、
+  `/dlp/transfers`、`/dlp/rules`、`/scan-profiles`、`/rulesets`、`/probes`、`/data/assets`、
+  `/data-types`、`/data-objects`、`/asset-instances`、`/sensitive/findings`、`/sensitivity-levels`
+  均 200；本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-incident-alert-center-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端其余页面（资产中心、事件/告警/检测中心、引擎详情、看板、探针页等）按实际改动
-   需求再拆（同一模式：先抽状态，再抽视图；数据安全域的各页面已完成状态解耦）。
+1. 前端其余页面（资产中心、引擎详情、检测中心、看板、审计、探针页等）按实际改动需求
+   再拆（同一模式：先抽状态，再抽视图；数据安全域与事件/告警中心已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。
