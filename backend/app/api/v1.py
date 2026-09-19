@@ -21,7 +21,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import String, cast, false, func, or_, select
+from sqlalchemy import false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.services.probe_task_service import PROBE_TASK_KINDS, TERMINAL, expire_probe_tasks, visible_tasks
@@ -38,6 +38,7 @@ from app.api.finding_presenter import _serialize_detection as _serialize_detecti
 from app.services.probe_service import ProbeInUseError, ProbeNotFoundError, delete_probe_record
 from app.api.pagination import page_response, paginate
 from app.core.config import settings
+from app.core.datetimes import aware as _aware
 from app.core.database import get_db
 from app.core.security import (
     clear_admin_cookie,
@@ -91,7 +92,6 @@ from app.models import (
     SystemSetting,
     Task,
     User,
-    Vulnerability,
 )
 from app.schemas import (
     GenerateReportRequest,
@@ -112,7 +112,6 @@ from app.services.alert_service import (
     publish_alert,
     serialize_alert,
 )
-from app.services.asset_service import asset_relations
 from app.rules.catalog import CATALOG
 from app.rules import library
 from app.services.audit_service import audit_summary, log_analysis
@@ -140,106 +139,15 @@ from app.api.files import (
     router as files_router,
     serialize_file,
 )
+from app.api.assets import (
+    router as assets_router,
+    serialize_asset,
+)
+from app.api.ioc_presenter import serialize_ioc
+from app.api.incident_presenter import serialize_incident
 
 router = APIRouter(prefix="/api/v1")
 incident_engine = IncidentEngine()
-
-
-# Minimal ATT&CK mapping for common rule ids. Extend as rule set grows.
-
-
-def _serialize_asset(item: Asset) -> dict[str, Any]:
-    return {
-        "id": item.id,
-        "probe_id": item.probe_id,
-        "ip": item.ip,
-        "hostname": item.hostname,
-        "os": item.os,
-        "port": item.port,
-        "protocol": item.protocol,
-        "service": item.service,
-        "asset_type": item.asset_type,
-        "risk_level": item.risk_level,
-        "sensitive_categories": item.sensitive_categories,
-        "metadata": item.extra,
-        "first_seen": item.first_seen,
-        "last_seen": _aware(item.last_seen),
-    }
-
-
-def _serialize_incident(item: Incident) -> dict[str, Any]:
-    findings = item.findings or {}
-    if isinstance(findings, dict) and isinstance(findings.get("items"), list):
-        enriched_items: list[Any] = []
-        uploads_root = (settings.storage_dir / "uploads").resolve()
-        for finding in findings["items"]:
-            if not isinstance(finding, dict):
-                enriched_items.append(finding)
-                continue
-            evidence = finding.get("evidence")
-            if not isinstance(evidence, dict) or not isinstance(evidence.get("file"), str):
-                enriched_items.append(finding)
-                continue
-            evidence_copy = dict(evidence)
-            try:
-                evidence_path = Path(evidence["file"]).resolve()
-                if evidence_path.is_relative_to(uploads_root) and evidence_path.is_file():
-                    raw = evidence_path.read_bytes()[:20000]
-                    evidence_copy["raw_text"] = raw.decode("utf-8-sig", "replace")
-                    evidence_copy["raw_text_truncated"] = evidence_path.stat().st_size > len(raw)
-            except (OSError, ValueError):
-                pass
-            enriched_items.append({**finding, "evidence": evidence_copy})
-        findings = {**findings, "items": enriched_items}
-    return {
-        "id": item.id,
-        "fingerprint": item.fingerprint,
-        "probe_id": item.probe_id,
-        "source": item.source,
-        "title": item.title,
-        "severity": item.severity,
-        "confidence": item.confidence,
-        "status": item.status,
-        "findings": findings,
-        "evidence": item.evidence,
-        "risk_score": item.risk_score,
-        "risk_level": item.risk_level,
-        "timestamp": item.timestamp,
-        "last_seen": _aware(item.last_seen),
-        "occurrence_count": item.occurrence_count,
-        "created_at": item.created_at,
-        "updated_at": item.updated_at,
-    }
-
-
-def _serialize_ioc(item: IOC) -> dict[str, Any]:
-    return {
-        "id": item.id,
-        "type": item.ioc_type,
-        "value": item.value,
-        "source": item.source,
-        "first_seen": item.first_seen,
-        "last_seen": _aware(item.last_seen),
-        "tags": item.tags,
-        "metadata": item.extra,
-        "created_at": item.created_at,
-    }
-
-
-def _aware(value: datetime | str | None) -> datetime | str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return value
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value
 
 
 def _serialize_probe(item: Probe) -> dict[str, Any]:
@@ -739,7 +647,7 @@ def scan_result(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
         query = query.where(Asset.ip.in_(hosts))
     else:
         query = query.where(false())
-    result["scanned_assets"] = [_serialize_asset(item) for item in db.scalars(query.order_by(Asset.ip, Asset.port)).all()]
+    result["scanned_assets"] = [serialize_asset(item) for item in db.scalars(query.order_by(Asset.ip, Asset.port)).all()]
     return result
 
 
@@ -780,137 +688,6 @@ def probe_scan(probe_id: int, payload: ProbeScanRequest, request: Request, db: S
     return {"tasks": tasks}
 
 
-@router.get("/assets")
-def list_assets(risk: str | None = None, asset_type: str | None = None, ip: str | None = None, hostname: str | None = None, probe_id: int | None = None, search: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
-    query = select(Asset)
-    if risk:
-        query = query.where(Asset.risk_level == risk)
-    if asset_type:
-        query = query.where(Asset.asset_type == asset_type)
-    if ip:
-        query = query.where(Asset.ip == ip)
-    if hostname:
-        query = query.where(Asset.hostname == hostname)
-    if probe_id:
-        query = query.where(Asset.probe_id == probe_id)
-    if search:
-        query = query.where(or_(Asset.ip.ilike(f"%{search}%"), Asset.hostname.ilike(f"%{search}%"), Asset.service.ilike(f"%{search}%")))
-    result = paginate(db, query.order_by(Asset.id.desc()), page, page_size)
-    return page_response([_serialize_asset(item) for item in result["items"]], page, page_size, result["total"])
-
-
-@router.get("/assets/summary")
-def asset_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
-    rows = db.execute(select(Asset.risk_level, func.count(Asset.id)).group_by(Asset.risk_level)).all()
-    return {"count": db.scalar(select(func.count(Asset.id))) or 0, "risk": {risk: count for risk, count in rows}}
-
-
-@router.get("/assets/relations")
-def asset_relation_list(db: Session = Depends(get_db)) -> list[dict[str, str]]:
-    assets = db.scalars(select(Asset)).all()
-    return asset_relations([{"ip": item.ip, "service": item.service, "port": item.port} for item in assets])
-
-
-def _incident_touches_asset(row: Incident, item: Asset) -> bool:
-    """Whether an incident's *entire* host list covers this asset."""
-    evidence = row.evidence if isinstance(row.evidence, dict) else {}
-    if evidence.get("asset") in {item.ip, item.hostname}:
-        return True
-    assets = evidence.get("assets")
-    return isinstance(assets, list) and item.ip in assets
-
-
-def _finding_touches_asset(row: DetectionFinding, item: Asset) -> bool:
-    """Whether a finding's evidence names this asset, in any of its spellings."""
-    evidence = row.evidence if isinstance(row.evidence, dict) else {}
-    wanted = {value.lower() for value in (item.ip, item.hostname) if value}
-    return bool(wanted & set(evidence_asset_keys(evidence)))
-
-
-@router.get("/assets/{asset_id}")
-def asset_detail(asset_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    item = db.get(Asset, asset_id)
-    if not item:
-        raise HTTPException(404, "asset not found")
-    # Findings name their asset in several spellings: a nested ``asset.ip``
-    # (scan / threat-intel), a flat ``ip``, or only ``src``/``dst`` and
-    # ``metrics`` keys (traffic, rules, dlp). Matching the first two left
-    # "关联检测" empty for hosts that only appear in network evidence. The LIKE
-    # is a cheap candidate filter; ``_finding_touches_asset`` decides.
-    finding_candidates = db.scalars(
-        select(DetectionFinding)
-        .where(
-            or_(
-                DetectionFinding.evidence["asset"]["ip"].as_string() == item.ip,
-                DetectionFinding.evidence["ip"].as_string() == item.ip,
-                cast(DetectionFinding.evidence, String).like(f"%{item.ip}%"),
-            )
-        )
-        .order_by(DetectionFinding.risk_score.desc())
-        .limit(500)
-    ).all()
-    findings = [row for row in finding_candidates if _finding_touches_asset(row, item)][:100]
-    # An incident lists every host it touches in ``evidence.assets`` while
-    # ``evidence.asset`` only holds the display label, so matching the single
-    # label hid a multi-host incident from all but one of its hosts. The LIKE is
-    # a cheap candidate filter; ``_incident_touches_asset`` decides.
-    incident_candidates = db.scalars(
-        select(Incident)
-        .where(
-            or_(
-                Incident.evidence["asset"].as_string() == item.ip,
-                Incident.evidence["assets"].as_string().like(f"%{item.ip}%"),
-            )
-        )
-        .order_by(Incident.risk_score.desc())
-        .limit(200)
-    ).all()
-    incidents = [row for row in incident_candidates if _incident_touches_asset(row, item)][:50]
-    # Probe-collected data assets record the host they were found on in
-    # ``extra.host`` (``source`` holds "probe:<name>"), so matching ``source``
-    # against a hostname never linked anything.
-    data_assets = db.scalars(
-        select(DataAsset)
-        .where(
-            or_(
-                DataAsset.extra["host"].as_string() == item.ip,
-                DataAsset.source == item.hostname,
-            )
-        )
-        .limit(100)
-    ).all()
-    # An indicator belongs to an asset either because the asset *is* the
-    # indicator, or because a finding on this asset fired on that indicator.
-    ioc_values = {item.ip, item.hostname}
-    for finding in findings:
-        evidence = finding.evidence if isinstance(finding.evidence, dict) else {}
-        for key in ("value", "ioc", "indicator"):
-            candidate = evidence.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                ioc_values.add(candidate.strip())
-        # The threat-intel engine reports hits as ``matched_iocs``; without
-        # them a real indicator match never reached the asset's IOC tab.
-        matched = evidence.get("matched_iocs")
-        if isinstance(matched, list):
-            ioc_values.update(str(value).strip() for value in matched if str(value).strip())
-    iocs = db.scalars(select(IOC).where(IOC.value.in_(sorted(ioc_values))).limit(100)).all()
-    relations = db.scalars(select(GraphRelation).where(or_(GraphRelation.source_node == item.ip, GraphRelation.target_node == item.ip))).all()
-    vulnerabilities = db.scalars(select(Vulnerability).where(Vulnerability.asset_id == asset_id).order_by(Vulnerability.cvss_score.desc()).limit(100)).all()
-    return {
-        "asset": _serialize_asset(item),
-        "findings": [_serialize_detection(item) for item in findings],
-        "incidents": [_serialize_incident(item) for item in incidents],
-        "data_assets": [_serialize_data_asset(item) for item in data_assets],
-        "iocs": [_serialize_ioc(item) for item in iocs],
-        "vulnerabilities": [
-            {"id": item.id, "cve_id": item.cve_id, "cwe_id": item.cwe_id, "severity": item.severity, "cvss_score": item.cvss_score, "description": item.description, "status": item.status}
-            for item in vulnerabilities
-        ],
-        "relations": [
-            {"source_node": item.source_node, "source_type": item.source_type, "target_node": item.target_node, "target_type": item.target_type, "relation": item.relation, "risk": item.risk}
-            for item in relations
-        ],
-    }
 
 
 @router.get("/tasks")
@@ -980,7 +757,7 @@ def analyze_log(payload: LogAnalysisRequest) -> dict[str, Any]:
 
 @router.get("/audit/summary")
 def audit(db: Session = Depends(get_db)) -> dict[str, Any]:
-    assets = [_serialize_asset(item) for item in db.scalars(select(Asset)).all()]
+    assets = [serialize_asset(item) for item in db.scalars(select(Asset)).all()]
     files = [serialize_file(item) for item in db.scalars(select(FileRecord)).all()]
     pcaps = [serialize_pcap(item) for item in db.scalars(select(PcapRecord)).all()]
     anomalies = [serialize_anomaly(item) for item in db.scalars(select(Anomaly)).all()]
@@ -989,13 +766,13 @@ def audit(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @router.post("/reports/generate")
 def generate_report(payload: GenerateReportRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
-    assets = [_serialize_asset(item) for item in db.scalars(select(Asset)).all()]
+    assets = [serialize_asset(item) for item in db.scalars(select(Asset)).all()]
     files = [serialize_file(item) for item in db.scalars(select(FileRecord)).all()]
     pcaps = [serialize_pcap(item) for item in db.scalars(select(PcapRecord)).all()]
     anomalies = [serialize_anomaly(item) for item in db.scalars(select(Anomaly)).all()]
     findings = [_serialize_detection(item) for item in db.scalars(select(DetectionFinding).order_by(DetectionFinding.risk_score.desc())).all()]
     data_assets = [_serialize_data_asset(item) for item in db.scalars(select(DataAsset).order_by(DataAsset.id.desc())).all()]
-    incidents = [_serialize_incident(item) for item in db.scalars(select(Incident).order_by(Incident.risk_score.desc())).all()]
+    incidents = [serialize_incident(item) for item in db.scalars(select(Incident).order_by(Incident.risk_score.desc())).all()]
     summary = build_summary(assets, files, pcaps, anomalies, audit_summary(assets, files, pcaps, anomalies), findings, data_assets, incidents)
     html = render_html(summary, assets, files, pcaps, anomalies, findings, data_assets, incidents)
     report_format = payload.format
@@ -1063,7 +840,7 @@ def list_incidents(severity: str | None = None, status: str | None = None, searc
         query = query.where(or_(Incident.title.ilike(f"%{search}%"), Incident.evidence["asset"].as_string().ilike(f"%{search}%"), Incident.evidence["ioc"].as_string().ilike(f"%{search}%")))
     query = _string_time_filter(query, Incident.timestamp, start_time, end_time)
     result = paginate(db, query.order_by(Incident.risk_score.desc(), Incident.timestamp.desc()), page, page_size)
-    return page_response([_serialize_incident(item) for item in result["items"]], page, page_size, result["total"])
+    return page_response([serialize_incident(item) for item in result["items"]], page, page_size, result["total"])
 
 
 @router.get("/incidents/{incident_id}")
@@ -1071,7 +848,7 @@ def incident_detail(incident_id: int, db: Session = Depends(get_db)) -> dict[str
     item = db.get(Incident, incident_id)
     if not item:
         raise HTTPException(404, "incident not found")
-    return _serialize_incident(item)
+    return serialize_incident(item)
 
 
 @router.patch("/incidents/{incident_id}")
@@ -1084,7 +861,7 @@ def update_incident(incident_id: int, payload: dict[str, Any], db: Session = Dep
             setattr(item, key, payload[key])
     db.commit()
     db.refresh(item)
-    return _serialize_incident(item)
+    return serialize_incident(item)
 
 
 @router.post("/incidents/correlate")
@@ -1121,7 +898,7 @@ def list_iocs(ioc_type: str | None = None, source: str | None = None, search: st
     if search:
         query = query.where(IOC.value.ilike(f"%{search}%"))
     result = paginate(db, query.order_by(IOC.id.desc()), page, page_size)
-    return page_response([_serialize_ioc(item) for item in result["items"]], page, page_size, result["total"])
+    return page_response([serialize_ioc(item) for item in result["items"]], page, page_size, result["total"])
 
 
 @router.get("/iocs/{ioc_id}/associations")
@@ -1133,10 +910,10 @@ def ioc_associations(ioc_id: int, db: Session = Depends(get_db)) -> dict[str, An
     incidents = db.scalars(select(Incident).where(Incident.evidence["ioc"].as_string() == item.value).order_by(Incident.risk_score.desc())).all()
     assets = db.scalars(select(Asset).where(or_(Asset.ip == item.value, Asset.hostname == item.value))).all()
     return {
-        "ioc": _serialize_ioc(item),
+        "ioc": serialize_ioc(item),
         "findings": [_serialize_detection(item) for item in findings],
-        "incidents": [_serialize_incident(item) for item in incidents],
-        "assets": [_serialize_asset(item) for item in assets],
+        "incidents": [serialize_incident(item) for item in incidents],
+        "assets": [serialize_asset(item) for item in assets],
     }
 
 
@@ -1352,7 +1129,7 @@ def detection_detail(detection_id: int, db: Session = Depends(get_db)) -> dict[s
     incidents = db.scalars(select(Incident).where(Incident.findings["items"].as_string().ilike(f"%{item.rule_id}%"))).all()
     pcap = db.get(PcapRecord, int(item.target_id)) if item.target_type == "pcap" and str(item.target_id).isdigit() else None
     alert = db.scalar(select(Alert).where(Alert.finding_id == item.id))
-    return {"detection": _serialize_detection(item), "related_incidents": [_serialize_incident(item) for item in incidents], "pcap": serialize_pcap(pcap) if pcap else None, "alert": serialize_alert(alert) if alert else None}
+    return {"detection": _serialize_detection(item), "related_incidents": [serialize_incident(item) for item in incidents], "pcap": serialize_pcap(pcap) if pcap else None, "alert": serialize_alert(alert) if alert else None}
 
 
 @router.get("/alerts")
@@ -1444,10 +1221,10 @@ def alert_detail(alert_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
                 candidate_iocs.append(str(value["value"]))
         if candidate_ips:
             asset_rows = db.scalars(select(Asset).where(Asset.ip.in_(candidate_ips)).limit(50)).all()
-            assets = [_serialize_asset(item) for item in asset_rows]
+            assets = [serialize_asset(item) for item in asset_rows]
         if candidate_iocs:
             ioc_rows = db.scalars(select(IOC).where(IOC.value.in_(candidate_iocs)).limit(50)).all()
-            iocs = [_serialize_ioc(item) for item in ioc_rows]
+            iocs = [serialize_ioc(item) for item in ioc_rows]
         file_name = evidence.get("file") or (evidence.get("record", {}).get("filename") if isinstance(evidence.get("record"), dict) else "")
         if file_name:
             da_rows = db.scalars(select(DataAsset).where(DataAsset.name == file_name).limit(50)).all()
@@ -1458,7 +1235,7 @@ def alert_detail(alert_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
         # The authored rule behind this alert, so the console can show what
         # matched instead of only the rule id.
         "rule": _rule_definition(db, finding.rule_id, finding.engine, finding.evidence) if finding else None,
-        "incident": _serialize_incident(incident) if incident else None,
+        "incident": serialize_incident(incident) if incident else None,
         "probe": _serialize_probe(probe) if probe else None,
         "pcap": serialize_pcap(pcap) if pcap else None,
         "assets": assets,
@@ -1602,13 +1379,13 @@ def dashboard_engines(db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.get("/dashboard/incidents")
 def dashboard_incidents(limit: int = Query(10, le=100), db: Session = Depends(get_db)) -> dict[str, Any]:
     rows = db.scalars(select(Incident).order_by(Incident.risk_score.desc()).limit(limit)).all()
-    return {"items": [_serialize_incident(item) for item in rows]}
+    return {"items": [serialize_incident(item) for item in rows]}
 
 
 @router.get("/dashboard/high-risk-assets")
 def dashboard_high_risk_assets(limit: int = Query(10, le=100), db: Session = Depends(get_db)) -> dict[str, Any]:
     rows = db.scalars(select(Asset).order_by(Asset.risk_level.desc(), Asset.id.desc()).limit(limit)).all()
-    return {"items": [_serialize_asset(item) for item in rows]}
+    return {"items": [serialize_asset(item) for item in rows]}
 
 
 @router.get("/dashboard/sensitive-data")
@@ -1983,3 +1760,4 @@ def probe_metrics(probe_id: int, db: Session = Depends(get_db)) -> dict[str, Any
 router.include_router(data_assets_router)
 router.include_router(pcaps_router)
 router.include_router(files_router)
+router.include_router(assets_router)

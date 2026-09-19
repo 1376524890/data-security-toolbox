@@ -139,9 +139,46 @@
   `/test/status present=false`、迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-file-route-split-20260920`。
 
+## 第五批：平台资产域路由拆分（2026-09-20）
+
+基线 `ee18eef`，同一分支。目标：按指南 §C 把平台资产（主机资产）域路由从 `api/v1.py` 独立，
+路径/方法/鉴权/分页与响应结构不变；对应后续批次第 1 项的第三个域。
+
+已完成代码：
+
+- 资产路由与资产行序列化移至 `api/assets.py`：`GET /assets`、`GET /assets/summary`、`GET /assets/relations`、
+  `GET /assets/{asset_id}` 共 4 条路径，连同 `_incident_touches_asset`、`_finding_touches_asset` 两个
+  「证据是否命中本资产」判定；原 `_serialize_asset` 改名导出为 `serialize_asset`（其余 6 处 v1 调用点改为导入）。
+- 资产详情同时返回检测、事件、IOC 行，因此把跨域复用的行序列化下沉为 `api/incident_presenter.py`
+  （`serialize_incident`）与 `api/ioc_presenter.py`（`serialize_ioc`），v1 与资产域共用一份，不复制。
+- 三个序列化器共用的时间归一化函数独立为 `core/datetimes.py::aware`（原 v1 私有 `_aware`），
+  v1 以 `aware as _aware` 复用，保留原有 tz-aware 输出语义。
+- `v1.router` 以 `include_router(assets_router)` 只注册一次，`/api/v1` 前缀只叠加一次；数据资产（`data/assets`）
+  与平台资产的边界保持不变，`/data/assets` 仍属 `api/data_assets.py`。
+- 新增 `tests/test_asset_boundaries.py`（8 项）：4 条路径/方法冻结、仅由 `api/assets.py` 声明、仍挂 `/api/v1` 下、
+  全应用无重复「方法 + 路径」、资产域不导入 workers/extensions、复用而非复制共享序列化器、
+  `_aware`/`_serialize_*` 不再回到 v1、时间归一化只有一份实现、v1 只聚合一次。
+
+验证：
+
+- 本机 .venv 隔离全量 629 项：622 passed / 6 failed / 1 skipped；6 项失败与第四批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **语义与排序后字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录
+  （158 APIRoute / 144 个 API 路径），162 条「方法 + 路径 + 端点名」与拆分前逐条相同，无新增/丢失；
+  AST 逐节点比对显示移动的 10 个函数只差 `_serialize_*`/`_aware` 改名与改名后的调用；
+  无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 长行按既有模块标准折行（与 PCAP/文件域一致），新增/拆出 5 个文件 ruff check 与 ruff format 通过；
+  `v1.py` 1985 → 1763 行，只减不增，另清理了拆分造成的 2 处未使用导入（`String`、`cast`）。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 真实环境只读复验：登录后 18 个只读接口全部 200（含 `/api/v1/assets`、`/assets/summary`、`/assets/relations`、
+  `/assets/{id}` 与文件域、PCAP 域、数据资产接口），`/test/status present=false`、迁移仍 `0015_alert_hits`（head）；
+  本批未导入测试数据、未操作真实探针。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-asset-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 继续按域拆其余 v1 路由（PCAP、files 域已完成）：assets → alerts → tasks/audit/reports →
+1. 继续按域拆其余 v1 路由（PCAP、files、assets 域已完成）：alerts → tasks/audit/reports →
    incidents/iocs → dashboard，重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。

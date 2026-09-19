@@ -80,7 +80,7 @@ source/
 ## API 规范
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
-- 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、
+- 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、
   `extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
@@ -187,6 +187,15 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 派发走 `services/task_dispatch.dispatch_task_row`。哈希与元数据仍在 `services/metadata_service.py`，检测仍在 worker；
 路由只做鉴权、分页与响应结构。PCAP 内提取文件的预览/下载是另一套路径，仍在 `api/pcaps.py`，不要混在一起。
 边界由 `tests/test_file_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
+
+## 平台资产域路由入口
+
+主机资产清单在 `api/assets.py`（`GET /assets`、`/assets/summary`、`/assets/relations`、`/assets/{asset_id}`），
+资产行序列化导出为 `serialize_asset` 供其他读域复用；`/assets/{id}` 的检测、事件、IOC 行分别复用
+`api/finding_presenter.py`、`api/incident_presenter.py`、`api/ioc_presenter.py`，时间归一化用
+`core/datetimes.py::aware`，不要在路由里重写这三者。数据资产（`/data/assets`、`/data-types`、`/data-objects`）
+是另一套边界，仍属 `api/data_assets.py` 与数据目录，不要混在一起。关联判定与评分仍在
+`services/asset_service.py`、`incident_engine`。边界由 `tests/test_asset_boundaries.py` 检查。
 
 ## 与其他文档的关系
 
