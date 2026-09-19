@@ -70,7 +70,7 @@ def _serialize(deployment: ProbeDeployment) -> dict[str, Any]:
 
 
 def _dispatch(deployment_id: int) -> None:
-    from app.workers.deployment_tasks import dispatch_probe_deployment
+    from app.services.task_dispatch import dispatch_probe_deployment
 
     dispatch_probe_deployment(deployment_id)
 

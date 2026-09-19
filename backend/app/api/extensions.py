@@ -227,7 +227,7 @@ def providers(db: Session = Depends(get_db)):
 @router.post('/intelligence/providers/{provider}/sync')
 def start_intel_sync(provider: str, db: Session = Depends(get_db)):
     from app.services.intelligence_service import PROVIDERS
-    from app.workers.tasks import sync_intelligence_task
+    from app.services.task_dispatch import SYNC_INTELLIGENCE, enqueue
     if provider not in PROVIDERS:
         raise HTTPException(404, 'Unknown intelligence provider')
     expire_probe_tasks(db)
@@ -241,7 +241,7 @@ def start_intel_sync(provider: str, db: Session = Depends(get_db)):
     db.add(task)
     db.commit()
     try:
-        sync_intelligence_task.delay(task.id)
+        enqueue(SYNC_INTELLIGENCE, task.id)
     except Exception:
         task.status, task.error = 'Failed', 'Task queue unavailable'
         db.commit()

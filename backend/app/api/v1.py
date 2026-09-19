@@ -128,15 +128,17 @@ from app.services.traffic_service import (
     top_n_communication,
     traffic_trend,
 )
-from app.workers.deployment_tasks import dispatch_probe_deployment
-from app.workers.tasks import (
-    _upsert_incident,
-    analyze_pcap_task,
-    asset_task,
-    create_task,
-    metadata_task,
-    network_scan_task,
+from app.application.analysis import upsert_incident
+from app.services.task_dispatch import (
+    ANALYZE_ASSETS,
+    ANALYZE_METADATA,
+    ANALYZE_PCAP,
+    NETWORK_SCAN,
+    dispatch_probe_deployment,
+    dispatch_task_row,
+    queue_depth,
 )
+from app.services.task_service import create_task
 
 router = APIRouter(prefix="/api/v1")
 incident_engine = IncidentEngine()
@@ -411,14 +413,13 @@ def _serialize_report(item: Report) -> dict[str, Any]:
     }
 
 
-def _dispatch(task_id: int, kind: str, func, *args: Any) -> None:
-    if settings.app_env == "development":
-        func(*args, task_id)
-        return
-    try:
-        func.delay(*args, task_id)
-    except Exception:
-        func(*args, task_id)
+def _dispatch(task_id: int, task_name: str, *args: Any) -> None:
+    """Queue one of the platform's analysis tasks by its registered name.
+
+    The task row id always travels as the last argument, which is the calling
+    convention every worker task keeps.
+    """
+    dispatch_task_row(task_name, task_id, *args)
 
 
 def _upload_probe_id(request: Request, db: Session, form_probe_id: int | None) -> int | None:
@@ -581,13 +582,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     except Exception:
         redis_ok = False
     try:
-        from app.workers.celery_app import celery_app
-        inspect = celery_app.control.inspect(timeout=1)
-        active = inspect.active() or {}
-        pending = inspect.reserved() or {}
-        running = sum(len(items) for items in active.values() if items)
-        queued = sum(len(items) for items in pending.values() if items)
-        workers = sum(1 for items in active.values() if items is not None)
+        running, queued, workers = queue_depth()
     except Exception:
         running = 0
         queued = 0
@@ -828,7 +823,7 @@ def delete_probe(
 @router.post("/probes/{probe_id}/analyze")
 def analyze_probe_assets(probe_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     task = create_task(db, "assets", {"probe_id": probe_id})
-    _dispatch(task.id, "assets", asset_task, probe_id)
+    _dispatch(task.id, ANALYZE_ASSETS, probe_id)
     return _serialize_task(task)
 
 
@@ -877,7 +872,7 @@ def start_scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict[str,
         })
         return {**_serialize_task(task), "location": "probe", "probe_id": payload.probe_id}
     task = create_task(db, "scan", {"target": payload.target, "discovery": payload.discovery, "top_ports": payload.top_ports, "ports": payload.ports, "public_exposed": payload.public_exposed, "nuclei": payload.nuclei, "nuclei_tags": payload.nuclei_tags, "nuclei_templates": payload.nuclei_templates})
-    _dispatch(task.id, "scan", network_scan_task)
+    _dispatch(task.id, NETWORK_SCAN)
     return {**_serialize_task(task), "location": "platform"}
 
 
@@ -934,7 +929,7 @@ def probe_scan(probe_id: int, payload: ProbeScanRequest, request: Request, db: S
             "public_exposed": False, "nuclei": payload.nuclei, "nuclei_tags": payload.nuclei_tags,
             "nuclei_templates": payload.nuclei_templates, "probe_id": probe_id,
         })
-        _dispatch(task.id, "scan", network_scan_task)
+        _dispatch(task.id, NETWORK_SCAN)
         tasks.append(_serialize_task(task))
     return {"tasks": tasks}
 
@@ -1108,7 +1103,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), probe_id: 
     db.commit()
     db.refresh(record)
     task = create_task(db, "metadata", {"file_id": record.id})
-    _dispatch(task.id, "metadata", metadata_task, record.id)
+    _dispatch(task.id, ANALYZE_METADATA, record.id)
     return {"id": record.id, "task_id": task.id, "name": record.name, "size": record.size}
 
 
@@ -1157,7 +1152,7 @@ def file_download(file_id: int, db: Session = Depends(get_db)) -> FileResponse:
 @router.post("/files/{file_id}/analyze")
 def analyze_file(file_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     task = create_task(db, "metadata", {"file_id": file_id})
-    _dispatch(task.id, "metadata", metadata_task, file_id)
+    _dispatch(task.id, ANALYZE_METADATA, file_id)
     return _serialize_task(task)
 
 
@@ -1218,7 +1213,7 @@ async def upload_pcap(request: Request, file: UploadFile = File(...), probe_id: 
     db.commit()
     db.refresh(record)
     task = create_task(db, "pcap", {"pcap_id": record.id})
-    _dispatch(task.id, "pcap", analyze_pcap_task, record.id)
+    _dispatch(task.id, ANALYZE_PCAP, record.id)
     return {"id": record.id, "task_id": task.id, "filename": record.filename, "size": record.size, "duplicate": False}
 
 
@@ -1244,7 +1239,7 @@ def pcap_detail(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.post("/pcaps/{pcap_id}/analyze")
 def analyze_pcap(pcap_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     task = create_task(db, "pcap", {"pcap_id": pcap_id})
-    _dispatch(task.id, "pcap", analyze_pcap_task, pcap_id)
+    _dispatch(task.id, ANALYZE_PCAP, pcap_id)
     return _serialize_task(task)
 
 
@@ -1800,7 +1795,7 @@ def run_integration(name: str, payload: dict[str, Any], db: Session = Depends(ge
         if alert:
             alerts.append((alert, created))
     for incident in incident_engine.correlate(result.findings):
-        row = _upsert_incident(db, incident, None)
+        row = upsert_incident(db, incident, None)
         alert, created = create_incident_alert(db, row)
         if alert:
             alerts.append((alert, created))

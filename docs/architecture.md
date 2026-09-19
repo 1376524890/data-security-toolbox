@@ -1,6 +1,7 @@
 # 架构
 
-当前实现见本文；后续拆分步骤见 [解耦操作指南](解耦操作指南.md)。该指南按批次实施；以下第一批数据资产边界已落地，其他拟新增模块仍按计划描述。
+当前实现见本文；后续拆分步骤见 [解耦操作指南](解耦操作指南.md)。该指南按批次实施；下面第一批（数据资产边界）
+与第二批（分析编排与任务入口）已落地，其他拟新增模块仍按计划描述。
 
 ## 数据资产采集与展示边界（2026-09-19 第一批）
 
@@ -14,6 +15,20 @@
 任务创建冲突由服务抛领域异常，再由 `api/error_handlers.py` 映射为原 404/409。
 具体修改路径见 [数据资产开发入口](数据资产开发入口.md)。
 
+## 分析编排与任务入口边界（2026-09-20 第二批）
+
+`api/* -> services.task_dispatch（按注册名派发）-> Celery 队列 -> workers/*_tasks`
+是唯一派发链路：路由与领域服务不再导入 `app.workers`，应用层也不引用 worker 模块。
+任务行持久化在 `services/task_service.py`；跨域分析编排在 `application/analysis.py`
+（`run_pipeline`、`run_correlations_and_alerts`、`upsert_incident`），只依赖领域逻辑与派发端口，
+既不 import `app.api` 也不依赖被装饰的 task 对象。事务边界不变：只有 `run_pipeline` 自建 session 时才 commit。
+
+`domain/evidence_identity.py` 负责 finding 证据里的资产/IOC 身份解析，`incident_engine` 只重导出旧名；
+这与 `services/data_objects/identity.py` 的文件身份是两件事，不合并。
+
+worker 任务按职责分为 `workers/{analysis,notification,maintenance}_tasks.py`，生命周期在 `workers/task_runtime.py`，
+注册名集中在 `workers/task_names.py`，旧 `workers/tasks.py` 仅兼容重导出。
+Celery 任务名、参数顺序与队列路由属于兼容边界，不随文件位置改变。
 
 系统由三部分组成：
 

@@ -161,6 +161,15 @@ make up / down / logs / migrate / shell / test / lint / format     # 见 Makefil
 不要向其中新增实现。前端列表与采集状态分别在 `modules/data-security/composables/useDataAssetList.ts`
 和 `useDataAssetCollection.ts`，页面负责组装。边界由 `tests/test_data_asset_boundaries.py` 检查。
 
+## 分析编排与任务入口
+
+分析与事件关联编排在 `application/analysis.py`，不在 worker 里；任务行持久化在 `services/task_service.py`，
+队列派发统一走 `services/task_dispatch.py`（按注册名，broker 不可用才回退本进程）。
+worker 任务按职责分在 `workers/{analysis,notification,maintenance}_tasks.py`，注册名集中在
+`workers/task_names.py`，生命周期在 `workers/task_runtime.py`；旧 `workers/tasks.py` 仅兼容门面，不要新增实现。
+路由/服务不得导入 `app.workers.*`（端口模块除外）；Celery 任务名、参数顺序与队列路由属兼容边界。
+边界由 `tests/test_task_boundaries.py` 检查。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

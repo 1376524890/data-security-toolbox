@@ -1,6 +1,6 @@
 # 项目状态
 
-更新时间：2026-09-19。当前任务见 TASK.md；稳定约束见 AGENTS.md；模块关系见 docs/architecture.md。
+更新时间：2026-09-20。当前任务见 TASK.md；稳定约束见 AGENTS.md；模块关系见 docs/architecture.md。
 历史时点数字与旧问题讨论已移至 [本批前完整状态](docs/history/project_status-before-data-asset-refactor-2026-09-19.md)。
 
 ## 版本与工作分支
@@ -10,39 +10,49 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 5c5b1d4 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | f60dd11 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 数据资产采集与展示解耦第一批，未完成整个项目解耦 |
+| 本批范围 | 第二批：分析编排与 Celery 任务入口解耦；第一批数据资产边界见下方记录 |
 
 ## 本批已落地结构
 
-- 后端采集 schema、路由、任务创建、HTTP 错误映射各自独立。
-- 数据对象的身份、覆盖、写入、证据合并、投影、查询、进度按职责分模块；旧服务文件仅兼容导出。
-- 旧资产展示与敏感发现路由从 v1 移入 data_assets；类型中心仍由 data_catalog 查询对象模型。
-- 前端 DataAsset 页面仅组装列表/详情和采集状态；两套状态通过完成回调联系。
+- 平台资产/IOC 身份解析（`domain/evidence_identity.py`）、跨域分析编排（`application/analysis.py`）、
+  任务行持久化（`services/task_service.py`）与队列派发端口（`services/task_dispatch.py`）分层独立。
+- worker 按职责分为 analysis / notification / maintenance 三个任务模块，加 `task_runtime.py`（生命周期）
+  与 `task_names.py`（注册名）；旧 `workers/tasks.py` 仅 43 行兼容门面，无任务装饰器。
+- API 不再导入 `app.workers.*`：路由按注册名派发，健康检查经 `queue_depth()`，情报同步经 `enqueue`。
+- 第一批边界维持：采集 schema/路由/任务创建/错误映射独立，数据对象按职责分模块，旧服务文件仅兼容导出；
+  旧资产展示与敏感发现路由在 data_assets，前端 DataAsset 页面仅组装列表/详情与采集状态。
 - 具体功能修改入口见 [数据资产开发入口](docs/数据资产开发入口.md)。
 
 | 文件 | 拆分前行数 | 拆分后行数 |
 | --- | ---: | ---: |
-| backend/app/api/v1.py | 2822 | 2557 |
+| backend/app/api/v1.py | 2557 | 2552 |
 | backend/app/api/extensions.py | 718 | 364 |
 | backend/app/services/data_object_service.py | 1165 | 58（兼容导出） |
+| backend/app/workers/tasks.py | 981 | 43（兼容门面） |
+| backend/app/incident_engine/engine.py | 344 | 263（身份解析移出） |
 | frontend/src/modules/data-security/DataAsset.vue | 285 | 144 |
 
 逻辑被移动到有明确职责的模块，不是删除功能；不得用总行数变化代替维护效率评估。
 
 ## 验证与已知限制
 
-- 后端隔离全量 582 passed / 17 failed；本轮开始的同环境基线 579 passed / 17 failed，失败集合一致。
-- 17 项失败：分发包/挂载布局 14 项，缺 Redis/worker 能力 2 项，Zeek 相对 PCAP 路径 1 项；尚未修复。
-- 前端类型检查、37 项测试、生产构建通过；新增模块 lint 通过。
-- 拆分前后 OpenAPI 与 162 个路由记录一致，38 张表的列和索引定义一致；无数据库迁移。
-- 新增依赖边界检查防止服务引用 HTTP/worker、领域模块循环依赖，以及业务路由依赖 extensions。
-- 本批没有修改采集判定、风险规则、历史数据或页面布局；没有导入测试数据。
-- 真实环境 8 个只读接口均 200，health ok、`test/status present=false`；资产数是时点采样值
-  （切换前 1087，本轮复验 `/api/v1/data/assets` 1220、`/api/v1/assets` 214），随真实采集变化，不作验收值。
-- 镜像已于 2026-09-19 重建并切换完成，切换后复验通过；回退标签为
-  `source-{backend,worker,frontend}:pre-data-asset-refactor-20260919`。
+- 第二批（本机 .venv 隔离全量）608 项：601 passed / 6 failed / 1 skipped。同一提交的干净检出失败 16 项
+  （多出的是本机未构建探针分发包导致的 10 项），本批 6 项失败均为其子集，无新增失败。
+- 当前 6 项失败与拆分无关：tshark 看门狗与 PCAP 索引上限 2 项、协议引擎夹具 1 项、探针身份注册 1 项、
+  PCAP 工作台原生导出 1 项、health 在本机环境判定为 degraded 1 项；尚未修复，也未因本批改变。
+- 第一批（容器环境）记录：582 passed / 17 failed，其同环境基线 579 passed / 17 failed，失败集合一致；
+  分发包/挂载布局 14 项、缺 Redis/worker 能力 2 项、Zeek 相对 PCAP 路径 1 项。历史数字按当时口径保留。
+- 前端本批未改：类型检查、37 项测试、生产构建沿用第一批结论。
+- 路由仍为 162 条记录（158 APIRoute / 144 路径），与拆分前一致；无数据库迁移。
+- 新增边界检查 `tests/test_task_boundaries.py`（9 项）与 `tests/test_data_asset_boundaries.py`（3 项）。
+- 新增/拆出模块 ruff 与 ruff format 通过；`v1.py` 等改动文件的历史 lint 存量未增加（逐项统计一致）。
+- 本批没有修改采集判定、风险规则、历史数据或页面布局；没有导入测试数据，未操作真实探针。
+- 真实环境只读复验：health 与 8 个只读接口均 200，`/test/status present=false`；资产数是时点采样值
+  （`/api/v1/data/assets` 1220、`/api/v1/assets` 214），随真实采集变化，不作验收值。
+- 镜像已于 2026-09-20 重建并切换完成：worker 注册 12 个任务名、beat 正常派发、真实队列往返一次成功；
+  回退标签 `source-{backend,worker,beat,deployment-worker}:pre-analysis-task-split-20260920`。
 
 ## 已有系统能力
 
@@ -52,9 +62,10 @@
 
 ## 剩余事项
 
-- 分析任务编排、其余大路由、其他前端页面、模型包和探针尚按总体指南待拆分。
+- 其余大路由、其他前端页面、模型包和探针尚按总体指南待拆分（分析任务编排与 Celery 入口已完成）。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。
+- 旧门面（`workers/tasks.py`、`data_object_service.py`）在确无调用方后再删除。
 
-本批不变更外部 API、数据库定义、任务协议和真实探针版本；旧 Python 入口暂保留兼容导出。
+本批不变更外部 API、数据库定义、Celery 任务名、任务协议和真实探针版本；旧 Python 入口暂保留兼容导出。
