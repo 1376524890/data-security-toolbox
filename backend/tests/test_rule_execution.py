@@ -174,27 +174,27 @@ def test_registry_respects_disabled_rule_and_captures_definition(monkeypatch):
 def test_alert_uses_historical_snapshot_and_current_dlp_policy():
     from sqlalchemy import select
 
-    from app.api.v1 import _rule_definition
+    from app.api.rule_presenter import rule_definition
     from app.models import SystemSetting
 
     with SessionLocal() as db:
         snapshot = {'rule_id': 'PROTO_HTTP_UA_001', 'engine': 'protocol_engine',
                     'title': 'Historical rule', 'condition': 'old condition'}
-        assert _rule_definition(db, snapshot['rule_id'], snapshot['engine'],
-                                {'rule_snapshot': snapshot})['condition'] == 'old condition'
+        assert rule_definition(db, snapshot['rule_id'], snapshot['engine'],
+                               {'rule_snapshot': snapshot})['condition'] == 'old condition'
         row = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
         if row is None:
             row = SystemSetting(key='dlp_policy', value={})
             db.add(row)
         row.value = {'min_matches': 7, 'min_confidence': .95}
         db.flush()
-        result = _rule_definition(db, 'DLP_TRANSFER_001', 'dlp_engine')
+        result = rule_definition(db, 'DLP_TRANSFER_001', 'dlp_engine')
         assert '>= 7' in result['condition'] and '0.95' in result['condition']
         db.rollback()
 
 
 def test_suricata_prefixed_id_resolves_exact_sid(tmp_path, monkeypatch):
-    from app.api.v1 import _rule_definition
+    from app.api.rule_presenter import rule_definition
 
     monkeypatch.setattr(library.settings, 'integration_dir', tmp_path)
     directory = tmp_path / 'suricata_rules'
@@ -203,7 +203,7 @@ def test_suricata_prefixed_id_resolves_exact_sid(tmp_path, monkeypatch):
         'alert tcp any any -> any any (msg:"Exact signature"; sid:990001; rev:1;)\n'
         'alert tcp any any -> any any (msg:"Other signature"; sid:9900012; rev:1;)\n')
     with SessionLocal() as db:
-        result = _rule_definition(db, 'SURICATA_990001', 'suricata')
+        result = rule_definition(db, 'SURICATA_990001', 'suricata')
         assert result['title'] == 'Exact signature'
         assert 'Other signature' not in result['content']
 

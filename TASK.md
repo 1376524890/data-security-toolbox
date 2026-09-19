@@ -211,10 +211,47 @@
   迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-incident-route-split-20260920`。
 
+## 第七批：告警域路由拆分（2026-09-20）
+
+基线 `74118db`，同一分支。目标：按指南 §C 把告警域路由从 `api/v1.py` 独立，路径/方法/鉴权/分页与
+响应结构不变；对应后续批次第 1 项的第五个域。
+
+已完成代码：
+
+- 告警路由移至 `api/alerts.py`：`GET /alerts`、`GET /alerts/summary`、`GET /alerts/stream`（SSE）、
+  `GET /alerts/{alert_id}`、`PATCH /alerts/{alert_id}` 共 5 条路径；抑制合并、命中聚合与投递仍由
+  `services/alert_service.py` 负责，路由只做鉴权、筛选与响应组装。
+- 告警详情依赖探针行与规则定义，因此跨域复用部分下沉为 `api/probe_presenter.py::serialize_probe`
+  与 `api/rule_presenter.py::rule_definition`/`rule_file_entries`（原 v1 私有 `_serialize_probe`、
+  `_rule_definition`、`_rule_file_entries`）；`/rules` 路由改为导入共享 `rule_file_entries`，
+  测试 monkeypatch/导入目标同步迁到 `app.api.rule_presenter`，不保留 v1 重复实现。
+- 行序列化继续复用既有 presenter（检测/事件/IOC/资产/数据资产/PCAP），本批不新增序列化副本。
+- `v1.router` 以 `include_router(alerts_router)` 只注册一次，`/api/v1` 前缀只叠加一次。
+- 新增 `tests/test_alert_boundaries.py`（8 项）：5 条路径/方法冻结、仅由 `api/alerts.py` 声明、
+  仍挂 `/api/v1` 下、全应用无重复「方法 + 路径」、告警域不导入 workers/extensions、
+  复用而非复制共享 presenter、抑制/投递未在路由里重写、探针与规则查询未回到 v1、v1 只聚合一次。
+
+验证：
+
+- 本机 .venv 隔离全量 645 项：638 passed / 6 failed / 1 skipped；6 项失败与第六批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **排序后字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute），
+  162 条「方法 + 路径 + 端点名」与拆分前逐条相同；8 个移动函数的 AST 与拆分前逐节点一致
+  （唯一差异是 `_serialize_probe`/`_rule_*` 改名与改名后的调用）；无数据库变更，
+  迁移仍 `0015_alert_hits`（head）。
+- 新增/拆出 4 个模块 ruff check 与 ruff format 通过；`v1.py` 1674 → 1320 行，只减不增，
+  另清理了拆分造成的 9 处未使用导入。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 真实环境只读复验：登录后 18 个只读接口全部 200（含 `/alerts`、`/alerts/summary`、`/alerts/{id}`），
+  告警详情返回全部 11 个字段，规则快照可解析（`matched_snapshot`，标题「端口扫描」）、探针字段正常；
+  `/test/status present=false`、迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-alert-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs 域已完成）：alerts → tasks/audit/reports →
-   incidents/iocs → dashboard，重点明确文件对数据资产结果的写入边界。
+1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts 域已完成）：tasks/audit/reports →
+   detections/engine → dashboard → probes，重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 4. 旧的 `workers/tasks.py` 兼容门面与 `data_object_service.py` 在确无调用方后再删除。

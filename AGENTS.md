@@ -81,7 +81,7 @@ source/
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
 - 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
-  `extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
+  `alerts.py`、`extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
@@ -204,6 +204,15 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 `GET /iocs/{id}/associations`）。关联计算必须走 `incident_engine`（`IncidentEngine.correlate`），
 归属重建走 `incident_engine.attribution`，不要在路由里重写关联逻辑；行序列化用共享 presenter，
 列表时间过滤用 `api/query_filters.py::string_time_filter`。边界由 `tests/test_incident_ioc_boundaries.py` 检查。
+
+## 告警域路由入口
+
+告警路由在 `api/alerts.py`（`GET /alerts`、`GET /alerts/summary`、`GET /alerts/stream`（SSE）、
+`GET /alerts/{alert_id}`、`PATCH /alerts/{alert_id}`）。抑制状态、命中聚合与投递仍在
+`services/alert_service.py`（`serialize_alert`、`list_alert_hits`、`publish_alert`、`event_type_for_status`），
+不要在路由里重写。探针行序列化复用 `api/probe_presenter.py::serialize_probe`，规则解析复用
+`api/rule_presenter.py::rule_definition`（`/rules` 路由同样引用它），不要在 v1 里另留副本。
+边界由 `tests/test_alert_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
 
 ## 与其他文档的关系
 

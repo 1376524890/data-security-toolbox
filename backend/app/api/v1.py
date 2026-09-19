@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import secrets
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -20,7 +19,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from sqlalchemy import false, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -59,7 +58,7 @@ from app.engine import registry
 from app.engine.core.context import DetectionContext
 from app.engine.core.pipeline import DetectionPipeline
 from app.engine.risk_engine.engine import RiskEngine
-from app.incident_engine.engine import IncidentEngine, evidence_asset_keys, evidence_primary_asset
+from app.incident_engine.engine import IncidentEngine
 from app.integrations import integration_registry
 from app.integrations.offline_manager import (
     import_offline_path,
@@ -72,7 +71,6 @@ from app.models import (
     IOC,
     AdminSession,
     Alert,
-    AlertDelivery,
     AnalysisResult,
     Anomaly,
     Asset,
@@ -86,10 +84,8 @@ from app.models import (
     PcapRecord,
     Probe,
     ProbeDeployment,
-    OfflineResource,
     LocalCve,
     Report,
-    SystemSetting,
     Task,
     User,
 )
@@ -107,13 +103,10 @@ from app.schemas import (
 from app.services.alert_service import (
     create_finding_alert,
     create_incident_alert,
-    event_type_for_status,
-    list_alert_hits,
     publish_alert,
     serialize_alert,
 )
 from app.rules.catalog import CATALOG
-from app.rules import library
 from app.services.audit_service import audit_summary, log_analysis
 from app.services.crypto_profile import build_crypto_profile
 from app.services.protocol_service import protocol_layer
@@ -143,41 +136,19 @@ from app.api.assets import (
     router as assets_router,
     serialize_asset,
 )
-from app.api.ioc_presenter import serialize_ioc
 from app.api.incident_presenter import serialize_incident
 from app.api.incidents import (
     router as incidents_router,
 )
 from app.api.query_filters import string_time_filter as _string_time_filter
+from app.api.alerts import (
+    router as alerts_router,
+)
+from app.api.probe_presenter import serialize_probe
+from app.api.rule_presenter import rule_file_entries
 
 router = APIRouter(prefix="/api/v1")
 incident_engine = IncidentEngine()
-
-
-def _serialize_probe(item: Probe) -> dict[str, Any]:
-    now = datetime.now(UTC)
-    status = item.status
-    last_seen = _aware(item.last_seen)
-    if last_seen:
-        age = (now - last_seen).total_seconds()
-        if age > 90:
-            status = "offline"
-        elif status != "degraded" and age < 90:
-            status = "online"
-    else:
-        # Registration alone is not proof that the daemon is running.  A
-        # probe must send a heartbeat before it can be shown as online.
-        status = "offline"
-    return {
-        "id": item.id,
-        "name": item.name,
-        "hostname": item.hostname,
-        "ip_address": item.ip_address,
-        "status": status,
-        "last_seen": _aware(item.last_seen),
-        "metadata": item.extra,
-        "created_at": item.created_at,
-    }
 
 
 def _serialize_report(item: Report) -> dict[str, Any]:
@@ -345,7 +316,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     probes = db.scalars(select(Probe)).all()
     probe_statuses = {item: 0 for item in ("online", "degraded", "offline", "auth_error")}
     for probe in probes:
-        probe_statuses[_serialize_probe(probe)["status"]] = probe_statuses.get(_serialize_probe(probe)["status"], 0) + 1
+        probe_statuses[serialize_probe(probe)["status"]] = probe_statuses.get(serialize_probe(probe)["status"], 0) + 1
     capabilities = _read_worker_capabilities()
     # A worker is online only if its Redis capability heartbeat is fresh.
     analysis_worker = "online" if capabilities else "offline"
@@ -484,7 +455,7 @@ def list_probes(status: str | None = None, search: str | None = None, page: int 
     if search:
         query = query.where(or_(Probe.name.ilike(f"%{search}%"), Probe.hostname.ilike(f"%{search}%"), Probe.ip_address.ilike(f"%{search}%")))
     result = paginate(db, query.order_by(Probe.id.desc()), page, page_size)
-    return page_response([_serialize_probe(item) for item in result["items"]], page, page_size, result["total"])
+    return page_response([serialize_probe(item) for item in result["items"]], page, page_size, result["total"])
 
 
 def _probe_removal_target(db: Session, probe: Probe, payload: ProbeDeleteRequest) -> tuple[str, int, str]:
@@ -841,7 +812,7 @@ def engine_registry(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     # Count each engine's own rule files so the number always matches the rule
     # list the console renders for that engine.
     rule_counts: dict[str, int] = {}
-    inventory = _rule_file_entries(db, include_content=False)
+    inventory = rule_file_entries(db, include_content=False)
     for item in inventory:
         rule_key = str(item.get("engine") or "")
         rule_counts[rule_key] = rule_counts.get(rule_key, 0) + 1
@@ -1042,146 +1013,6 @@ def detection_detail(detection_id: int, db: Session = Depends(get_db)) -> dict[s
     return {"detection": _serialize_detection(item), "related_incidents": [serialize_incident(item) for item in incidents], "pcap": serialize_pcap(pcap) if pcap else None, "alert": serialize_alert(alert) if alert else None}
 
 
-@router.get("/alerts")
-def list_alerts(status: str | None = None, severity: str | None = None, source: str | None = None, probe_id: int | None = None, start: str | None = None, end: str | None = None, search: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
-    query = select(Alert)
-    if status:
-        query = query.where(Alert.status == status)
-    if severity:
-        query = query.where(Alert.severity == severity)
-    if source:
-        query = query.where(Alert.source == source)
-    if probe_id:
-        query = query.where(Alert.probe_id == probe_id)
-    if start:
-        query = query.where(Alert.created_at >= start)
-    if end:
-        query = query.where(Alert.created_at <= end)
-    if search:
-        query = query.where(or_(Alert.title.ilike(f"%{search}%"), Alert.summary.ilike(f"%{search}%")))
-    result = paginate(db, query.order_by(Alert.risk_score.desc(), Alert.last_seen.desc()), page, page_size)
-    return page_response([serialize_alert(item) for item in result["items"]], page, page_size, result["total"])
-
-
-@router.get("/alerts/summary")
-def alert_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
-    status_rows = db.execute(select(Alert.status, func.count(Alert.id)).group_by(Alert.status)).all()
-    severity_rows = db.execute(select(Alert.severity, func.count(Alert.id)).group_by(Alert.severity)).all()
-    unhandled = db.scalar(select(func.count(Alert.id)).where(Alert.status == "new", Alert.severity.in_(["Critical", "High"]))) or 0
-    return {
-        "total": db.scalar(select(func.count(Alert.id))) or 0,
-        "status": {status: count for status, count in status_rows},
-        "severity": {severity: count for severity, count in severity_rows},
-        "unhandled_critical_high": unhandled,
-    }
-
-
-@router.get("/alerts/stream")
-def alert_stream(request: Request) -> StreamingResponse:
-    import redis as redis_lib
-
-    def event_source():
-        client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
-        pubsub = client.pubsub()
-        pubsub.subscribe("security.alerts")
-        try:
-            yield "event: ping\ndata: connected\n\n"
-            for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
-                yield f"event: alert\ndata: {message['data']}\n\n"
-        finally:
-            pubsub.close()
-            client.close()
-
-    return StreamingResponse(event_source(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
-@router.get("/alerts/{alert_id}")
-def alert_detail(alert_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    alert = db.get(Alert, alert_id)
-    if not alert:
-        raise HTTPException(404, "alert not found")
-    finding = db.get(DetectionFinding, alert.finding_id) if alert.finding_id else None
-    incident = db.get(Incident, alert.incident_id) if alert.incident_id else None
-    probe = db.get(Probe, alert.probe_id) if alert.probe_id else None
-    pcap = None
-    if finding and finding.target_type == "pcap":
-        pcap = db.get(PcapRecord, int(finding.target_id)) if str(finding.target_id).isdigit() else None
-    deliveries = db.scalars(select(AlertDelivery).where(AlertDelivery.alert_id == alert.id).order_by(AlertDelivery.id.desc())).all()
-    # Derive associated assets / IOC / data assets from the finding evidence.
-    assets: list[dict[str, Any]] = []
-    iocs: list[dict[str, Any]] = []
-    data_assets: list[dict[str, Any]] = []
-    if finding:
-        evidence = finding.evidence or {}
-        # Shared resolver first, then every other address the evidence names, so
-        # the detail view and the incident engine agree on the subject.
-        candidate_ips: list[str] = []
-        primary = evidence_primary_asset(evidence)
-        if primary:
-            candidate_ips.append(primary)
-        candidate_ips.extend(key for key in evidence_asset_keys(evidence) if key not in candidate_ips)
-        candidate_iocs: list[str] = []
-        for key in ("value", "query", "qname", "rrname", "domain", "url", "uri", "ioc"):
-            value = evidence.get(key)
-            if isinstance(value, str) and value not in candidate_iocs:
-                candidate_iocs.append(value)
-            elif isinstance(value, dict) and value.get("value"):
-                candidate_iocs.append(str(value["value"]))
-        if candidate_ips:
-            asset_rows = db.scalars(select(Asset).where(Asset.ip.in_(candidate_ips)).limit(50)).all()
-            assets = [serialize_asset(item) for item in asset_rows]
-        if candidate_iocs:
-            ioc_rows = db.scalars(select(IOC).where(IOC.value.in_(candidate_iocs)).limit(50)).all()
-            iocs = [serialize_ioc(item) for item in ioc_rows]
-        file_name = evidence.get("file") or (evidence.get("record", {}).get("filename") if isinstance(evidence.get("record"), dict) else "")
-        if file_name:
-            da_rows = db.scalars(select(DataAsset).where(DataAsset.name == file_name).limit(50)).all()
-            data_assets = [_serialize_data_asset(item) for item in da_rows]
-    return {
-        "alert": serialize_alert(alert),
-        "finding": _serialize_detection(finding) if finding else None,
-        # The authored rule behind this alert, so the console can show what
-        # matched instead of only the rule id.
-        "rule": _rule_definition(db, finding.rule_id, finding.engine, finding.evidence) if finding else None,
-        "incident": serialize_incident(incident) if incident else None,
-        "probe": _serialize_probe(probe) if probe else None,
-        "pcap": serialize_pcap(pcap) if pcap else None,
-        "assets": assets,
-        "iocs": iocs,
-        "data_assets": data_assets,
-        "deliveries": [
-            {"id": item.id, "channel": item.channel, "target": item.target, "status": item.status, "attempts": item.attempts, "last_error": item.last_error, "sent_at": item.sent_at}
-            for item in deliveries
-        ],
-        # Suppression keeps one live alert per subject; these rows keep every
-        # observation behind it, with the first / latest / highest-risk flagged.
-        "hits": list_alert_hits(db, alert.id),
-    }
-
-
-@router.patch("/alerts/{alert_id}")
-def update_alert(alert_id: int, payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
-    alert = db.get(Alert, alert_id)
-    if not alert:
-        raise HTTPException(404, "alert not found")
-    status = payload.get("status")
-    if status:
-        if status not in {"new", "acknowledged", "resolved", "suppressed"}:
-            raise HTTPException(400, "invalid alert status")
-        alert.status = status
-    if "severity" in payload:
-        alert.severity = str(payload["severity"])
-    if "summary" in payload:
-        alert.summary = str(payload["summary"])
-    alert.last_seen = datetime.now(UTC)
-    db.commit()
-    db.refresh(alert)
-    publish_alert(alert.id, event_type=event_type_for_status(alert.status))
-    return serialize_alert(alert)
-
-
 @router.get("/risk/summary")
 def risk_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
     rows = db.execute(select(DetectionFinding.risk_level, func.count(DetectionFinding.id)).group_by(DetectionFinding.risk_level)).all()
@@ -1355,7 +1186,7 @@ def network_live(db: Session = Depends(get_db)) -> dict[str, Any]:
     cpu: list[float] = []
     mem: list[float] = []
     for probe in probes:
-        status = _serialize_probe(probe)["status"]
+        status = serialize_probe(probe)["status"]
         if status == "online":
             online += 1
         elif status == "degraded":
@@ -1428,7 +1259,7 @@ def incident_trend(range: str = Query("7d"), db: Session = Depends(get_db)) -> d
 @router.get("/rules")
 def list_rules(rule_type: str | None = Query(None), engine: str | None = Query(None), include_content: bool = Query(True), db: Session = Depends(get_db)) -> dict[str, Any]:
     """List Sigma / Suricata / YARA rules with content."""
-    items = _rule_file_entries(db, engine=engine or '', include_content=include_content)
+    items = rule_file_entries(db, engine=engine or '', include_content=include_content)
     if rule_type:
         items = [item for item in items if item["type"] == rule_type]
     if engine:
@@ -1438,7 +1269,7 @@ def list_rules(rule_type: str | None = Query(None), engine: str | None = Query(N
 
 @router.get('/rules/content')
 def rule_content(path: str, engine: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    item = next((item for item in _rule_file_entries(db, engine, include_content=False)
+    item = next((item for item in rule_file_entries(db, engine, include_content=False)
                  if item['path'] == path), None)
     if item is None:
         raise HTTPException(404, '规则不存在')
@@ -1448,192 +1279,6 @@ def rule_content(path: str, engine: str, db: Session = Depends(get_db)) -> dict[
     else:
         item['content'] = Path(path).read_text(encoding='utf-8', errors='replace')
     return item
-
-
-def _rule_file_entries(db: Session, engine: str = "", include_content: bool = True) -> list[dict[str, Any]]:
-    """Every rule file the platform library holds, with its engine and content.
-
-    The directories come from ``app.rules.catalog`` so the rule list, the rule
-    count and the files the engines actually load can never disagree. Files
-    imported at runtime (data/integrations/...) are listed on top of the ones
-    shipped with the platform.
-    """
-    items: list[dict[str, Any]] = []
-
-    def _add(path: Path, rtype: str, engine_name: str) -> None:
-        if engine and engine != engine_name:
-            return
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace") if include_content else ''
-        except Exception:
-            content = ""
-        try:
-            size = path.stat().st_size
-        except OSError:
-            size = 0
-        execution = 'active'
-        if engine_name in {'osquery', 'wazuh', 'openscap', 'misp', 'presidio'}:
-            execution = 'external'
-        if engine_name == 'zeek' and path.name != 'site_security.zeek':
-            execution = 'external'
-        if engine_name == 'sigma_log_engine':
-            from app.rules.sigma import load_sigma_rules
-            if not load_sigma_rules(path):
-                execution = 'unsupported'
-        if engine_name == 'openscap' and path.name == 'dst_baseline_xccdf.xml':
-            execution = 'incomplete'
-        items.append({"type": rtype, "engine": engine_name, "name": path.name,
-                      "path": str(path), "content": content if include_content else '',
-                      "size": size, "execution": execution})
-
-    # ``library.rule_files`` resolves both the rule files shipped with the
-    # platform and the ones an online refresh downloaded into the runtime dir.
-    for source in CATALOG:
-        if engine and source.engine != engine:
-            continue
-        for path in library.rule_files(source.engine):
-            _add(path, source.rule_type, source.engine)
-    # Operator-imported libraries live under the runtime integration directory.
-    for path in sorted((settings.integration_dir / "yara_rules").glob("*.yar")):
-        _add(path, "yara", "data_engine")
-    for path in sorted((settings.integration_dir / 'dlp_rules').glob('*.json')):
-        _add(path, 'dlp', 'dlp_engine')
-    for path in sorted((settings.integration_dir / "sigma_rules").glob("*.y*ml")):
-        _add(path, "sigma", "sigma_log_engine")
-    for path in sorted((settings.integration_dir / "suricata_rules").glob("*.rules")):
-        _add(path, "suricata", "suricata")
-    resources = db.scalars(select(OfflineResource).where(OfflineResource.resource_type == "suricata_rules")).all()
-    for resource in resources:
-        path = Path(resource.storage_path)
-        if path.exists() and path.is_file():
-            _add(path, "suricata", "suricata")
-        elif path.exists() and path.is_dir():
-            for rule_file in sorted(path.glob("*.rules")):
-                _add(rule_file, "suricata", "suricata")
-    from app.rules.code_catalog import definitions
-
-    for definition in definitions():
-        if engine and definition['engine'] != engine:
-            continue
-        items.append({
-            'type': 'builtin', 'engine': definition['engine'], 'name': definition['title'],
-            'rule_id': definition['rule_id'],
-            'path': definition['path'] + '#' + definition['rule_id'],
-            'content': definition['content'] if include_content else '',
-            'size': len(definition['content'].encode()), 'execution': 'active',
-        })
-    return list({(item["engine"], item["path"]): item for item in items}.values())
-
-
-def _rule_definition(db: Session, rule_id: str, engine: str = "", evidence: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """Find the authored definition of ``rule_id``.
-
-    An alert must be able to show *which rule* matched, not only its id, so the
-    lookup returns the rule's title, condition/recommendation and raw text along
-    with where it lives. Three kinds of rule exist and all three are resolved:
-    rule files in the platform library, code-implemented rules declared in
-    ``app.rules.builtin``, and data-driven rules (the DLP policy, NVD records).
-    """
-    if not rule_id:
-        return None
-    evidence = evidence if isinstance(evidence, dict) else {}
-    snapshot = evidence.get('rule_snapshot')
-    if isinstance(snapshot, dict) and snapshot.get('rule_id') == rule_id and snapshot.get('engine') == engine:
-        return {**snapshot, 'resolution': 'matched_snapshot'}
-    # Stored DLP policy overrides the shipped defaults. Never let its YAML file
-    # hide the actual configured policy in an alert.
-    if rule_id == 'DLP_TRANSFER_001':
-        from app.rules.builtin import dlp_rule_definition
-        from app.services.dlp_service import normalize_policy
-
-        row = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
-        return {**dlp_rule_definition(rule_id, normalize_policy(row.value if row else {})),
-                'resolution': 'current_definition'}
-    configured = library.rule_snapshot(engine, rule_id) if engine else None
-    if configured:
-        return {**configured, 'resolution': 'current_definition'}
-    # Imported here rather than at module scope so this optional parser stays off
-    # the API import path.
-    import yaml
-
-    lookup_id = rule_id.removeprefix('SURICATA_') if engine == 'suricata' else rule_id
-    for item in _rule_file_entries(db, engine=engine):
-        content = str(item.get("content") or "")
-        # Cheap prefilter: only parse the files that mention this rule id.
-        if lookup_id not in content or item['type'] == 'builtin':
-            continue
-        rtype = str(item.get("type") or "")
-        definition: dict[str, Any] = {
-            "rule_id": rule_id,
-            "engine": str(item.get("engine") or ""),
-            "type": rtype,
-            "path": str(item.get("path") or ""),
-            "file": str(item.get("name") or ""),
-            "content": content,
-            "title": "",
-            "severity": "",
-            "condition": "",
-            "recommendation": "",
-            "detection": None,
-        }
-        if rtype == "yara":
-            if re.search(rf"^\s*rule\s+{re.escape(rule_id)}\b", content, re.MULTILINE):
-                definition["title"] = rule_id
-                return definition
-            continue
-        if rtype == "suricata":
-            for line in content.splitlines():
-                if not line.lstrip().startswith('#') and re.search(rf"\bsid\s*:\s*{re.escape(lookup_id)}\s*;", line):
-                    title = re.search(r'msg\s*:\s*"([^"\n]+)"', line)
-                    definition.update(title=title.group(1) if title else rule_id,
-                                      content=line, condition=line, resolution='current_definition')
-                    return definition
-            continue
-        try:
-            document = yaml.safe_load(content)
-        except Exception:
-            continue
-        for entry in document if isinstance(document, list) else [document]:
-            if not isinstance(entry, dict):
-                continue
-            if str(entry.get("rule_id") or entry.get("id") or "") != rule_id:
-                continue
-            definition.update({
-                "title": str(entry.get("title") or rule_id),
-                "severity": str(entry.get("severity") or entry.get("level") or ""),
-                "condition": str(entry.get("condition") or (entry.get("detection") or {}).get("condition") or ""),
-                "recommendation": str(entry.get("recommendation") or ""),
-                "detection": entry.get("detection") if isinstance(entry.get("detection"), dict) else None,
-            })
-            return definition
-    # No rule file carries this id: resolve the rules the engines apply
-    # themselves, so an alert never renders an empty rule block.
-    from app.rules import builtin as builtin_rules
-
-    record: dict[str, Any] = {}
-    if rule_id.startswith("CVE_"):
-        row = db.scalar(select(LocalCve).where(LocalCve.cve_id == rule_id[4:]))
-        if row:
-            record = {
-                "cve_id": row.cve_id,
-                "severity": row.severity,
-                "cvss_score": row.cvss_score,
-                "published": row.published,
-                "description": row.description,
-            }
-    definition = builtin_rules.cve_rule_definition(rule_id, evidence, record)
-    if definition:
-        return definition
-    policy = None
-    if rule_id == "DLP_TRANSFER_001":
-        row = db.scalar(select(SystemSetting).where(SystemSetting.key == "dlp_policy"))
-        from app.services.dlp_service import DEFAULT_POLICY, normalize_policy
-
-        policy = normalize_policy(row.value if row else DEFAULT_POLICY)
-    definition = builtin_rules.dlp_rule_definition(rule_id, policy)
-    if definition:
-        return definition
-    return builtin_rules.builtin_rule_definition(rule_id)
 
 
 @router.get("/probes/{probe_id}/metrics")
@@ -1647,7 +1292,7 @@ def probe_metrics(probe_id: int, db: Session = Depends(get_db)) -> dict[str, Any
     pending = extra.get("pending_segments", 0)
     quarantined = extra.get("quarantined_segments", 0)
     return {
-        "probe": _serialize_probe(probe),
+        "probe": serialize_probe(probe),
         "system": system,
         "cpu_percent": system.get("cpu_percent"),
         "memory_percent": system.get("memory_percent"),
@@ -1672,3 +1317,4 @@ router.include_router(pcaps_router)
 router.include_router(files_router)
 router.include_router(assets_router)
 router.include_router(incidents_router)
+router.include_router(alerts_router)
