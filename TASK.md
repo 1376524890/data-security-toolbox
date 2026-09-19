@@ -910,12 +910,50 @@
   后端未重建，迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-engine-detail-state-20260920`。
 
+## 第二十五批：前端看板页状态解耦（2026-09-20）
+
+基线 `2322347`，同一分支。目标：按指南 §F 把看板的状态抽到 composable，模板与交互不变。
+本批没有模板改动。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/dashboard/composables/useDashboard.ts`（94 行）；`Dashboard.vue`
+  195 → 127 行。去掉缩进后，迁入的 69 行脚本逐行比对未改。
+- 十路并发加载（汇总、风险、健康、两条趋势、严重度、引擎、事件、高风险资产、敏感数据）、
+  风险档位投影、两处环形图共用的 `levelBreakdown`、引擎图表的 x/y 投影全部原样迁移。
+- 视图保留路由与 `formatDateTime`/`formatRiskScore`（模板绑定），以及模板里 `Incident`/`Asset`
+  类型注解需要的两个类型导入。
+- 本批删除视图里因搬迁而不再使用的 `utils/mapping` 导入（`severityLabels`/`severityOrder`/
+  `severityTagColors` 随 `levelBreakdown` 进 composable）。
+- 新增 `frontend/src/__tests__/dashboard-state.test.ts`（7 项）：十路加载与投影结果、风险档位按
+  Critical→Low 固定顺序并补 0、严重度环形图按共享刻度排序且颜色与标签一致、计数为 0 的档位被丢弃且
+  保留接口多出来的档位、敏感类别走同一套刻度、引擎图表投影成并行的 x/y、失败进页面状态。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 22 个文件 169 项通过（原 162 项 + 本批 7 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与 `Dashboard`/`EngineDetail` chunk 均 200，chunk 名与
+  本地构建一致、线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/dashboard/summary`（告警 479、开放告警 475、事件 208、高危检测 3266、
+  高风险资产 13、敏感数据资产 33、在线探针 1、健康集成 4）、`/risk/summary`（3614 条：Critical 234 /
+  High 3032 / Medium 339 / Low 9）、`/dashboard/risk-trend`、`/dashboard/incident-trend`、
+  `/dashboard/severity`、`/dashboard/engines`、`/dashboard/incidents`、`/dashboard/high-risk-assets`、
+  `/dashboard/sensitive-data`（含 `Unknown` 额外档位）、`/health`、`/test/status`（`present=false`）、
+  `/auth/me`、`/engine/registry`、`/detections`、`/assets`、`/probes`、`/incidents`、`/alerts`、
+  `/alerts/summary`、`/files`、`/dlp/policy`、`/dlp/transfers`、`/dlp/rules`、`/scan-profiles`、
+  `/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、`/sensitive/findings`、
+  `/sensitivity-levels` 均 200；本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍
+  `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-dashboard-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端其余页面（看板、审计、探针页等）按实际改动需求再拆（同一模式：先抽状态，
-   再抽视图；数据安全域、事件/告警中心、资产中心、检测中心与引擎详情已完成）。
+1. 前端其余页面（审计、探针页等）按实际改动需求再拆（同一模式：先抽状态，再抽视图；
+   数据安全域、事件/告警中心、资产中心、检测中心、引擎详情与看板已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。

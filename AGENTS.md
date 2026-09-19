@@ -419,6 +419,17 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 规则数仍先取注册表、再取同名适配器，`/health` 只用于运行态展示。回归：
 `frontend/src/__tests__/engine-detail-state.test.ts`（11 项）。
 
+## 看板页状态边界
+
+看板（`frontend/src/modules/dashboard/Dashboard.vue`）的状态在
+`modules/dashboard/composables/useDashboard.ts`（94 行），页面只保留模板（195 → 127 行）；
+去掉缩进后，迁入的 69 行脚本逐行未改，模板与样式逐字节未改。页面保留路由与 `formatDateTime`/
+`formatRiskScore` 这类静态展示（模板里的 `Incident`/`Asset` 类型注解也留在视图），汇总卡、
+风险仪表、运行态、两条趋势与四个图表序列整块进 composable。两处环形图仍走同一套四级刻度
+（`levelBreakdown`：先按 `severityOrder` 排序、再用 `severityTagColors` 上色、值为 0 的档位丢弃），
+接口多出来的档位（例如敏感类别的 `Unknown`）仍排在刻度之后。回归：
+`frontend/src/__tests__/dashboard-state.test.ts`（7 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

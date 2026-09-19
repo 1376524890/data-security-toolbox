@@ -10,12 +10,19 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 1952b3a / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 2322347 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第二十四批：前端引擎详情页状态解耦；前二十三批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态、事件中心与告警中心页状态、资产中心页状态、检测中心页状态）见下方记录 |
+| 本批范围 | 第二十五批：前端看板页状态解耦；前二十四批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态、事件中心与告警中心页状态、资产中心页状态、检测中心页状态、引擎详情页状态）见下方记录 |
 
 ## 本批已落地结构
 
+- 看板的状态收拢到 `frontend/src/modules/dashboard/composables/useDashboard.ts`（94 行），页面只保留
+  模板（`Dashboard.vue` 195 → 127 行）；去掉缩进后，迁入的 69 行脚本逐行未改，模板与样式逐字节未改。
+- 页面保留路由与 `formatDateTime`/`formatRiskScore`（模板绑定，模板里的 `Incident`/`Asset` 类型注解
+  也需要留在视图）；汇总卡、风险仪表、运行态、两条趋势与四个图表序列整块进 composable。
+- 两处环形图仍共用 `levelBreakdown`：按 `severityOrder` 排序、用 `severityTagColors` 上色、丢弃计数为 0
+  的档位，接口多出来的档位（如敏感类别的 `Unknown`）排在刻度之后；本批还删除了视图里因搬迁而不再
+  使用的 `utils/mapping` 导入。
 - 引擎详情的状态收拢到 `frontend/src/modules/engines/composables/useEngineDetail.ts`（114 行），
   页面只保留模板（`EngineDetail.vue` 208 → 126 行）；去掉缩进后，迁入的 83 行脚本逐行未改，
   模板与样式逐字节未改。
@@ -193,6 +200,8 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
+| frontend/src/modules/dashboard/Dashboard.vue | 195 | 127 |
+| frontend/src/modules/dashboard/composables/useDashboard.ts | 0（本批新增） | 94 |
 | frontend/src/modules/engines/EngineDetail.vue | 208 | 126 |
 | frontend/src/modules/engines/composables/useEngineDetail.ts | 0（本批新增） | 114 |
 | frontend/src/modules/operations/detections/DetectionCenter.vue | 183 | 111 |
@@ -257,6 +266,23 @@
 
 ## 验证与已知限制
 
+- 第二十五批（前端）：`npm run typecheck` 通过；全量 vitest 22 个文件 169 项通过（原 162 项 + 本批新增
+  `dashboard-state.test.ts` 7 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+  逐行比对：去掉缩进后，迁入 composable 的 69 行脚本逐行未改，模板与样式逐字节未改。
+- 第二十五批镜像（前端）：legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/`、入口 chunk 与 `Dashboard`/`EngineDetail` chunk 均 200，
+  chunk 名与本地构建一致、线上字节与本地构建 SHA256 相同、无 demo/mock 代码；回退标签
+  `source-frontend:pre-dashboard-state-20260920`。
+- 第二十五批真实环境只读复验（后端未改）：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/dashboard/summary`（告警 479、开放告警 475、事件 208、高危检测 3266、高风险资产 13、敏感数据资产
+  33、在线探针 1、健康集成 4）、`/risk/summary`（3614 条：Critical 234 / High 3032 / Medium 339 /
+  Low 9）、`/dashboard/risk-trend`、`/dashboard/incident-trend`、`/dashboard/severity`、
+  `/dashboard/engines`、`/dashboard/incidents`、`/dashboard/high-risk-assets`、`/dashboard/sensitive-data`
+  （含 `Unknown` 这类额外档位），以及 `/engine/registry`、`/detections`、`/assets`、`/probes`、
+  `/incidents`、`/alerts`、`/alerts/summary`、`/files`、`/dlp/policy`、`/dlp/transfers`、`/dlp/rules`、
+  `/scan-profiles`、`/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、
+  `/sensitive/findings`、`/sensitivity-levels` 均 200；未调用测试数据导入接口，未操作真实探针主机，
+  迁移仍 `0015_alert_hits`（head）。
 - 第二十四批（前端）：`npm run typecheck` 通过；全量 vitest 21 个文件 162 项通过（原 151 项 + 本批新增
   `engine-detail-state.test.ts` 11 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
   逐行比对：去掉缩进后，迁入 composable 的 83 行脚本逐行未改，模板与样式逐字节未改。
@@ -575,8 +601,8 @@
 - 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
-  其余待办：前端其余页面（看板、审计、探针页等）按实际改动需求再拆（数据安全域、
-  事件/告警中心、资产中心、检测中心与引擎详情的状态已抽入 composable）、模型包拆分，最后是探针模块与分发包。
+  其余待办：前端其余页面（审计、探针页等）按实际改动需求再拆（数据安全域、事件/告警中心、
+  资产中心、检测中心、引擎详情与看板的状态已抽入 composable）、模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。
