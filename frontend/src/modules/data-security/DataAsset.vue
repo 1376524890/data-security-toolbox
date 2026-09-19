@@ -1,11 +1,6 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, computed } from 'vue'
+import { onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { listDataAssets, getDataAsset } from '../../api/dataAssets'
-import { listProbes, collectProbeDataAssets, type Probe } from '../../api/probes'
-import { getTask } from '../../api/tasks'
-import type { DataAsset as DataAssetType, DataAssetDetail } from '../../types/dataAsset'
 import StateBox from '../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../components/common/FilterBar.vue'
 import DetailDrawer from '../../components/common/DetailDrawer.vue'
@@ -15,156 +10,20 @@ import SeverityTag from '../../components/security/SeverityTag.vue'
 import DataRiskCard from '../../components/security/DataRiskCard.vue'
 import JsonViewer from '../../components/evidence/JsonViewer.vue'
 
+import { useDataAssetList } from './composables/useDataAssetList'
+import { useDataAssetCollection } from './composables/useDataAssetCollection'
+
 const router = useRouter()
-const loading = ref(true)
-const error = ref('')
-const items = ref<DataAssetType[]>([])
-const total = ref(0)
-const detail = ref<DataAssetDetail | null>(null)
-const drawer = ref(false)
-const filters = reactive({ search: '', sensitivity: '', asset_type: '', source: '', probe_id: '', page: 1, page_size: 50 })
-
-const probes = ref<Probe[]>([])
-const collectDialog = ref(false)
-const collecting = ref(false)
-const collectProgress = ref(0)
-const collectStage = ref('')
-const collectForm = reactive({ probe_id: null as number | null, pathsText: '', max_files: 200, max_depth: 3, timeout_seconds: 120, include_databases: true })
-
+const { loading, error, items, total, detail, drawer, filters, probes, piiData,
+  load, loadProbes, open, reset } = useDataAssetList()
+const { collectDialog, collecting, collectProgress, collectStage, collectForm,
+  openCollect, submitCollect } = useDataAssetCollection(load)
 const filterFields = computed<FilterField[]>(() => [
   { key: 'search', label: '搜索名称', placeholder: '搜索资产名称', width: '200px' },
   { key: 'sensitivity', label: '敏感度', type: 'select', options: ['Critical', 'High', 'Medium', 'Low'].map((v) => ({ label: v, value: v })), width: '110px' },
   { key: 'asset_type', label: '类型', type: 'select', options: ['table', 'file', 'database', 'directory'].map((v) => ({ label: v, value: v })), width: '120px' },
   { key: 'probe_id', label: '探针', type: 'select', placeholder: '全部探针', options: probes.value.map((p) => ({ label: `${p.name} (${p.ip_address || '未知IP'})`, value: String(p.id) })), width: '200px' },
 ])
-
-// "1 field, 100 sample hits" and "1 field, 0 hits" are different findings, so
-// the two units are never collapsed into one number.
-const piiData = computed(() => {
-  const detailed = detail.value?.pii_summary_detail
-  if (detailed && Object.keys(detailed).length) {
-    return Object.entries(detailed).map(([name, value]) => ({
-      name, fields: value.fields, sample_hits: value.sample_hits,
-    }))
-  }
-  return Object.entries(detail.value?.pii_summary || {}).map(([name, value]) => ({
-    name, fields: value, sample_hits: 0,
-  }))
-})
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const result = await listDataAssets({
-      search: filters.search,
-      sensitivity: filters.sensitivity,
-      asset_type: filters.asset_type,
-      source: filters.source,
-      probe_id: filters.probe_id ? Number(filters.probe_id) : undefined,
-      page: filters.page,
-      page_size: filters.page_size,
-    })
-    items.value = result.items
-    total.value = result.total
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadProbes(): Promise<void> {
-  try {
-    const result = await listProbes({ page: 1, page_size: 200 })
-    probes.value = result.items
-  } catch {
-    probes.value = []
-  }
-}
-
-async function open(row: DataAssetType): Promise<void> {
-  try {
-    detail.value = await getDataAsset(row.id)
-    drawer.value = true
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  }
-}
-
-function reset(): void { filters.page = 1; load() }
-
-function openCollect(): void {
-  collectDialog.value = true
-  collectProgress.value = 0
-  collectStage.value = ''
-}
-
-// A finished run is not the same as a finished scope: name what was missed
-// instead of letting "100%" read as full coverage.
-function partialReason(result: { coverage?: Record<string, unknown>; not_observed?: number }): string {
-  const coverage = result.coverage || {}
-  const parts: string[] = []
-  if (coverage.termination_reason) parts.push(`终止原因：${String(coverage.termination_reason)}`)
-  const truncated = coverage.truncated_files
-  if (Array.isArray(truncated) && truncated.length) parts.push(`截断文件 ${truncated.length} 个`)
-  if (coverage.max_files != null) parts.push(`文件上限 ${String(coverage.max_files)}`)
-  if (coverage.files_analyzed != null && coverage.files_discovered != null) {
-    parts.push(`已分析 ${String(coverage.files_analyzed)}/${String(coverage.files_discovered)}`)
-  }
-  if (result.not_observed) parts.push(`${result.not_observed} 个实例未再观测`)
-  return parts.length ? parts.join('，') : '覆盖范围未完成，详见任务中心'
-}
-
-async function submitCollect(): Promise<void> {
-  if (!collectForm.probe_id) { ElMessage.warning('请选择探针'); return }
-  const paths = collectForm.pathsText.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean)
-  if (!paths.length) { ElMessage.warning('请填写至少一个采集目录（绝对路径），例如 /srv/data'); return }
-  collecting.value = true
-  collectProgress.value = 5
-  collectStage.value = '下发采集任务'
-  try {
-    const task = await collectProbeDataAssets(collectForm.probe_id, {
-      paths,
-      max_files: collectForm.max_files,
-      max_depth: collectForm.max_depth,
-      timeout_seconds: collectForm.timeout_seconds,
-      include_databases: collectForm.include_databases,
-    })
-    for (let i = 0; i < 100; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 3000))
-      const current = await getTask(task.id)
-      collectProgress.value = current.progress ?? collectProgress.value
-      collectStage.value = current.current_stage || collectStage.value
-      const status = String(current.status || '')
-      if (['Cancelled', 'Canceled'].includes(status)) {
-        collectStage.value = '已取消'
-        throw new Error('采集任务已取消')
-      }
-      if (['Success', 'Partial', 'Failed', 'Failure'].includes(status)) {
-        collectProgress.value = 100
-        const result = (current.result || {}) as { assets?: number; coverage?: Record<string, unknown>; not_observed?: number }
-        if (status === 'Failed' || status === 'Failure') throw new Error(current.error || '采集失败')
-        if (status === 'Partial') {
-          collectStage.value = '部分完成'
-          ElMessage.warning(`采集部分完成：已上报 ${result.assets ?? 0} 个资产；${partialReason(result)}`)
-          collectDialog.value = false
-          load()
-          return
-        }
-        ElMessage.success(`数据资产采集完成：${result.assets ?? 0} 个资产`)
-        collectDialog.value = false
-        load()
-        return
-      }
-    }
-    throw new Error('采集超时，请稍后在任务中心查看结果')
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : String(err))
-  } finally {
-    collecting.value = false
-  }
-}
 
 onMounted(() => { load(); loadProbes() })
 </script>

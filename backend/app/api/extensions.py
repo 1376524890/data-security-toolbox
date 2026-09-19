@@ -3,8 +3,23 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 import ipaddress
 import re
-from app.services import data_object_service
-from app.services.probe_task_service import TERMINAL, expire_probe_tasks
+from app.api.data_collection import router as data_collection_router
+from app.api.data_collection import queue_data_asset_scan as queue_data_asset_scan
+from app.api.data_collection import data_asset_inventory as data_asset_inventory
+from app.api.data_collection import data_asset_progress as data_asset_progress
+from app.services.data_objects.progress import PROGRESS_FIELDS as PROGRESS_FIELDS
+from app.services.data_objects.progress import progress_percent as progress_percent
+from app.services.data_objects.progress import progress_stage as progress_stage
+from app.api.data_collection_schemas import DataAssetScanConfig as DataAssetScanConfig
+from app.api.data_collection_schemas import DataAssetColumn as DataAssetColumn
+from app.api.data_collection_schemas import ProbeDataAsset as ProbeDataAsset
+from app.api.data_collection_schemas import DataAssetReport as DataAssetReport
+from app.api.data_collection_schemas import DataAssetProgress as DataAssetProgress
+from app.services.probe_task_service import (
+    TERMINAL, expire_probe_tasks,
+    queue_probe_scan as queue_probe_scan,
+    queue_probe_data_asset_job as queue_probe_data_asset_job,
+)
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -12,12 +27,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import require_probe_headers
+from app.api.dependencies import authenticated_probe as authenticated_probe
 # DataAsset is no longer written directly here: the object model owns the data
 # and data_object_service derives the legacy row in the same transaction.
 from app.models import Asset, Probe, Task, IOC, SystemSetting, AnalysisResult
 from app.services.asset_service import classify_service
-from app.services.report_guard import validate_report
 from app.services.rule_library import MIN_ALERT_CONFIDENCE
 
 from app.services.dlp_service import DEFAULT_POLICY
@@ -73,28 +87,6 @@ class InventoryReport(BaseModel):
     error: str = Field(default='', max_length=500)
     observed_at: str = Field(default='', max_length=64)
     scanner: str = Field(default='tcp-connect', max_length=64)
-
-
-def authenticated_probe(probe_id, request, db):
-    probe = require_probe_headers(request, db)
-    if not probe or probe.id != probe_id:
-        raise HTTPException(403, 'probe id mismatch')
-    return probe
-
-
-def queue_probe_scan(db: Session, probe_id: int, config: dict) -> Task:
-    """Queue one bounded scan job for a probe (shared by the admin and scan APIs)."""
-    expire_probe_tasks(db)
-    active = db.scalar(select(Task).where(Task.kind == 'probe_scan', Task.payload['probe_id'].as_integer() == probe_id,
-                                         Task.status.in_(['Pending', 'Running'])))
-    if active:
-        raise HTTPException(409, 'Probe already has an active scan job')
-    task = Task(kind='probe_scan', status='Pending', progress=0, current_stage='等待探针领取',
-                payload={'probe_id': probe_id, 'config': config})
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    return task
 
 
 @router.post('/probes/{probe_id}/scan-jobs')
@@ -186,358 +178,7 @@ def inventory(probe_id: int, payload: InventoryReport, request: Request, db: Ses
     return {'id': task.id, 'duplicate': False, 'assets': len(seen)}
 
 
-class DataAssetScanConfig(BaseModel):
-    paths: list[str] = Field(default_factory=list, max_length=32, description="目标服务器上要采集的目录")
-    max_files: int = Field(default=200, ge=1, le=2000)
-    max_depth: int = Field(default=3, ge=0, le=8)
-    include_databases: bool = True
-    timeout_seconds: int = Field(default=120, ge=5, le=1800)
-    #: Scope filters. A bare name filters that directory anywhere below a root; an
-    #: absolute path excludes exactly that subtree. ``file_types`` is an extension
-    #: allow-list, and an empty one keeps every type in scope.
-    exclude_paths: list[str] = Field(default_factory=list, max_length=32)
-    file_types: list[str] = Field(default_factory=list, max_length=32)
-    #: Optional versioned profile. When set, its snapshot supplies the config and
-    #: the fields above act as explicit overrides.
-    profile_id: int | None = Field(default=None, ge=1)
-
-    @field_validator('paths')
-    @classmethod
-    def paths_valid(cls, values: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        for value in values:
-            item = str(value).strip()
-            if not item:
-                continue
-            if '..' in item.split('/') or not item.startswith('/') or len(item) > 512:
-                raise ValueError('paths must be absolute Linux paths without ".."')
-            if item not in cleaned:
-                cleaned.append(item)
-        return cleaned
-
-    @field_validator('exclude_paths')
-    @classmethod
-    def excludes_valid(cls, values: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        for value in values:
-            item = str(value).strip().rstrip('/')
-            if not item:
-                continue
-            # A bare directory name and an absolute subtree are both accepted, but
-            # neither may walk upwards out of the scanned tree.
-            if '..' in item.split('/') or len(item) > 512:
-                raise ValueError('exclude_paths must not contain ".."')
-            if item not in cleaned:
-                cleaned.append(item)
-        return cleaned
-
-    @field_validator('file_types')
-    @classmethod
-    def file_types_valid(cls, values: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        for value in values:
-            item = str(value).strip().lower()
-            if not item:
-                continue
-            if not item.startswith('.'):
-                item = '.' + item
-            if item not in cleaned:
-                cleaned.append(item)
-        return cleaned
-
-
-class DataAssetColumn(BaseModel):
-    name: str = Field(min_length=1, max_length=256)
-    header_name: str = Field(default='', max_length=256)
-    sheet_name: str = Field(default='', max_length=128)
-    column_index: int | None = Field(default=None, ge=0, le=65535)
-    detected_type: str = Field(default='', max_length=64)
-    inferred_type: str = Field(default='', max_length=32)
-    sensitivity: str = Field(default='Unknown', max_length=16)
-    confidence: float = Field(default=0.0, ge=0, le=1)
-    categories: list[str] = Field(default_factory=list, max_length=16)
-    count: int = Field(default=0, ge=0)
-    sample_size: int = Field(default=0, ge=0)
-    sample_hit_count: int = Field(default=0, ge=0)
-    rule_ids: list[str] = Field(default_factory=list, max_length=64)
-
-
-class ProbeDataAsset(BaseModel):
-    name: str = Field(min_length=1, max_length=512)
-    asset_type: str = Field(default='file', max_length=64)
-    sensitivity: str = Field(default='Low', max_length=16)
-    path: str = Field(default='', max_length=1024)
-    size: int = Field(default=0, ge=0)
-    sha256: str = Field(default='', max_length=64)
-    # Stage 4 identity fields. An old probe omits them and the ingestion derives
-    # the same answer from ``sha256`` plus the fingerprint evidence.
-    hash_type: str = Field(default='', max_length=32)
-    identity_confidence: float | None = Field(default=None, ge=0, le=1)
-    level: str = Field(default='', max_length=8)
-    modified_at: str = Field(default='', max_length=64)
-    categories: list[str] = Field(default_factory=list, max_length=16)
-    counts: dict[str, int] = Field(default_factory=dict)
-    columns: list[DataAssetColumn] = Field(default_factory=list, max_length=256)
-    evidence: dict = Field(default_factory=dict)
-    coverage: str = Field(default='', max_length=16)
-    termination_reason: str = Field(default='', max_length=64)
-    scan_id: str = Field(default='', max_length=64)
-    ruleset_version: str = Field(default='', max_length=64)
-    engine_version: str = Field(default='', max_length=64)
-    profile_version: str = Field(default='', max_length=64)
-
-
-class DataAssetReport(BaseModel):
-    """Inventory produced on the probe host itself; no raw content is uploaded.
-
-    New in 1.1: ``schema_version``, ``scan_id``, the version triple, the aggregated
-    ``budget``/``coverage`` and an explicit ``completed_scope``. Every one of them
-    is optional so a 3.3.1 probe keeps uploading exactly what it always did, and
-    the ingestion falls back to the legacy meaning instead of assuming coverage.
-    """
-
-    report_id: str = Field(min_length=1, max_length=64, pattern=r'^[a-zA-Z0-9_-]+$')
-    task_id: int | None = None
-    schema_version: str = Field(default='', max_length=16)
-    scan_id: str = Field(default='', max_length=64)
-    assets: list[ProbeDataAsset] = Field(default_factory=list, max_length=4096)
-    databases: list[ProbeDataAsset] = Field(default_factory=list, max_length=256)
-    scanned_paths: list[str] = Field(default_factory=list, max_length=64)
-    max_depth: int | None = Field(default=None, ge=0, le=8)
-    complete: bool = True
-    completed_scope: bool | None = None
-    error: str = Field(default='', max_length=500)
-    reason_code: str = Field(default='', max_length=64)
-    termination_reason: str = Field(default='', max_length=64)
-    observed_at: str = Field(default='', max_length=64)
-    scanner: str = Field(default='probe-file-inventory', max_length=64)
-    ruleset_version: str = Field(default='', max_length=64)
-    engine_version: str = Field(default='', max_length=64)
-    profile_version: str = Field(default='', max_length=64)
-    counts: dict[str, int] = Field(default_factory=dict)
-    totals: dict = Field(default_factory=dict)
-    budget: dict = Field(default_factory=dict)
-    coverage: dict = Field(default_factory=dict)
-    degraded_capabilities: list[str] = Field(default_factory=list, max_length=32)
-    report_guard: dict = Field(default_factory=dict, description="探针侧报告清洗计数（脱敏/截断/丢弃字段）")
-
-
-def queue_probe_data_asset_job(db: Session, probe_id: int, config: dict, *, profile=None) -> Task:
-    """Queue one bounded data-asset job, optionally from a versioned ScanProfile.
-
-    The resolved configuration is copied into the task payload. That copy is the
-    authoritative scope: editing the profile afterwards cannot change what a probe
-    was already asked to do.
-    """
-    probe = db.get(Probe, probe_id)
-    if not probe:
-        raise HTTPException(404, 'probe not found')
-    version = str((probe.extra or {}).get('agent_version') or (probe.extra or {}).get('version') or '')
-    match = re.match(r'^(\d+)\.(\d+)\.(\d+)', version)
-    if match and tuple(map(int, match.groups())) < (3, 3, 0):
-        from app.core.config import settings
-
-        raise HTTPException(409, f'探针版本 {version} 不支持数据资产采集，请在探针部署页升级到 {settings.probe_agent_version}')
-    expire_probe_tasks(db)
-    active = db.scalar(select(Task).where(Task.kind == 'data_asset_scan',
-                                          Task.payload['probe_id'].as_integer() == probe_id,
-                                          Task.status.in_(['Pending', 'Running'])))
-    if active:
-        raise HTTPException(409, 'Probe already has an active data asset job')
-    task_payload: dict = {'probe_id': probe_id, 'config': config}
-    if profile is not None:
-        # profile_id stays a top-level key so it is queryable for the reference guard.
-        task_payload['profile_id'] = profile.id
-        task_payload['profile_snapshot'] = {
-            'profile_id': profile.id, 'profile_name': profile.name,
-            'profile_version': profile.version, 'config': config,
-        }
-    task = Task(kind='data_asset_scan', status='Pending', progress=0, current_stage='等待探针领取',
-                payload=task_payload)
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    return task
-
-
-@router.post('/probes/{probe_id}/data-assets/jobs')
-def queue_data_asset_scan(probe_id: int, payload: DataAssetScanConfig, db: Session = Depends(get_db)):
-    """Queue a bounded data-asset collection for one probe.
-
-    Accepts either an explicit ``paths``/``config`` body (the pre-3.4 contract) or a
-    ``profile_id`` reference, which is resolved into the same payload shape.
-    """
-    from app.services import scan_profile_service
-
-    profile = None
-    if payload.profile_id:
-        try:
-            profile = scan_profile_service.get_or_404(db, payload.profile_id)
-        except scan_profile_service.ScanProfileError as exc:
-            raise HTTPException(404, str(exc)) from exc
-        config = scan_profile_service.probe_config(scan_profile_service.snapshot(profile))
-        # An explicit paths list still wins, so the old callers keep working.
-        if payload.paths:
-            config['paths'] = payload.paths
-        if payload.exclude_paths:
-            config['exclude_paths'] = payload.exclude_paths
-        if payload.file_types:
-            config['file_types'] = payload.file_types
-        if payload.max_files != DataAssetScanConfig.model_fields['max_files'].default:
-            config['max_files'] = payload.max_files
-        if payload.max_depth != DataAssetScanConfig.model_fields['max_depth'].default:
-            config['max_depth'] = payload.max_depth
-        if payload.timeout_seconds != DataAssetScanConfig.model_fields['timeout_seconds'].default:
-            config['timeout_seconds'] = payload.timeout_seconds
-        if not config.get('paths'):
-            raise HTTPException(400, '扫描配置未设置 include_paths，探针没有可扫描的目录')
-    else:
-        config = payload.model_dump(exclude={'profile_id'})
-    task = queue_probe_data_asset_job(db, probe_id, config, profile=profile)
-    return {'id': task.id, 'status': task.status, 'location': 'probe'}
-
-
-@router.post('/probes/{probe_id}/data-assets')
-def data_asset_inventory(probe_id: int, payload: DataAssetReport, request: Request, db: Session = Depends(get_db)):
-    """Ingest a probe-side data asset inventory (idempotent per report).
-
-    One transaction writes the object/instance/detection model *and* its derived
-    ``data_assets`` projection, so the legacy pages and the new query APIs can
-    never disagree. A report for a task that already reached a terminal state is
-    acknowledged without applying anything: a late re-send must not roll the
-    current view back.
-    """
-    probe = authenticated_probe(probe_id, request, db)
-    # Independent check of the probe's own guard. Violations are reported as codes
-    # only - echoing the offending value back would defeat the purpose.
-    body = payload.model_dump()
-    violations = validate_report(body)
-    if violations:
-        raise HTTPException(422, detail={'error': 'unsafe_report',
-                                         'violations': [item.to_dict() for item in violations]})
-    db.execute(select(Probe.id).where(Probe.id == probe_id).with_for_update())
-    task = db.scalar(select(Task).where(Task.id == payload.task_id).with_for_update()) if payload.task_id else db.scalar(select(Task).where(
-        Task.kind == 'data_asset_scan', Task.payload['probe_id'].as_integer() == probe_id,
-        Task.payload['report_id'].as_string() == payload.report_id))
-    if payload.task_id and (not task or task.kind != 'data_asset_scan' or task.payload.get('probe_id') != probe_id):
-        raise HTTPException(403, 'data asset task does not belong to probe')
-    if task and (task.status in TERMINAL or task.payload.get('deleted')):
-        return {'id': task.id, 'duplicate': True, 'assets': task.result.get('assets', 0)}
-    if not task:
-        task = Task(kind='data_asset_scan', payload={'probe_id': probe_id, 'report_id': payload.report_id})
-        db.add(task)
-        db.flush()
-    now = datetime.now(UTC)
-    outcome = data_object_service.ingest_report(db, probe, body, task)
-    stored = outcome['stored']
-    task.status = 'Failed' if payload.error else ('Success' if payload.complete else 'Partial')
-    task.progress, task.current_stage, task.finished_at = 100, '探针数据资产采集完成', now
-    task.error = payload.error
-    task.result = {'assets': stored, 'complete': payload.complete, 'report_id': payload.report_id,
-                   'location': 'probe', 'paths': payload.scanned_paths,
-                   'databases': len(payload.databases), 'host': probe.ip_address or probe.hostname,
-                   'scan_id': outcome['scan_id'],
-                   'schema_version': data_object_service.detect_report_schema(body),
-                   'complete_scope': outcome['complete_scope'],
-                   'not_observed': outcome['not_observed'],
-                   'stale_entries': outcome['late_skipped'],
-                   'ruleset_version': payload.ruleset_version,
-                   'engine_version': payload.engine_version,
-                   'profile_version': payload.profile_version,
-                   'coverage': payload.coverage, 'budget': payload.budget}
-    probe.extra = {**(probe.extra or {}), 'last_data_asset_scan': {**task.result, 'status': task.status, 'at': now.isoformat()}}
-    probe.last_seen = now
-    db.add(AnalysisResult(task_id=task.id, module='data_assets', content=task.result,
-                          risk_level='High' if any(item.sensitivity in ('Critical', 'High') for item in [*payload.assets, *payload.databases]) else 'Low'))
-    db.commit()
-    return {'id': task.id, 'duplicate': False, 'assets': stored, 'scan_id': outcome['scan_id'],
-            'complete_scope': outcome['complete_scope'], 'not_observed': outcome['not_observed'],
-            # Entries dropped because a newer scan had already been applied.
-            'stale': outcome['late_skipped']}
-
-
-class DataAssetProgress(BaseModel):
-    """Aggregated progress for a running job. Never a terminal transition."""
-
-    task_id: int
-    scan_id: str = Field(default='', max_length=64)
-    current_path: str = Field(default='', max_length=1024)
-    coverage: dict = Field(default_factory=dict)
-
-
-@router.post('/probes/{probe_id}/data-assets/progress')
-def data_asset_progress(probe_id: int, payload: DataAssetProgress, request: Request,
-                        db: Session = Depends(get_db)):
-    """Record progress on a running task, at whatever rate the probe chose.
-
-    Deliberately narrow: progress cannot set a task's status, cannot clear its
-    error and cannot resurrect a finished task. That is what keeps a stalled
-    probe from freezing the task lifecycle, and a failed progress push from
-    failing the scan.
-    """
-    authenticated_probe(probe_id, request, db)
-    task = db.get(Task, payload.task_id)
-    if not task or task.kind != 'data_asset_scan' or (task.payload or {}).get('probe_id') != probe_id:
-        raise HTTPException(404, 'data asset task not found')
-    if task.status in TERMINAL or (task.payload or {}).get('deleted'):
-        return {'id': task.id, 'status': task.status, 'applied': False}
-    coverage = payload.coverage if isinstance(payload.coverage, dict) else {}
-    estimated = progress_percent(coverage)
-    task.progress = estimated['percent']
-    task.current_stage = progress_stage(coverage, payload.current_path)
-    task.payload = {**(task.payload or {}), 'progress': {
-        **{key: coverage.get(key) for key in
-           ('max_files', 'files_discovered', 'files_analyzed', 'files_skipped',
-            'directories_scanned', 'bytes_read', 'sensitive_assets', 'detections',
-            'elapsed_seconds', 'termination_reason')},
-        'current_path': payload.current_path, 'scan_id': payload.scan_id,
-        'percent': estimated['percent'], 'estimated': estimated['estimated'],
-        'basis': estimated['basis'],
-        'reported_at': datetime.now(UTC).isoformat()}}
-    db.commit()
-    return {'id': task.id, 'status': task.status, 'applied': True}
-
-
 #: Coverage keys a progress push is allowed to contribute, in display order.
-PROGRESS_FIELDS = (
-    ('files_discovered', '已发现文件'), ('files_analyzed', '已分析文件'),
-    ('directories_scanned', '已扫描目录'), ('bytes_read', '已读取字节'),
-)
-
-
-def progress_percent(coverage: dict) -> dict:
-    """A bounded estimate, labelled as one, or explicitly unknown.
-
-    ``max_files`` is the only total both sides know without a second walk, so the
-    percentage is ``files_analyzed / max_files`` - an upper bound on how far the
-    scan has come, never a claim about how much data exists. With no usable
-    denominator the progress is reported as unknown instead of invented.
-    """
-    limit = coverage.get('max_files') or coverage.get('files_expected')
-    analyzed = coverage.get('files_analyzed')
-    try:
-        limit, analyzed = int(limit), int(analyzed)
-    except (TypeError, ValueError):
-        return {'percent': 0, 'estimated': True, 'basis': 'unknown'}
-    if limit <= 0 or analyzed < 0:
-        return {'percent': 0, 'estimated': True, 'basis': 'unknown'}
-    basis = 'files_analyzed/max_files'
-    if coverage.get('files_expected'):
-        basis = 'files_analyzed/files_expected'
-        return {'percent': max(0, min(int(analyzed * 100 / limit), 99)), 'estimated': False,
-                'basis': basis}
-    # Capped below 100: only the final report may declare the scan finished.
-    return {'percent': max(0, min(int(analyzed * 100 / limit), 99)), 'estimated': True,
-            'basis': basis}
-
-
-def progress_stage(coverage: dict, current_path: str) -> str:
-    parts = [f'{label} {coverage.get(key)}' for key, label in PROGRESS_FIELDS
-             if coverage.get(key) is not None]
-    detail = '，'.join(parts)
-    if current_path:
-        detail = f'{detail}，当前 {current_path}' if detail else f'当前 {current_path}'
-    return (detail or '探针数据资产采集中')[:255]
 
 
 class IocImport(BaseModel):
@@ -716,3 +357,8 @@ def dlp_transfer_content(task_id: int, object_id: int, download: bool = False, d
         preview = handle.read(4096)
     return {'hex': preview.hex(), 'preview_bytes': len(preview), 'size': obj['size'],
             'truncated': obj['size'] > len(preview), 'sha256': obj['sha256'], 'complete': obj['complete']}
+
+
+# Collection routes have their own module; register them exactly once.
+
+router.include_router(data_collection_router)

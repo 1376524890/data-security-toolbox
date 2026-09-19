@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import secrets
-import shutil
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,6 +25,16 @@ from sqlalchemy import String, cast, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.services.probe_task_service import PROBE_TASK_KINDS, TERMINAL, expire_probe_tasks, visible_tasks
+from app.api.data_assets import router as data_assets_router
+from app.api.data_assets import _serialize_data_asset as _serialize_data_asset
+from app.api.data_assets import data_assets as data_assets
+from app.api.data_assets import data_asset_detail as data_asset_detail
+from app.api.data_assets import SENSITIVE_RULE_BUCKETS as SENSITIVE_RULE_BUCKETS
+from app.api.data_assets import _sensitive_bucket as _sensitive_bucket
+from app.api.data_assets import sensitive_findings as sensitive_findings
+from app.api.finding_presenter import ATTACK_MAP as ATTACK_MAP
+from app.api.finding_presenter import _attack as _attack
+from app.api.finding_presenter import _serialize_detection as _serialize_detection
 from app.services.probe_service import ProbeInUseError, ProbeNotFoundError, delete_probe_record
 from app.api.pagination import page_response, paginate
 from app.core.config import settings
@@ -67,9 +76,7 @@ from app.models import (
     AnalysisResult,
     Anomaly,
     Asset,
-    AssetInstance,
     DataAsset,
-    Detection,
     DetectionFinding,
     FileRecord,
     Flow,
@@ -107,7 +114,6 @@ from app.services.alert_service import (
     serialize_alert,
 )
 from app.services.asset_service import asset_relations
-from app.services.data_object_service import INSTANCE_ACTIVE
 from app.rules.catalog import CATALOG
 from app.rules import library
 from app.services.audit_service import audit_summary, log_analysis
@@ -137,20 +143,6 @@ incident_engine = IncidentEngine()
 
 
 # Minimal ATT&CK mapping for common rule ids. Extend as rule set grows.
-ATTACK_MAP: dict[str, dict[str, str]] = {
-    "NETWORK_PORT_SCAN": {"tactic": "Reconnaissance", "technique": "Network Service Scanning", "technique_id": "T1046"},
-    "NET_C2_BEACON_001": {"tactic": "Command and Control", "technique": "Application Layer Protocol", "technique_id": "T1071"},
-    "PROTO_DNS_TUNNEL_001": {"tactic": "Exfiltration", "technique": "DNS", "technique_id": "T1048.003"},
-    "PROTO_DNS_TXT_001": {"tactic": "Exfiltration", "technique": "DNS", "technique_id": "T1048.003"},
-    "PROTO_HTTP_UA_001": {"tactic": "Initial Access", "technique": "User Agent Fingerprinting", "technique_id": "T1595.002"},
-    "PROTO_HTTP_UPLOAD_001": {"tactic": "Persistence", "technique": "Web Shell", "technique_id": "T1505.003"},
-    "DATA_PII_001": {"tactic": "Collection", "technique": "Data from Information Repositories", "technique_id": "T1213"},
-    "DATA_SECRET_001": {"tactic": "Credential Access", "technique": "Unsecured Credentials", "technique_id": "T1552"},
-    "DATA_YARA_001": {"tactic": "Defense Evasion", "technique": "Obfuscated Files or Information", "technique_id": "T1027"},
-    "ASSET_PUBLIC_DB_001": {"tactic": "Initial Access", "technique": "Exposed Database", "technique_id": "T1190"},
-    "ASSET_DB_WEAK_AUTH_001": {"tactic": "Credential Access", "technique": "Brute Force", "technique_id": "T1110"},
-    "ASSET_PUBLIC_WEB_001": {"tactic": "Initial Access", "technique": "Exploit Public-Facing Application", "technique_id": "T1190"},
-}
 
 
 # The console filters files by extension ("png") while the record stores the
@@ -187,10 +179,6 @@ def _file_type_candidates(file_type: str) -> list[str]:
     return sorted(candidates)
 
 
-def _attack(rule_id: str) -> dict[str, str]:
-    return ATTACK_MAP.get(rule_id, {"tactic": "", "technique": "", "technique_id": ""})
-
-
 def _serialize_task(task: Task) -> dict[str, Any]:
     return {
         "id": task.id,
@@ -225,29 +213,6 @@ def _serialize_asset(item: Asset) -> dict[str, Any]:
         "metadata": item.extra,
         "first_seen": item.first_seen,
         "last_seen": _aware(item.last_seen),
-    }
-
-
-def _serialize_detection(item: DetectionFinding) -> dict[str, Any]:
-    attack = _attack(item.rule_id)
-    return {
-        "id": item.id,
-        "task_id": item.task_id,
-        "target_type": item.target_type,
-        "target_id": item.target_id,
-        "engine": item.engine,
-        "rule_id": item.rule_id,
-        "severity": item.severity,
-        "confidence": item.confidence,
-        "evidence": item.evidence,
-        "recommendation": item.recommendation,
-        "risk_score": item.risk_score,
-        "risk_level": item.risk_level,
-        "timestamp": item.timestamp,
-        "tactic": attack["tactic"],
-        "technique": attack["technique"],
-        "technique_id": attack["technique_id"],
-        "created_at": item.created_at,
     }
 
 
@@ -372,29 +337,6 @@ def _serialize_packet(item: PacketRecord) -> dict[str, Any]:
 
 def _serialize_anomaly(item: Anomaly) -> dict[str, Any]:
     return {"id": item.id, "rule": item.rule, "severity": item.severity, "description": item.description, "evidence": item.evidence}
-
-
-def _serialize_data_asset(item: DataAsset) -> dict[str, Any]:
-    extra = item.extra or {}
-    return {
-        "id": item.id,
-        "name": item.name,
-        "asset_type": item.asset_type,
-        "sensitivity": item.sensitivity,
-        "source": item.source,
-        "columns": item.columns,
-        "probe_id": extra.get("probe_id"),
-        "probe": extra.get("probe", ""),
-        "host": extra.get("host", ""),
-        "path": extra.get("path", ""),
-        "size": extra.get("size", 0),
-        "categories": extra.get("categories", []),
-        "candidate_categories": extra.get("candidate_categories", []),
-        "status": extra.get("status", "observed"),
-        "observed_at": extra.get("observed_at", ""),
-        "extra": extra,
-        "created_at": item.created_at,
-    }
 
 
 def _serialize_file(item: FileRecord) -> dict[str, Any]:
@@ -919,7 +861,7 @@ def start_scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict[str,
     way to reach a segment the platform container cannot route to.
     """
     if payload.probe_id:
-        from app.api.extensions import queue_probe_scan
+        from app.services.probe_task_service import queue_probe_scan
 
         if not db.get(Probe, payload.probe_id):
             raise HTTPException(404, "probe not found")
@@ -2112,78 +2054,6 @@ def risk_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
     }
 
 
-@router.get("/data/assets")
-def data_assets(search: str | None = None, sensitivity: str | None = None, asset_type: str | None = None, source: str | None = None, probe_id: int | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
-    query = select(DataAsset)
-    if search:
-        query = query.where(DataAsset.name.ilike(f"%{search}%"))
-    if sensitivity:
-        query = query.where(DataAsset.sensitivity == sensitivity)
-    if asset_type:
-        query = query.where(DataAsset.asset_type == asset_type)
-    if source:
-        query = query.where(DataAsset.source == source)
-    if probe_id:
-        query = query.where(DataAsset.extra["probe_id"].as_integer() == probe_id)
-    result = paginate(db, query.order_by(DataAsset.id.desc()), page, page_size)
-    return page_response([_serialize_data_asset(item) for item in result["items"]], page, page_size, result["total"])
-
-
-@router.get("/data/assets/{data_asset_id}")
-def data_asset_detail(data_asset_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    item = db.get(DataAsset, data_asset_id)
-    if not item:
-        raise HTTPException(404, "data asset not found")
-    extra = item.extra or {}
-    # Explicit association: a file finding is bound to the file record, never by
-    # comparing the display name ("data.csv" or "probe:host") to an absolute
-    # path, which could never match. Probe-collected assets carry their evidence
-    # in the object model instead, so they report no file finding rather than a
-    # wrong one.
-    findings: list[DetectionFinding] = []
-    file_id = extra.get("file_id")
-    if file_id:
-        findings = [row for row in db.scalars(select(DetectionFinding).where(
-            DetectionFinding.target_type == "file",
-            DetectionFinding.target_id == str(file_id)).order_by(
-                DetectionFinding.risk_score.desc())).all()
-            if not (row.evidence or {}).get("superseded")]
-    # Fields and hits are different units: one column can hold 100 matching
-    # values. Reporting only the field count made a text file look empty.
-    pii_fields: Counter = Counter()
-    for column in item.columns or []:
-        for category in column.get("categories") or []:
-            pii_fields[str(category)] += 1
-    pii_hits: Counter = Counter()
-    for category, value in (extra.get("counts") or {}).items():
-        try:
-            pii_hits[str(category)] += int(value or 0)
-        except (TypeError, ValueError):
-            continue
-    categories = sorted(set(pii_fields) | set(pii_hits))
-    return {
-        "data_asset": _serialize_data_asset(item),
-        "findings": [_serialize_detection(row) for row in findings],
-        # Kept as the field count for existing callers; the detail map below
-        # carries both units.
-        "pii_summary": {category: pii_fields.get(category, 0) for category in categories},
-        "pii_summary_detail": {
-            category: {"fields": pii_fields.get(category, 0),
-                       "sample_hits": pii_hits.get(category, 0)}
-            for category in categories
-        },
-        "summary": {
-            "asset_type": item.asset_type,
-            "sensitive_field_count": sum(pii_fields.values()),
-            "sample_hits": sum(pii_hits.values()),
-            "units": "fields=敏感字段数；sample_hits=本次样本内命中次数（非字段数）",
-            "note": ("目录为子项汇总，不与文件重复计数"
-                     if item.asset_type == "directory"
-                     else "命中次数限于本次采集样本，不代表全量数据"),
-        },
-    }
-
-
 @router.get("/graph")
 def graph(db: Session = Depends(get_db)) -> dict[str, Any]:
     relations = [
@@ -2388,145 +2258,6 @@ def network_live(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 #: Coarse buckets for the two engines that can emit sensitive findings; the
 #: per-entity breakdown lives in the object-model ``Detection`` rows instead.
-SENSITIVE_RULE_BUCKETS = {"DATA_SECRET_001": "secret", "DATA_PII_001": "pii"}
-
-
-def _sensitive_bucket(engine: str, rule_id: str) -> str:
-    if engine == "dlp_engine":
-        return "network_dlp"
-    return SENSITIVE_RULE_BUCKETS.get(rule_id, "yara")
-
-
-@router.get("/sensitive/findings")
-def sensitive_findings(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
-                       db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Sensitive-data findings whose totals come from whole-table aggregates.
-
-    Cards, the category chart and the paged detail list all read the same
-    engines, so a 447-asset tenant is never summarised as the 200-row page it
-    happens to fit in. Object-model probe detections and the legacy
-    ``data_assets`` projection are reported as their own sources instead of
-    being silently added together, and legacy rows still marked
-    ``not_observed`` stay apart from the assets still in place.
-    """
-    engines = ['data_engine', 'dlp_engine']
-    grouped = db.execute(
-        select(DetectionFinding.engine, DetectionFinding.rule_id,
-               func.count(DetectionFinding.id), func.max(DetectionFinding.risk_score),
-               func.max(DetectionFinding.severity))
-        .where(DetectionFinding.engine.in_(engines))
-        .group_by(DetectionFinding.engine, DetectionFinding.rule_id)).all()
-    categories: dict[str, dict[str, Any]] = {}
-    source_counts = {engine: 0 for engine in engines}
-    total_findings = 0
-    for engine, rule_id, count, risk_score, severity in grouped:
-        count = int(count or 0)
-        total_findings += count
-        source_counts[engine] = source_counts.get(engine, 0) + count
-        cat = _sensitive_bucket(engine, rule_id)
-        entry = categories.setdefault(cat, {"category": cat, "count": 0,
-                                            "severity": severity, "risk_score": 0.0})
-        entry["count"] += count
-        if float(risk_score or 0) >= entry["risk_score"]:
-            entry["risk_score"] = round(float(risk_score or 0), 2)
-            entry["severity"] = severity
-    detail_query = (select(DetectionFinding)
-                    .where(DetectionFinding.engine.in_(engines))
-                    .order_by(DetectionFinding.risk_score.desc(), DetectionFinding.id.desc()))
-    result = paginate(db, detail_query, page, page_size)
-    details: list[dict[str, Any]] = []
-    for item in result["items"]:
-        evidence = item.evidence or {}
-        regex = evidence.get("regex")
-        file_name = evidence.get("file", evidence.get('filename', ''))
-        counts = regex.get("counts", {}) if isinstance(regex, dict) else {}
-        secret_count = evidence.get("secret_count")
-        if not isinstance(secret_count, int):
-            secret_count = regex.get("secret_count", 0) if isinstance(regex, dict) else 0
-        details.append({
-            "id": item.id,
-            "engine": item.engine,
-            "rule_id": item.rule_id,
-            "severity": item.severity,
-            "risk_level": item.risk_level,
-            "risk_score": round(float(item.risk_score or 0), 2),
-            "file": file_name,
-            "target_id": item.target_id,
-            "counts": counts,
-            "secret_count": secret_count,
-            # Sanitised summary only: never the matched raw value.
-            "evidence": {"file": file_name, "counts": counts, "secret_count": secret_count},
-        })
-    # Object model (probe detections): the entity is the sensitive category, so
-    # phone/email/... appear here instead of the three coarse engine buckets.
-    active = ((AssetInstance.status == INSTANCE_ACTIVE)
-              & (Detection.object_id == AssetInstance.object_id))
-    entity_rows = db.execute(
-        select(Detection.category, func.count(Detection.id))
-        .join(AssetInstance, AssetInstance.id == Detection.instance_id)
-        .where(active)
-        .group_by(Detection.category)
-        .order_by(func.count(Detection.id).desc())).all()
-    entities = [{"category": name, "count": int(count or 0)} for name, count in entity_rows]
-    detection_total = sum(item["count"] for item in entities)
-    # Only the objects that actually carry a current detection are counted: a
-    # global "active objects" number next to "detections" reads as "objects with
-    # findings" and would be the same kind of mixed-unit claim this page is
-    # fixing.
-    detected_objects = set(db.scalars(
-        select(Detection.object_id)
-        .join(AssetInstance, AssetInstance.id == Detection.instance_id)
-        .where(active).distinct()).all())
-    object_total = len(detected_objects)
-    detected_ids = sorted(detected_objects)
-    instance_total = int(db.scalar(
-        select(func.count(AssetInstance.id))
-        .where(AssetInstance.status == INSTANCE_ACTIVE,
-               AssetInstance.object_id.in_(detected_ids))) or 0) if detected_ids else 0
-    observed: dict[str, int] = {}
-    not_observed: dict[str, int] = {}
-    asset_total = 0
-    for asset in db.scalars(select(DataAsset)).all():
-        asset_total += 1
-        bucket = not_observed if (asset.extra or {}).get("status") == "not_observed" else observed
-        bucket[asset.sensitivity] = bucket.get(asset.sensitivity, 0) + 1
-    by_sensitivity: dict[str, int] = {}
-    for part in (observed, not_observed):
-        for name, value in part.items():
-            by_sensitivity[name] = by_sensitivity.get(name, 0) + value
-    page_size = result["page_size"]
-    return {
-        "categories": sorted(categories.values(), key=lambda item: -item["risk_score"]),
-        "entities": entities,
-        "details": details,
-        "sources": [
-            {"source": "data_engine", "kind": "file_scan",
-             "count": source_counts.get("data_engine", 0)},
-            {"source": "dlp_engine", "kind": "network_dlp",
-             "count": source_counts.get("dlp_engine", 0)},
-            {"source": "object_model", "kind": "probe_detection", "count": detection_total},
-            {"source": "data_assets", "kind": "legacy_projection", "count": asset_total},
-        ],
-        "totals": {
-            "findings": total_findings,
-            "categories": len(categories),
-            "entities": len(entities),
-            "objects": object_total,
-            "instances": instance_total,
-            "detections": detection_total,
-            "data_assets": asset_total,
-        },
-        "pagination": {"page": result["page"], "page_size": page_size,
-                       "total": result["total"],
-                       "pages": (result["total"] + page_size - 1) // page_size},
-        "data_assets": {
-            "total": asset_total,
-            "by_sensitivity": by_sensitivity,
-            "observed": {"total": sum(observed.values()), "by_sensitivity": observed},
-            "not_observed": {"total": sum(not_observed.values()), "by_sensitivity": not_observed},
-        },
-        "note": "总数来自全表聚合；未观测资产单独统计，不与在位资产相加",
-    }
 
 
 @router.get("/dashboard/incident-trend")
@@ -2647,7 +2378,6 @@ def _rule_file_entries(db: Session, engine: str = "", include_content: bool = Tr
             'size': len(definition['content'].encode()), 'execution': 'active',
         })
     return list({(item["engine"], item["path"]): item for item in items}.values())
-
 
 
 def _rule_definition(db: Session, rule_id: str, engine: str = "", evidence: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -2820,3 +2550,8 @@ def pcap_file_download(pcap_id: int, file_id: str, db: Session = Depends(get_db)
     item, path = _captured_file(pcap_id, file_id, db)
     return FileResponse(path, filename=item['filename'], media_type='application/octet-stream',
                         headers={'X-Content-Type-Options': 'nosniff'})
+
+
+# Legacy asset projection and sensitive findings share a dedicated read boundary.
+
+router.include_router(data_assets_router)

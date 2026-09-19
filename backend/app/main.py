@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
+from app.api.error_handlers import register_error_handlers
 from app.api.v1 import router
 from app.api.deployments import router as deployments_router
 from app.api.extensions import router as extensions_router
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_name, version="2.11.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+register_error_handlers(app)
 app.include_router(router)
 app.include_router(deployments_router)
 app.include_router(extensions_router)

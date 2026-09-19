@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.extensions import authenticated_probe
+from app.api.dependencies import authenticated_probe
 from app.core.database import get_db
 from app.core.security import get_session_user
 from app.models import RuleSet, RuleSetVersion
