@@ -335,6 +335,15 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 派发 payload 的既有语义：显式路径优先于扫描配置，路径非空且选了配置时两个字段都发；没有选中探针时
 直接返回、不发请求。回归：`frontend/src/__tests__/data-asset-jobs-state.test.ts`（9 项）。
 
+## 数据目录类型页状态边界
+
+数据类型中心与类型详情（`DataTypeCenter.vue`、`DataTypeDetail.vue`）的状态分别在
+`modules/data-security/composables/useDataTypeCenter.ts` 与 `useDataTypeDetail.ts`（页面 154 → 117、
+134 → 99 行）。类型页顶部卡片必须直接用服务端去重后的 `totals` 与 `totals_scope`，不能把每行相加；
+类型详情按路由 `category` 与分页查询，翻页走 `setPage()`——`page` 是 composable 返回的 ref，
+模板里直接赋值只会改掉 setup 局部名字（同 PCAP 批的 `closeFileDialog`）。一次失败的刷新保留上一次
+成功的数据，不把范围清空成假象。回归：`frontend/src/__tests__/data-type-catalog-state.test.ts`（7 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

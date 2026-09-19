@@ -1,54 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { getSensitivityLevels, listDataTypes } from '../../api/dataCatalog'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
+import { useDataTypeCenter } from './composables/useDataTypeCenter'
 
+// The rows, the filter and the totals live in the composable; this view only
+// binds them into the template below.
 const router = useRouter()
-const loading = ref(true)
-const error = ref('')
-const rows = ref<Awaited<ReturnType<typeof listDataTypes>> | null>(null)
-const levels = ref<Awaited<ReturnType<typeof getSensitivityLevels>> | null>(null)
-const search = ref('')
-
-const filtered = computed(() => {
-  const items = rows.value?.items || []
-  const needle = search.value.trim().toLowerCase()
-  if (!needle) return items
-  return items.filter((item) =>
-    item.category.includes(needle) || item.entity.toLowerCase().includes(needle))
-})
-
-// Totals come from the server's de-duplicated object/instance sets: summing the
-// per-type rows would count a file holding both email and credential twice.
-const totals = computed(() => rows.value?.totals ?? {
-  types: 0, objects: 0, instances: 0, hosts: 0,
-  confirmed_duplicates: 0, candidate_duplicates: 0, identity_pending: 0, truncated: false,
-})
-const scopeLabel = computed(() => (rows.value?.totals_scope === 'all_probes'
-  ? '全部探针'
-  : `探针 ${rows.value?.totals_scope?.replace('probe:', '') ?? ''}`))
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const [center, levelResult] = await Promise.all([listDataTypes(), getSensitivityLevels()])
-    rows.value = center
-    levels.value = levelResult
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
+const { loading, error, rows, levels, search, filtered, totals, scopeLabel, load } = useDataTypeCenter()
 
 function openType(row: { category: string }): void {
   router.push({ path: `/data-types/${encodeURIComponent(row.category)}` })
 }
-
-onMounted(load)
 </script>
 
 <template>

@@ -619,12 +619,45 @@
   本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-data-asset-jobs-state-20260920`。
 
+## 第十七批：前端数据目录类型页状态解耦（2026-09-20）
+
+基线 `290dbc1`，同一分支。目标：按指南 §F 把数据类型中心与类型详情的状态从组件里抽出来，
+模板与交互不变。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/data-security/composables/useDataTypeCenter.ts`（64 行）与
+  `useDataTypeDetail.ts`（68 行）；`DataTypeCenter.vue` 154 → 117 行、`DataTypeDetail.vue` 134 → 99 行，
+  两个页面只保留模板与行跳转。迁入的 37 行与 35 行脚本逐行比对未改。
+- 两处声明过的改动：类型详情的路由 `category` 改为由页面传入的 `ComputedRef`（composable 不再自己
+  调 `useRoute`），并新增 `setPage()`；模板分页由 `@current-change="(value) => (page = value)"` 改为
+  `@current-change="setPage"`——composable 返回的 ref 不能在模板里直接赋值（同 PCAP 批的
+  `closeFileDialog`）。
+- 顶部卡片继续直接用服务端去重后的 `totals`/`totals_scope`，不把每行相加；`search` 只过滤表格，
+  不改总数；失败的刷新保留上一次成功的数据。
+- 新增 `frontend/src/__tests__/data-type-catalog-state.test.ts`（7 项）：加载行与分级目录并保留
+  服务端 totals 与范围标签、按类型/实体过滤且总数不变、失败刷新保留旧数据、按路由 category 加载、
+  翻页与换类型重新查询、身份徽标四态（确认/疑似副本/待确认身份/作用域内）、失败进页面状态。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 13 个文件 62 项通过（原 55 项 + 本批 7 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与 `DataTypeCenter`/`DataTypeDetail` chunk 均 200，
+  chunk 名与本地构建一致、线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/tasks?kind=data_asset_scan`、`/probes`、`/scan-profiles`、`/data/assets`、`/data-types`、
+  `/data-objects`、`/asset-instances`、`/sensitive/findings`、`/sensitivity-levels` 均 200；
+  本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-data-type-catalog-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端类型中心、类型详情、对象详情、实例详情页按实际需求逐批拆分（同一模式：先抽状态，
-   再抽视图；PCAP 工作台与采集任务页的状态已完成）。
+1. 前端对象详情、实例详情页按实际需求逐批拆分（同一模式：先抽状态，再抽视图；
+   PCAP 工作台、采集任务页与类型页的状态已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。
