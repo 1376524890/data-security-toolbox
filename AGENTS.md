@@ -409,6 +409,16 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 选项保持为空且不影响发现列表。回归：
 `frontend/src/__tests__/detection-center-state.test.ts`（10 项）。
 
+## 引擎详情页状态边界
+
+引擎详情（`frontend/src/modules/engines/EngineDetail.vue`）的状态在
+`modules/engines/composables/useEngineDetail.ts`（114 行），页面只保留模板（208 → 126 行）；
+去掉缩进后，迁入的 83 行脚本逐行未改，模板与样式逐字节未改。composable 接收路由派生的
+`name`（`ComputedRef<string>`），路由、导航与 `executionLabels` 这类静态标签留在视图。
+控制台路由名（`/engines/sigma`）与发现里存的名字（`sigma_log_engine`）不同，仍由注册表解析；
+规则数仍先取注册表、再取同名适配器，`/health` 只用于运行态展示。回归：
+`frontend/src/__tests__/engine-detail-state.test.ts`（11 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

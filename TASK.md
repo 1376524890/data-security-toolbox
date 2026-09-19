@@ -872,12 +872,50 @@
   测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-detection-centre-state-20260920`。
 
+## 第二十四批：前端引擎详情页状态解耦（2026-09-20）
+
+基线 `1952b3a`，同一分支。目标：按指南 §F 把引擎详情的状态抽到 composable，模板与交互不变。
+本批没有模板改动。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/engines/composables/useEngineDetail.ts`（114 行）；
+  `EngineDetail.vue` 208 → 126 行。去掉缩进后，迁入的 83 行脚本逐行比对未改。
+- composable 接收路由派生的 `name`（`ComputedRef<string>`，`watch(name)` 也在里面），路由、
+  导航与 `executionLabels` 静态标签留在视图，与对象/实例详情页同一约定。
+- 注册表解析（`slug || name` 再退回同名匹配）、规则数（注册表 → 同名适配器 → `null`）、
+  适配器状态合并、规则清单的关键字筛选与 30 条分页、`expandRule` 懒加载规则内容、发现列表与
+  最近任务全部原样迁移。
+- 本批删除视图里因搬迁而不再使用的 `EngineStatus` 类型导入。
+- 新增 `frontend/src/__tests__/engine-detail-state.test.ts`（11 项）：首屏四路加载（集成/健康/注册表/
+  任务）、路由经注册表解析到 `detection_engine` 后再取规则与发现、注册表无匹配时退回路由名、
+  规则数取注册表优先再取适配器（都为缺省时为 `null` 且不改写适配器值）、适配器按名字大小写不敏感
+  匹配与缺失时为 `null`、`isSigma` 判定、规则 30 条分页、关键字按名称/ID/路径筛选并回到第一页、
+  路由名变化时重载并回到第一页、`expandRule` 只对展开行且只加载一次、规则内容失败与整页失败进
+  页面状态。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 21 个文件 162 项通过（原 151 项 + 本批 11 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与 `EngineDetail`/`EnginesOverview` chunk 均 200，
+  chunk 名与本地构建一致、线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/health`、`/test/status`（`present=false`）、`/auth/me`、`/engine/registry`
+  （15 个引擎，`sigma_log_engine` 的 `slug=sigma`、`rule_count=2949`）、`/integrations`、`/tasks`、
+  `/detections`、`/rules?engine=sigma_log_engine&include_content=false`、`/assets`、`/probes`、
+  `/incidents`、`/alerts`、`/alerts/summary`、`/files`、`/dlp/policy`、`/dlp/transfers`、`/dlp/rules`、
+  `/scan-profiles`、`/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、
+  `/sensitive/findings`、`/sensitivity-levels` 均 200；本批未导入测试数据、未操作真实探针主机；
+  后端未重建，迁移仍 `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-engine-detail-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端其余页面（引擎详情、看板、审计、探针页等）按实际改动需求再拆
-   （同一模式：先抽状态，再抽视图；数据安全域、事件/告警中心、资产中心与检测中心已完成）。
+1. 前端其余页面（看板、审计、探针页等）按实际改动需求再拆（同一模式：先抽状态，
+   再抽视图；数据安全域、事件/告警中心、资产中心、检测中心与引擎详情已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。

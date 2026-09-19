@@ -33,6 +33,9 @@
 格式化函数这类静态展示。
 `DetectionCenter.vue -> useDetectionCenter -> api/detections`（发现行 + 详情抽屉）与 `api/engine`
 （引擎下拉、手动流水线）同样只渲染，页面只保留筛选字段配置与格式化函数这类静态展示。
+`EngineDetail.vue -> useEngineDetail(name) -> api/engine`（注册表解析）加上 `api/integrations`、
+`api/health`、`api/tasks`、`api/rules` 与 `api/detections` 同样只渲染；视图保留路由、导航与
+`executionLabels` 这类静态标签。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，
