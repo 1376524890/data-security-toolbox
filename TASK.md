@@ -688,12 +688,50 @@
   本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-data-object-instance-state-20260920`。
 
+## 第十九批：前端扫描配置与规则版本页状态解耦（2026-09-20）
+
+基线 `9bcfd74`，同一分支。目标：按指南 §F 把扫描配置页与规则版本页的状态抽到 composable，
+模板与交互不变。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/data-security/composables/useScanProfiles.ts`（188 行）与
+  `useRuleVersions.ts`（141 行）；`ScanProfiles.vue` 289 → 155 行、`RuleVersions.vue` 256 → 156 行。
+  去掉缩进后，迁入的 132 行与 96 行脚本逐行比对未改。
+- 一处声明过的改动：扫描配置页模板分页由
+  `@current-change="(value: number) => { page = value; load() }"` 改为 `@current-change="setPage"`，
+  由 composable 保证「移动分页」与「重新查询」一起发生；规则版本页模板逐字节未改。
+- 扫描配置页的草稿与两个路径文本框、新建/编辑/删除/下发弹窗全部进 composable，
+  `emptyDraft()`/`splitLines()` 一并迁入；`ElMessage` 与 `ElMessageBox.confirm` 仍在 composable 里，
+  与采集任务页一致。
+- 规则版本页把 `syncedProbes`/`outOfDateProbes`/`failedProbes` 与模板要用的
+  `probedVersion`/`probeField`/`shortHash` 一起进 composable。
+- 新增 `frontend/src/__tests__/scan-profile-rule-version-state.test.ts`（17 项）：扫描配置页的
+  列表与探针加载（服务端 total）、启用/定时计数不走第二次请求、翻页重查、新建清空草稿与编辑回填、
+  路径文本框切分与新建/更新分支、保存被拒时不关弹窗、删除前确认与取消不请求、下发选中的探针与
+  未选探针不下发、探针拒绝时显示服务端原因、失败进页面状态；规则版本页的规则集+版本+探针加载、
+  规则集未初始化时清空、探针版本分类、发布前时间戳版本号与发布后重查、发布被拒显示服务端原因、
+  回滚生成新版本、失败进页面状态。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 15 个文件 87 项通过（原 70 项 + 本批 17 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与两个页面 chunk 均 200，chunk 名与本地构建一致、
+  线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/health`、`/test/status`（`present=false`）、`/auth/me`、`/scan-profiles`、
+  `/rulesets`、`/rulesets/{id}/versions`、`/probes`、`/data/assets`、`/data-types`、`/data-objects`、
+  `/asset-instances`、`/sensitive/findings`、`/sensitivity-levels` 均 200；
+  本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-scan-profile-rule-version-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端其余页面（敏感发现、扫描配置、规则版本、文件分析等）按实际改动需求再拆
-   （同一模式：先抽状态，再抽视图；数据目录四个页面与采集任务页已完成）。
+1. 前端其余页面（敏感发现、文件分析、网络 DLP、资产中心、探针页等）按实际改动需求再拆
+   （同一模式：先抽状态，再抽视图；数据目录四个页面、采集任务页与扫描配置/规则版本页已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。

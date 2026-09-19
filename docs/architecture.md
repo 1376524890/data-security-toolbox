@@ -18,6 +18,9 @@
 `DataObjectDetail.vue -> useDataObjectDetail -> api/dataCatalog`（对象 + 检测分页 + 证据抽屉）与
 `AssetInstanceDetail.vue -> useAssetInstanceDetail`（实例 + 历史开关 + 证据抽屉）同样只渲染，
 路由 id 与分页都经 composable 的参数与 `setDetectionPage()`；时间格式化留在视图。
+`ScanProfiles.vue -> useScanProfiles -> api/scanProfiles|api/probes`（配置行 + 草稿 + 下发弹窗）与
+`RuleVersions.vue -> useRuleVersions -> api/ruleSets|api/probes`（规则集 + 版本 + 探针已观测版本）
+同样只渲染：扫描配置翻页走 `setPage()`，探针版本分类（已同步/待更新/同步失败）在 composable 里。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

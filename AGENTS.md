@@ -354,6 +354,16 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 （同 PCAP 批的 `closeFileDialog`）。证据抽屉的加载/失败状态属于同一个 composable，不要在页面里
 再写一份。回归：`frontend/src/__tests__/data-object-instance-state.test.ts`（8 项）。
 
+## 扫描配置与规则版本页状态边界
+
+扫描配置页与规则版本页（`ScanProfiles.vue`、`RuleVersions.vue`）的状态分别在
+`modules/data-security/composables/useScanProfiles.ts`（188 行）与 `useRuleVersions.ts`（141 行），
+页面只保留模板（289 → 155、256 → 156 行）；去掉缩进后，被移动的 132 行与 96 行脚本逐行未改。
+扫描配置页的翻页走 `setPage()`——移动分页必须同时重新查询，写成一个方法能保证两件事一起发生。
+草稿（`draft`、两个路径文本框）与「下发」弹窗都归 composable；规则版本页的
+`probedVersion`/`probeField`/`shortHash` 是模板要用的纯函数，随 composable 一起导出。
+回归：`frontend/src/__tests__/scan-profile-rule-version-state.test.ts`（17 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`
