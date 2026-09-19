@@ -10,12 +10,25 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 052ac15 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 2da7390 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第十三批：规则域路由拆分；前十二批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域）见下方记录 |
+| 本批范围 | 第十四批：`v1.py` 剩余零散入口收敛（auth / health / 网络扫描 / 测试数据四域，`v1.py` 自此只做聚合）；前十三批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域）见下方记录 |
 
 ## 本批已落地结构
 
+- `api/v1.py` 里最后的零散入口按域收拢，`v1.py` 自此**只做子路由聚合**（自身不再声明任何路径，
+  288 → 79 行）：`api/auth.py`（3 条路径：`POST /auth/login`、`POST /auth/logout`、`GET /auth/me`）、
+  `api/health.py`（`GET /health`）、`api/network_scan.py`（`POST /scan`、`GET /scan/{task_id}`）、
+  `api/test_data.py`（`POST /test/import`、`POST /test/clear`、`GET /test/status`）。
+- 共享边界一律复用不复制：会话/口令仍走 `core/security.py` 与 `AdminSession`；`/health` 的
+  worker 能力与规则清单仍读 `api/runtime_status.py`（与 `/integrations` 共用一份）；`/scan` 的
+  端口选择走 `services/scan_service.py`、探针侧排队走 `services/probe_task_service.py`、派发走
+  `api/dependencies.dispatch_task`；测试数据的导入/清理/状态仍在 `services/test_service.py`。
+- 写入口的 opt-in 守卫 `_require_test_data_import`（读 `settings.test_data_import_enabled`，
+  默认关闭）随域下沉到 `api/test_data.py`，两个写入口都必须先过守卫；`main.py` 对
+  `/api/v1/health` 的免鉴权放行、`/api/v1/auth/login` 的公开例外与探针路径判定均未改动。
+- 四条路径无 tag、无参数变化，OpenAPI 拆分前后**完全一致**（144 条路径 / 158 个操作，含路径顺序）；
+  路由仍 162 条记录（158 APIRoute），路径/方法/端点函数名多重集与拆分前完全相同，仅注册顺序变化。
 - 检测引擎规则面收拢为 `api/rules.py`（5 条路径：`GET /rules`、`GET /rules/content`、`GET /rule-sources`、
   `POST /rules/sync`、`POST /rules`），其中后三条原在 `api/libraries.py`，本批归位后该文件只保留
   敏感数据（DLP）规则族 `/dlp/rules*`（217 → 101 行）；`RuleSyncRequest`、`DetectionRule` 两个请求模型
@@ -115,6 +128,20 @@
 
 ## 验证与已知限制
 
+- 第十四批（本机 .venv 隔离全量）726 项：719 passed / 6 failed / 1 skipped；6 项失败与第十三批
+  基线集合完全相同，无新增失败、无新增错误（其中 29 项为本批新增边界测试）。拆分前后 OpenAPI
+  **完全一致**（144 条路径 / 158 个操作，含路径顺序与 tags）；路由仍 162 条记录（158 APIRoute）、
+  158 条「路径 + 方法」多重集与拆分前相同；158 个操作的「方法 + 路径」首个命中函数完全一致；
+  10 个被移动定义的 AST 逐节点比对完全相同；无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- `v1.py` 迁出的 10 个定义（`admin_login`、`admin_logout`、`admin_me`、`health`、`start_scan`、
+  `scan_result`、`_require_test_data_import`、`import_test`、`clear_test`、`get_test_status`）AST
+  逐节点比对与拆分前完全相同；`v1.py` 自此不再定义任何路由函数，只剩聚合。
+- 测试迁移与新增：新增 `tests/test_auth_boundaries.py`（7 项）、`tests/test_health_boundaries.py`（7 项）、
+  `tests/test_network_scan_boundaries.py`（8 项）、`tests/test_test_data_boundaries.py`（7 项）；
+  `tests/test_integration_offline_boundaries.py` 的 worker 能力共用断言由 `v1.py` 改指 `api/health.py`
+  （`/health` 迁出后 v1 不再导入 `runtime_status`）。
+- `v1.py` ruff 存量 23 → 0（14 E501 → 0、9 B008 → 0），四个新模块与四个新测试 ruff check/format
+  一次通过；未对老文件做批量重排，只清理了拆分后无处使用的导入。
 - 第十三批（本机 .venv 隔离全量）697 项：690 passed / 6 failed / 1 skipped；6 项失败与第十二批基线集合完全相同，
   无新增失败、无新增错误（其中 8 项为本批新增边界测试）。拆分前后 OpenAPI **排序后字节一致**
   （144 条路径 / 158 个操作，含迁出三条路由的 `tags`）；路由仍 162 条记录（158 APIRoute）、
@@ -290,10 +317,11 @@
 
 ## 剩余事项
 
-- 其余大路由、其他前端页面、模型包和探针尚按总体指南待拆分（已完成：分析任务编排与 Celery 入口、
-  PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、
-  探针域、集成与离线导入域、规则域路由；
-  待收敛：`auth`、`health`、`scan`、`test` 等仍留在 `v1.py` 的零散入口）。
+- 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
+  告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
+  以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
+  其余待办：其他前端页面（类型中心、对象详情、采集任务页、PCAP 工作台）、模型包拆分，
+  最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

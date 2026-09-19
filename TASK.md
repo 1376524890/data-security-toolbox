@@ -509,14 +509,60 @@
   （密文末字节恰为 0x00 时篡改等于没改，约 1/256），与本批无关，按约定不在结构移动中顺手修。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-rules-route-split-20260920`。
 
+## 第十四批：v1 剩余零散入口收敛（2026-09-20）
+
+基线 `2da7390`，同一分支。目标：把 `v1.py` 里最后几组零散入口按域收拢，使聚合文件只剩
+`include_router`；路径/方法/鉴权/分页不变。
+
+已完成代码：
+
+- 新建四个域，`v1.py` 288 → 79 行，且**自身不再声明任何路径**（只剩兼容重导出与聚合）：
+  `api/auth.py`（`POST /auth/login`、`POST /auth/logout`、`GET /auth/me`）、
+  `api/health.py`（`GET /health`）、`api/network_scan.py`（`POST /scan`、`GET /scan/{task_id}`）、
+  `api/test_data.py`（`POST /test/import`、`POST /test/clear`、`GET /test/status`）。
+- 共享边界不复制：会话/口令仍走 `core/security.py` 与 `AdminSession`；`/health` 的 worker 能力与
+  规则清单仍读 `api/runtime_status.py`（与 `/integrations` 共用），队列深度读
+  `services/task_dispatch.py::queue_depth`，探针行形状读 `api/probe_presenter.py`；`/scan` 的端口
+  选择走 `services/scan_service.py`、探针侧排队走 `services/probe_task_service.py`、派发走
+  `api/dependencies.dispatch_task`；测试数据导入/清理/状态仍在 `services/test_service.py`。
+- 写入口的 opt-in 守卫 `_require_test_data_import`（读 `settings.test_data_import_enabled`，默认关闭）
+  随域下沉，两个写入口都必须先过守卫；`main.py` 对 `/api/v1/health` 的免鉴权放行与
+  `/api/v1/auth/login` 的公开例外不变，说明「只允许真实数据」的开关仍默认关闭。
+- 这四条路径无 tag 变化，OpenAPI 拆分前后**完全一致**（144 条路径 / 158 个操作，含路径顺序）；
+  路由仍 162 条记录（158 APIRoute），路径/方法/端点函数名多重集与拆分前完全相同，仅注册顺序变化。
+- 新增 `tests/test_auth_boundaries.py`（7 项，含「`v1.py` 自身不再声明任何路径」这条总约束）、
+  `tests/test_health_boundaries.py`（7 项）、`tests/test_network_scan_boundaries.py`（8 项，含
+  `/scan` 与 `/scan/{task_id}` 与 `/scan-profiles*` 不互相遮蔽）、`tests/test_test_data_boundaries.py`（7 项，
+  含守卫只有一个实现、两个写入口都过守卫）。
+- 测试迁移：`tests/test_integration_offline_boundaries.py` 的 worker 能力共用断言由 `v1.py` 改指
+  `api/health.py`（`/health` 迁出后 v1 不再导入 `runtime_status`）。
+
+验证：
+
+- 本机 .venv 隔离全量 726 项：719 passed / 6 failed / 1 skipped；6 项失败与第十三批基线集合完全相同，
+  无新增失败、无新增错误（其中 29 项为本批新增边界测试）。
+- 拆分前后 OpenAPI **完全一致**（144 条路径 / 158 个操作，含路径顺序与 tags）；路由仍 162 条记录
+  （158 APIRoute）、158 条「路径 + 方法」多重集相同；158 个操作的首个命中函数完全一致；
+  10 个被移动定义的 AST 逐节点比对完全相同；无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 新增模块/测试 ruff check 与 format 一次通过；`v1.py` ruff 存量 23 → 0（14 E501、9 B008 随代码迁出），
+  未批量重排老文件。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy，worker 仍注册 12 个 `security_toolbox.*` 任务名，日志无 Traceback/ERROR/unregistered。
+- 真实环境只读复验：登录后 35 个只读接口 + 本批 3 项（`/auth/me`、`/health`、`/test/status`）
+  + 规则域 3 项 + 探针域 3 项共 44 项全部 200；`/health` 返回 status=ok、redis=ok、
+  analysis_worker=ready、`features.test_data_import=false`；`/test/status present=false`；
+  迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针主机，
+  也未调用 `POST /test/import`、`POST /test/clear` 等写接口。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-v1-residual-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 收敛 `v1.py` 里剩下的零散入口（`auth`、`health`、`scan`、`test`）——`v1.py` 目前 288 行，
-   只剩这三组接口与子路由聚合，其中 `/health` 已与 `api/runtime_status.py` 共用能力读取；
-   重点明确文件对数据资产结果的写入边界。
-2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
-3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
-4. 旧的 `workers/tasks.py` 兼容门面与 `data_object_service.py` 在确无调用方后再删除。
+后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
+
+1. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
+2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
+3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
+   在确无调用方后再删除。
 
 不要把本批的结构移动与历史数据回填或检测规则修改混在一起。
 

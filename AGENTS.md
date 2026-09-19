@@ -80,10 +80,10 @@ source/
 ## API 规范
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
-- 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
+- 路由按域拆分注册：`app/api/v1.py`（聚合主体，自身不再声明路径）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
   `alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`probes.py`、`extensions.py`、
   `integrations.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rules.py`、
-  `rulesets.py`；
+  `auth.py`、`health.py`、`network_scan.py`、`test_data.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
@@ -289,6 +289,28 @@ worker 能力与规则清单的读取（`read_worker_capabilities`、`merge_capa
 `POST /rules/sync` 的审计走 `services/audit_service.record_audit`。敏感数据（DLP）规则是另一类规则族，
 仍在 `api/libraries.py`（`/dlp/rules*`），不要混在一起；规则集下发与版本仍在 `api/rulesets.py`。
 边界由 `tests/test_rule_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
+
+## v1 聚合边界（auth / health / 网络扫描 / 测试数据）
+
+第十四批把 `api/v1.py` 里最后几个零散入口收进各自域，`v1.py` 自此只做子路由聚合
+（`router_routes(v1.py)` 必须为空，由 `tests/test_auth_boundaries.py` 锁定）：
+
+- 会话面在 `api/auth.py`（3 条路径：`POST /auth/login`、`POST /auth/logout`、`GET /auth/me`）；
+  会话存储、Cookie 与口令校验仍走 `core/security.py` 与 `AdminSession`，`/auth/me` 的非生产快捷分支
+  属于既有契约，不要改动。
+- 平台健康在 `api/health.py`（`GET /health`）：Redis/Celery 队列深度走
+  `services/task_dispatch.py::queue_depth`，worker 能力与规则清单走 `api/runtime_status.py`
+  （与 `/integrations` 共用一份），探针行形状走 `api/probe_presenter.py`；
+  `main.py` 对 `/api/v1/health` 的免鉴权放行是既有契约。
+- 主动扫描在 `api/network_scan.py`（`POST /scan`、`GET /scan/{task_id}`）：端口选择走
+  `services/scan_service.py`，探针侧排队走 `services/probe_task_service.py`，派发走
+  `api/dependencies.dispatch_task`；扫描配置 `/scan-profiles*` 仍在 `api/profiles.py`。
+- 手动测试数据在 `api/test_data.py`（`POST /test/import`、`POST /test/clear`、`GET /test/status`）：
+  导入/清理/状态实现仍在 `services/test_service.py`，写入口的 opt-in 守卫
+  `_require_test_data_import`（读 `settings.test_data_import_enabled`，默认关闭）随域下沉，
+  两个写入口都必须先过这个守卫，不得绕过或复制。
+- 边界由 `tests/test_{auth,health,network_scan,test_data}_boundaries.py` 检查
+  （路径/方法冻结、不复制共享守卫、全应用无重复注册、v1 只聚合一次）。
 
 ## 与其他文档的关系
 

@@ -20,6 +20,7 @@ V1 = API / "v1.py"
 INTEGRATIONS = API / "integrations.py"
 LIBRARIES = API / "libraries.py"
 RUNTIME_STATUS = API / "runtime_status.py"
+HEALTH = API / "health.py"
 
 #: Frozen integration/offline surface: the split must not add, drop or rename one entry.
 INTEGRATION_ROUTES = {
@@ -139,12 +140,12 @@ def test_integration_domain_reuses_the_shared_boundaries():
 
 
 def test_worker_capability_reading_is_shared_with_health():
-    v1_source = V1.read_text(encoding="utf-8")
+    health_source = HEALTH.read_text(encoding="utf-8")
     status_source = RUNTIME_STATUS.read_text(encoding="utf-8")
     for name in ("read_worker_capabilities", "merge_capability", "engine_rule_counts"):
         assert f"def {name}(" in status_source, name
-        assert f"def _{name}(" not in v1_source, name
-    assert "from app.api.runtime_status import" in v1_source
+        assert f"def _{name}(" not in health_source, name
+    assert "from app.api.runtime_status import" in health_source
 
 
 def test_v1_aggregates_the_integrations_router_exactly_once():
