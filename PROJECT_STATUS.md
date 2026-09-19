@@ -10,12 +10,19 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | c9ddf01 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | b71ae43 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第二十二批：前端资产中心页状态解耦；前二十一批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态、事件中心与告警中心页状态）见下方记录 |
+| 本批范围 | 第二十三批：前端检测中心页状态解耦；前二十二批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态、事件中心与告警中心页状态、资产中心页状态）见下方记录 |
 
 ## 本批已落地结构
 
+- 检测中心的状态收拢到
+  `frontend/src/modules/operations/detections/composables/useDetectionCenter.ts`（101 行），页面只保留
+  模板（`DetectionCenter.vue` 183 → 111 行）；去掉缩进后，迁入的 78 行脚本逐行未改，模板逐字节未改。
+- 页面保留 `filterFields`（引擎下拉的选项来自 composable 暴露的 `engineOptions`）与 `formatDateTime`；
+  发现列表、详情抽屉与手动流水线整块进 composable，`ElMessage` 提示也留在 composable 里。
+- 引擎下拉仍按 `detection_engine || name` 取值、标签取 `label || name` 并附发现数；注册表请求失败时
+  选项保持为空，不影响发现列表加载。
 - 资产中心的状态收拢到 `frontend/src/modules/asset/composables/useAssetCenter.ts`（171 行），
   页面只保留模板（`AssetCenter.vue` 290 → 147 行）；去掉缩进后，迁入的 145 行脚本逐行未改，
   模板逐字节未改（本批没有模板改动）。
@@ -178,6 +185,8 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
+| frontend/src/modules/operations/detections/DetectionCenter.vue | 183 | 111 |
+| frontend/src/modules/operations/detections/composables/useDetectionCenter.ts | 0（本批新增） | 101 |
 | frontend/src/modules/asset/AssetCenter.vue | 290 | 147 |
 | frontend/src/modules/asset/composables/useAssetCenter.ts | 0（本批新增） | 171 |
 | frontend/src/modules/operations/incidents/IncidentCenter.vue | 268 | 193 |
@@ -238,6 +247,20 @@
 
 ## 验证与已知限制
 
+- 第二十三批（前端）：`npm run typecheck` 通过；全量 vitest 20 个文件 151 项通过（原 141 项 + 本批新增
+  `detection-center-state.test.ts` 10 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+  逐行比对：去掉缩进后，迁入 composable 的 78 行脚本逐行未改，模板逐字节未改。
+- 第二十三批镜像（前端）：legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/`、入口 chunk 与 `DetectionCenter` chunk 均 200，chunk 名与
+  本地构建一致、线上字节与本地构建 SHA256 相同、无 demo/mock 代码；回退标签
+  `source-frontend:pre-detection-centre-state-20260920`。
+- 第二十三批真实环境只读复验（后端未改）：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/detections`（3606 条）、`/detections/{id}`（37 个关联事件、9 项证据、命中 alert）、
+  `/engine/registry`（15 个引擎），以及 `/assets`、`/probes`、`/incidents`、`/alerts`、
+  `/alerts/summary`、`/files`、`/dlp/policy`、`/dlp/transfers`、`/dlp/rules`、`/scan-profiles`、
+  `/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、`/sensitive/findings`、
+  `/sensitivity-levels` 均 200；未调用测试数据导入接口，未操作真实探针主机，迁移仍
+  `0015_alert_hits`（head）。
 - 第二十二批（前端）：`npm run typecheck` 通过；全量 vitest 19 个文件 141 项通过（原 126 项 + 本批新增
   `asset-center-state.test.ts` 15 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
   逐行比对：去掉缩进后，迁入 composable 的 145 行脚本逐行未改，模板逐字节未改。
@@ -528,8 +551,8 @@
 - 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
-  其余待办：前端其余页面（引擎详情、检测中心、看板、审计、探针页等）按实际改动需求
-  再拆（数据安全域与事件/告警中心的状态已抽入 composable、资产中心已完成）、模型包拆分，最后是探针模块与分发包。
+  其余待办：前端其余页面（引擎详情、看板、审计、探针页等）按实际改动需求再拆
+  （数据安全域、事件/告警中心、资产中心与检测中心的状态已抽入 composable）、模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

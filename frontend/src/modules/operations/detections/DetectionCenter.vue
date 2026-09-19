@@ -1,9 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { listDetections, getDetection, type DetectionQuery } from '../../../api/detections'
-import { getEngineRegistry, runPipeline, type PipelineRunResult } from '../../../api/engine'
-import type { DetectionFinding, FindingDetail } from '../../../types/finding'
+import { computed } from 'vue'
 import StateBox from '../../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../../components/common/FilterBar.vue'
 import DetailDrawer from '../../../components/common/DetailDrawer.vue'
@@ -12,90 +8,22 @@ import RiskBadge from '../../../components/security/RiskBadge.vue'
 import EvidenceViewer from '../../../components/evidence/EvidenceViewer.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
 import { formatDateTime } from '../../../utils/format'
+import { useDetectionCenter } from './composables/useDetectionCenter'
 
-const loading = ref(true)
-const error = ref('')
-const items = ref<DetectionFinding[]>([])
-const total = ref(0)
-const detail = ref<FindingDetail | null>(null)
-const drawer = ref(false)
-const filters = reactive<DetectionQuery>({ search: '', severity: '', engine: '', page: 1, page_size: 50 })
+// The list, the detail drawer and the manual pipeline run live in the
+// composable; this view keeps the filter fields, which are built from the
+// engine names the composable loaded.
+const {
+  loading, error, items, total, detail, drawer, filters, engineOptions,
+  pipelineOpen, pipelineRunning, pipelineForm, pipelineResult,
+  load, open, reset, runPipelineNow,
+} = useDetectionCenter()
 
-// The engine filter must offer the names findings are actually stored under.
-// The previous hard-coded list (traffic/protocol/zeek/...) never matched
-// ``detection_findings.engine``, so filtering by engine always returned nothing.
-const engineOptions = ref<Array<{ label: string; value: string }>>([])
 const filterFields = computed<FilterField[]>(() => [
   { key: 'search', label: '搜索 Rule/Engine', placeholder: '搜索 Rule / Engine / 建议', width: '240px' },
   { key: 'severity', label: '等级', type: 'select', options: ['Critical', 'High', 'Medium', 'Low'].map((v) => ({ label: v, value: v })), width: '110px' },
   { key: 'engine', label: '引擎', type: 'select', options: engineOptions.value, width: '170px' },
 ])
-
-async function loadEngines(): Promise<void> {
-  try {
-    const engines = await getEngineRegistry()
-    engineOptions.value = engines.map((e) => ({ label: `${e.label || e.name} (${e.detection_count ?? 0})`, value: e.detection_engine || e.name }))
-  } catch {
-    engineOptions.value = []
-  }
-}
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const result = await listDetections({ ...filters })
-    items.value = result.items
-    total.value = result.total
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function open(row: DetectionFinding): Promise<void> {
-  try {
-    detail.value = await getDetection(row.id)
-    drawer.value = true
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : String(err))
-  }
-}
-
-function reset(): void { filters.page = 1; load() }
-
-// --- Manual pipeline trigger ---
-const pipelineOpen = ref(false)
-const pipelineRunning = ref(false)
-const pipelineForm = reactive({ target_type: 'log', log_lines: '', data: '' })
-const pipelineResult = ref<PipelineRunResult | null>(null)
-
-async function runPipelineNow(): Promise<void> {
-  pipelineRunning.value = true
-  pipelineResult.value = null
-  try {
-    let data: Record<string, unknown> = {}
-    if (pipelineForm.data.trim()) {
-      data = JSON.parse(pipelineForm.data)
-    }
-    pipelineResult.value = await runPipeline({
-      target_type: pipelineForm.target_type,
-      log_lines: pipelineForm.log_lines ? pipelineForm.log_lines.split(/\n/).filter(Boolean) : undefined,
-      data,
-    })
-    ElMessage.success('流水线执行完成')
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : String(err))
-  } finally {
-    pipelineRunning.value = false
-  }
-}
-
-onMounted(async () => {
-  await loadEngines()
-  await load()
-})
 </script>
 
 <template>

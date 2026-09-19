@@ -31,6 +31,8 @@
 `AssetCenter.vue -> useAssetCenter -> api/assets`（资产行 + 详情抽屉 + 关系图投影）与
 `api/probes`/`api/scan`（探针下拉与网络扫描控制台）同样只渲染，页面只保留筛选字段配置与
 格式化函数这类静态展示。
+`DetectionCenter.vue -> useDetectionCenter -> api/detections`（发现行 + 详情抽屉）与 `api/engine`
+（引擎下拉、手动流水线）同样只渲染，页面只保留筛选字段配置与格式化函数这类静态展示。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

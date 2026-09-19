@@ -398,6 +398,17 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 都没有引用它），其余为机械搬迁；`loadProbes` 只在 composable 的 `onMounted` 里调用，视图不再
 解构它。回归：`frontend/src/__tests__/asset-center-state.test.ts`（15 项）。
 
+## 检测中心页状态边界
+
+检测中心（`frontend/src/modules/operations/detections/DetectionCenter.vue`）的状态在
+`modules/operations/detections/composables/useDetectionCenter.ts`（101 行），页面只保留模板
+（183 → 111 行）；去掉缩进后，迁入的 78 行脚本逐行未改，模板逐字节未改。页面保留筛选字段配置
+（`filterFields`，引擎下拉的选项来自 composable 暴露的 `engineOptions`）与 `formatDateTime`；
+发现列表、详情抽屉与手动流水线（解析 JSON、拆日志行、`ElMessage` 提示）整块进 composable。
+引擎下拉仍按 `detection_engine || name` 取值、标签取 `label || name` 并附发现数，注册表请求失败时
+选项保持为空且不影响发现列表。回归：
+`frontend/src/__tests__/detection-center-state.test.ts`（10 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`
