@@ -463,10 +463,56 @@
   本批未导入测试数据、未操作真实探针主机，也未调用 `/offline/*` 的写接口。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-integration-offline-route-split-20260920`。
 
+## 第十三批：规则域路由拆分（2026-09-20）
+
+基线 `052ac15`，同一分支。目标：按指南 §C 把检测引擎规则面收拢成一个域，路径/方法/鉴权/分页不变；
+对应后续批次第 1 项的下一个域（指南中记为 rules）。
+
+已完成代码：
+
+- 新建 `api/rules.py`（5 条路径）：`GET /rules`、`GET /rules/content`、`GET /rule-sources`、
+  `POST /rules/sync`、`POST /rules`，`RuleSyncRequest`、`DetectionRule` 两个请求模型随域下沉；
+  后三条与两个模型原先在 `api/libraries.py`，归位后该文件只保留敏感数据（DLP）规则族 `/dlp/rules*`
+  （217 → 101 行），职责从「规则编写 + 漏洞库维护 + 引擎规则」收敛为单一的 DLP 规则目录。
+- 共享边界不复制：规则枚举仍只有 `api/rule_presenter.py::rule_file_entries` 一份（`/engine/registry`
+  共用），来源出处读 `app.rules.catalog`、`app.rules.library`，在线拉取走 `app.rules.sync`，
+  手工 Suricata/YARA 导入走 `app.integrations.offline_manager` 与 `yara` 编译校验（写盘前校验不变），
+  `record_audit` 审计不变，`v1.router` 只 include 一次。
+- 从 `libraries.py` 迁出的三条路由保留原 `rule-libraries` tag（仅文档分组），使拆分前后 OpenAPI
+  排序后仍**字节一致**。
+- 新增 `tests/test_rule_boundaries.py`（8 项）：5 条路径/方法冻结、仅由本域声明、v1 与 libraries 不再声明、
+  DLP 规则族仍在 libraries、仍挂 `/api/v1` 下、全应用无重复「方法 + 路径」、
+  本域不导入 workers/v1/extensions、不复制共享守卫、来源读取走 catalog/sync 服务、
+  presenter 仍与 engines 域共用、v1 只聚合一次。
+- 测试迁移：`tests/test_rule_libraries.py` 的独立 app 再挂上 `rules` 子路由（与原 `libraries`、
+  `integrations` 并列）；上一批的 `tests/test_integration_offline_boundaries.py` 相应收窄为只冻结
+  DLP 四条，并断言 `/rules*`、`/rule-sources` 已不属于 libraries。
+
+验证：
+
+- 本机 .venv 隔离全量 697 项：690 passed / 6 failed / 1 skipped；6 项失败与第十二批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **排序后字节一致**（144 条路径 / 158 个操作，含 tags）；路由仍 162 条记录（158 APIRoute）、
+  162 条「方法 + 路径 + 端点函数名」与拆分前逐条相同；158 个操作的首个命中函数完全一致；
+  无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 7 个移动定义的 AST 比对：4 个完全相同，3 处差异仅为保留 tag。
+- 新增模块/测试 ruff 通过；`v1.py`（26 → 23）与 `libraries.py`（11 → 5）ruff 存量只减不增，
+  未批量重排老文件。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy，worker 仍注册 12 个 `security_toolbox.*` 任务名，日志无 Traceback/ERROR/unregistered。
+- 真实环境只读复验：登录后 38 个只读接口 + 本域 3 项（`/rule-sources`、`/rules`、`/rules/content`）
+  + 探针域 3 项共 44 项全部 200；`/rule-sources` 15 个引擎、键集合与拆分前一致；`/rules` 3512 条、
+  14 种类型；`/rules/content` 返回内置/文件规则的正文；`/test/status present=false`、
+  迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针主机，
+  也未调用 `POST /rules`、`POST /rules/sync` 等写接口。
+- 全量偶发第 7 项失败来自既有 flaky `tests/deployment/test_credential.py::test_tamper_rejected`
+  （密文末字节恰为 0x00 时篡改等于没改，约 1/256），与本批无关，按约定不在结构移动中顺手修。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-rules-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts、tasks/audit/reports、
-   detections/engine、dashboard、probes、integrations/offline 域已完成）：rules，
+1. 收敛 `v1.py` 里剩下的零散入口（`auth`、`health`、`scan`、`test`）——`v1.py` 目前 288 行，
+   只剩这三组接口与子路由聚合，其中 `/health` 已与 `api/runtime_status.py` 共用能力读取；
    重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。

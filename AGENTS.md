@@ -82,7 +82,8 @@ source/
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
 - 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
   `alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`probes.py`、`extensions.py`、
-  `integrations.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
+  `integrations.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rules.py`、
+  `rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
@@ -277,6 +278,17 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 worker 能力与规则清单的读取（`read_worker_capabilities`、`merge_capability`、`engine_rule_counts`）
 下沉到 `api/runtime_status.py`，`/health` 与 `/integrations` 共用，不要在任一域里重写。
 边界由 `tests/test_integration_offline_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
+
+## 规则域路由入口
+
+检测引擎规则面在 `api/rules.py`（5 条路径：`GET /rules`、`GET /rules/content`、`GET /rule-sources`、
+`POST /rules/sync`、`POST /rules`）。规则枚举只有一份实现：`api/rule_presenter.py::rule_file_entries`
+（内置规则与磁盘规则都在这里汇总，`/engine/registry` 也用它）；来源出处读 `app.rules.catalog`、
+`app.rules.library`，在线拉取走 `app.rules.sync`，手工 Suricata/YARA 规则导入走
+`app.integrations.offline_manager` 与 `yara` 编译器，写前校验不可绕过；
+`POST /rules/sync` 的审计走 `services/audit_service.record_audit`。敏感数据（DLP）规则是另一类规则族，
+仍在 `api/libraries.py`（`/dlp/rules*`），不要混在一起；规则集下发与版本仍在 `api/rulesets.py`。
+边界由 `tests/test_rule_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
 
 ## 与其他文档的关系
 

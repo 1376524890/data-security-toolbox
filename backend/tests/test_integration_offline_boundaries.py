@@ -36,15 +36,12 @@ INTEGRATION_ROUTES = {
     ("GET", "/offline/grype/jobs/{identifier}"),
 }
 
-#: The rule-authoring surface ``libraries.py`` keeps after the move.
+#: The DLP rule surface ``libraries.py`` keeps after the move.
 LIBRARY_ROUTES = {
     ("GET", "/dlp/rules"),
     ("POST", "/dlp/rules"),
     ("POST", "/dlp/rules/presidio/update"),
     ("PATCH", "/dlp/rules/{identifier}"),
-    ("GET", "/rule-sources"),
-    ("POST", "/rules/sync"),
-    ("POST", "/rules"),
 }
 
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
@@ -74,6 +71,9 @@ def test_integration_routes_are_declared_by_the_integrations_module_only():
         declared = router_routes(other)
         assert {route for route in declared if route[1].startswith("/integrations")} == set()
         assert {route for route in declared if route[1].startswith("/offline")} == set()
+        # The engine-rule catalogue lives in api/rules.py, not here.
+        assert {route for route in declared if route[1].startswith("/rules")} == set()
+        assert {route for route in declared if route[1] == "/rule-sources"} == set()
 
 
 def test_rule_authoring_routes_stayed_in_the_libraries_module():

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
-    Query,
     Request,
     Response,
 )
@@ -63,7 +61,9 @@ from app.api.probes import (
 from app.api.reports import (
     router as reports_router,
 )
-from app.api.rule_presenter import rule_file_entries
+from app.api.rules import (
+    router as rules_router,
+)
 from app.api.runtime_status import engine_rule_counts, merge_capability, read_worker_capabilities
 from app.api.task_presenter import serialize_task
 from app.api.tasks import (
@@ -270,31 +270,6 @@ def get_test_status(db: Session = Depends(get_db)) -> dict[str, Any]:
     return test_status(db)
 
 
-@router.get("/rules")
-def list_rules(rule_type: str | None = Query(None), engine: str | None = Query(None), include_content: bool = Query(True), db: Session = Depends(get_db)) -> dict[str, Any]:
-    """List Sigma / Suricata / YARA rules with content."""
-    items = rule_file_entries(db, engine=engine or '', include_content=include_content)
-    if rule_type:
-        items = [item for item in items if item["type"] == rule_type]
-    if engine:
-        items = [item for item in items if item["engine"] == engine]
-    return {"items": items, "total": len(items)}
-
-
-@router.get('/rules/content')
-def rule_content(path: str, engine: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    item = next((item for item in rule_file_entries(db, engine, include_content=False)
-                 if item['path'] == path), None)
-    if item is None:
-        raise HTTPException(404, '规则不存在')
-    if item['type'] == 'builtin':
-        from app.rules.code_catalog import definition
-        item['content'] = definition(engine, item['rule_id'])['content']
-    else:
-        item['content'] = Path(path).read_text(encoding='utf-8', errors='replace')
-    return item
-
-
 # Legacy asset projection and sensitive findings share a dedicated read boundary.
 
 router.include_router(data_assets_router)
@@ -310,3 +285,4 @@ router.include_router(engines_router)
 router.include_router(dashboard_router)
 router.include_router(probes_router)
 router.include_router(integrations_router)
+router.include_router(rules_router)

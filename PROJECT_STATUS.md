@@ -10,12 +10,23 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | dc07b2f / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 052ac15 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第十二批：集成与离线导入域路由拆分；前十一批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域）见下方记录 |
+| 本批范围 | 第十三批：规则域路由拆分；前十二批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域）见下方记录 |
 
 ## 本批已落地结构
 
+- 检测引擎规则面收拢为 `api/rules.py`（5 条路径：`GET /rules`、`GET /rules/content`、`GET /rule-sources`、
+  `POST /rules/sync`、`POST /rules`），其中后三条原在 `api/libraries.py`，本批归位后该文件只保留
+  敏感数据（DLP）规则族 `/dlp/rules*`（217 → 101 行）；`RuleSyncRequest`、`DetectionRule` 两个请求模型
+  随域下沉。
+- 规则枚举仍只有 `api/rule_presenter.py::rule_file_entries` 一份实现（`/engine/registry` 共用），
+  来源出处读 `app.rules.catalog`/`app.rules.library`，在线拉取走 `app.rules.sync`，
+  手工 Suricata/YARA 导入仍走 `app.integrations.offline_manager` 与 `yara` 校验，
+  `record_audit` 审计不变；本域不新增任何序列化或校验副本。
+- 从 `libraries.py` 迁出的三条路由保留原 `rule-libraries` tag，OpenAPI 拆分前后排序后**字节一致**。
+- 第十二批边界维持：集成与离线导入域在 `api/integrations.py`（11 条路径），`libraries.py` 不再有
+  `/offline*`；worker 能力/规则清单读取仍在 `api/runtime_status.py`。
 - 适配器目录/手动执行与整个 `/offline` 面收拢为 `api/integrations.py`（11 条路径：`GET /integrations`、
   `POST /integrations/{name}/analyze`、`POST /integrations/offline/upload|import`、
   `GET /offline/resources`、`GET|POST /offline/cves`、`POST /offline/upload`、
@@ -70,10 +81,11 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
-| backend/app/api/v1.py | 2557 | 312 |
+| backend/app/api/v1.py | 2557 | 288 |
+| backend/app/api/rules.py | 0（本批新增） | 197 |
+| backend/app/api/libraries.py | 302 | 101 |
 | backend/app/api/integrations.py | 0（本批新增） | 318 |
 | backend/app/api/runtime_status.py | 0（本批新增） | 75 |
-| backend/app/api/libraries.py | 302 | 217 |
 | backend/app/api/probes.py | 0（本批新增） | 370 |
 | backend/app/api/dependencies.py | 12 | 60 |
 | backend/app/api/dashboard.py | 0（本批新增） | 403 |
@@ -103,6 +115,20 @@
 
 ## 验证与已知限制
 
+- 第十三批（本机 .venv 隔离全量）697 项：690 passed / 6 failed / 1 skipped；6 项失败与第十二批基线集合完全相同，
+  无新增失败、无新增错误（其中 8 项为本批新增边界测试）。拆分前后 OpenAPI **排序后字节一致**
+  （144 条路径 / 158 个操作，含迁出三条路由的 `tags`）；路由仍 162 条记录（158 APIRoute）、
+  162 条「方法 + 路径 + 端点函数名」与拆分前逐条相同；158 个操作的「方法 + 路径」首个命中函数完全一致；
+  无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 规则域 AST 逐节点比对：7 个移动定义中 `list_rules`、`rule_content`、`RuleSyncRequest`、`DetectionRule`
+  与拆分前完全相同，另 3 处差异仅为迁出路由保留 `rule-libraries` tag；`v1.py` 与 `libraries.py`
+  分别只少 2 个与 5 个定义，无其他改动。
+- `v1.py` ruff 存量 26 → 23（15 E501 → 14、11 B008 → 9），`libraries.py` 11 → 5（5 B008 → 2、4 E501 → 2、
+  2 I001 → 1），均只减不增；新增模块与新增测试 ruff check/format 通过。
+- 既有 flaky（与本批无关，结构移动不修）：`tests/deployment/test_credential.py::test_tamper_rejected`
+  用 `ciphertext[:-1] + b"\x00"` 制造篡改，当密文最后一个字节本身就是 `0x00` 时篡改等于没改，
+  解密成功、`pytest.raises` 不触发（实测 3000 次里 12 次、约 1/256）。单独运行该文件必过；
+  全量偶发多出 1 项失败即由此而来，不要误判为重构回归。
 - 第十二批（本机 .venv 隔离全量）688 项：681 passed / 6 failed / 1 skipped；6 项失败与第十一批基线集合完全相同，
   无新增失败、无新增错误（其中 8 项为本批新增边界测试）。拆分前后 OpenAPI **排序后字节一致**
   （144 条路径 / 158 个操作，含从 `libraries.py` 迁出的四条路由的 `tags`）；路由仍 162 条记录（158 APIRoute），
@@ -266,9 +292,8 @@
 
 - 其余大路由、其他前端页面、模型包和探针尚按总体指南待拆分（已完成：分析任务编排与 Celery 入口、
   PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、
-  探针域、集成与离线导入域路由；
-  待拆：`rules`，
-  以及 `auth`、`health`、`test`、`scan` 等待收敛的入口）。
+  探针域、集成与离线导入域、规则域路由；
+  待收敛：`auth`、`health`、`scan`、`test` 等仍留在 `v1.py` 的零散入口）。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

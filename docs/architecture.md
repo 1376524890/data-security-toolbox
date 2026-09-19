@@ -31,14 +31,14 @@ worker 任务按职责分为 `workers/{analysis,notification,maintenance}_tasks.
 注册名集中在 `workers/task_names.py`，旧 `workers/tasks.py` 仅兼容重导出。
 Celery 任务名、参数顺序与队列路由属于兼容边界，不随文件位置改变。
 
-## 域路由模块（2026-09-20 第三批至第十二批）
+## 域路由模块（2026-09-20 第三批至第十三批）
 
 `api/pcaps.py`（18 条路径）、`api/files.py`（5 条路径）、`api/assets.py`（4 条路径）、
 `api/incidents.py`（7 条路径）、`api/alerts.py`（5 条路径）、`api/tasks.py`（5 条路径）与
 `api/reports.py`（5 条路径）、`api/detections.py`（3 条路径）、`api/engines.py`（2 条路径）与
-`api/dashboard.py`（13 条路径）、`api/probes.py`（9 条路径）、`api/integrations.py`（11 条路径）
-分别承载 PCAP 抓包域、文件证据域、平台资产域、事件/情报域、告警域、任务队列域、审计/报表域、
-检测/引擎域、看板/流量视图域、探针域与集成/离线导入域，
+`api/dashboard.py`（13 条路径）、`api/probes.py`（9 条路径）、`api/integrations.py`（11 条路径）、
+`api/rules.py`（5 条路径）分别承载 PCAP 抓包域、文件证据域、平台资产域、事件/情报域、告警域、
+任务队列域、审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成/离线导入域与规则域，
 都由 `v1.router` 只 include 一次、`/api/v1` 前缀只叠加一次，
 路径/方法/鉴权/分页与拆分前逐一对应。子路由在 `v1.router` 末尾追加，只改变注册顺序，不改变匹配结果
 （全应用没有单段通配路径，路径集合与拆分前一致）。
@@ -52,7 +52,7 @@ Celery 任务名、参数顺序与队列路由属于兼容边界，不随文件�
 `services/probe_task_service.py`）、审计/报表生成（`services/audit_service.py`、`services/report_service.py`）
 与检测判定（`app/engine/*`）以及资产关联判定仍在 `services/*`、`incident_engine`，
 域路由只做鉴权、分页与响应结构。各域路径/方法由
-`tests/test_{pcap,file,asset,incident_ioc,alert,tasks_reports,detection_engine,dashboard,probe,integration_offline}_boundaries.py` 冻结，
+`tests/test_{pcap,file,asset,incident_ioc,alert,tasks_reports,detection_engine,dashboard,probe,integration_offline,rule}_boundaries.py` 冻结，
 全应用不允许重复「方法 + 路径」。
 
 系统由三部分组成：
@@ -135,8 +135,8 @@ V2.1 新增 `Integration Adapter Layer`，统一第三方组件输入：
 | 模块 | 依赖 | 边界 |
 | --- | --- | --- |
 | `app/api/*` | `app/services/*`、`app/models.py`、`app/core/*` | 只做鉴权、参数校验、查询编排，不做检测计算 |
-| `app/api/v1.py` | `app/api/data_assets.py`、`app/api/pcaps.py`、`app/api/files.py`、`app/api/assets.py`、`app/api/incidents.py`、`app/api/alerts.py`、`app/api/tasks.py`、`app/api/reports.py`、`app/api/detections.py`、`app/api/engines.py`、`app/api/dashboard.py`、`app/api/probes.py`、`app/api/integrations.py` 等域模块 | 只聚合子路由（`include_router`），不重复声明路径 |
-| 域路由（`data_assets.py`、`data_collection.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、`alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`probes.py`、`integrations.py`…） | 共享 `app/api/dependencies.py`、`app/api/*_presenter.py`、`app/api/query_filters.py`、`app/api/runtime_status.py` | 每个域只声明自己的路径与响应结构；共享鉴权/守卫、序列化、列表过滤与运行时状态读取下沉到依赖、presenter、query_filters 与 runtime_status |
+| `app/api/v1.py` | `app/api/data_assets.py`、`app/api/pcaps.py`、`app/api/files.py`、`app/api/assets.py`、`app/api/incidents.py`、`app/api/alerts.py`、`app/api/tasks.py`、`app/api/reports.py`、`app/api/detections.py`、`app/api/engines.py`、`app/api/dashboard.py`、`app/api/probes.py`、`app/api/integrations.py`、`app/api/rules.py` 等域模块 | 只聚合子路由（`include_router`），不重复声明路径 |
+| 域路由（`data_assets.py`、`data_collection.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、`alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`probes.py`、`integrations.py`、`rules.py`…） | 共享 `app/api/dependencies.py`、`app/api/*_presenter.py`、`app/api/query_filters.py`、`app/api/runtime_status.py` | 每个域只声明自己的路径与响应结构；共享鉴权/守卫、序列化、列表过滤与运行时状态读取下沉到依赖、presenter、query_filters 与 runtime_status |
 | `app/workers/tasks.py` | `app/engine`（pipeline）、`app/incident_engine`、`app/services/*`、`app/integrations/*` | 任务入口，负责事务与回写 |
 | `app/engine/*` | `app/engine/core/*` | 每个引擎实现 `analyze(context) -> list[DetectionResult]` |
 | `app/incident_engine` | 仅依赖 `DetectionResult` | 对外暴露 `evidence_asset_keys()` / `evidence_ioc_keys()` 供他人复用 |
