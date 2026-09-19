@@ -80,7 +80,7 @@ source/
 ## API 规范
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
-- 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、
+- 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
   `extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
@@ -196,6 +196,14 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 `core/datetimes.py::aware`，不要在路由里重写这三者。数据资产（`/data/assets`、`/data-types`、`/data-objects`）
 是另一套边界，仍属 `api/data_assets.py` 与数据目录，不要混在一起。关联判定与评分仍在
 `services/asset_service.py`、`incident_engine`。边界由 `tests/test_asset_boundaries.py` 检查。
+
+## 事件与情报域路由入口
+
+事件与情报路由在 `api/incidents.py`（`GET /incidents`、`GET|PATCH /incidents/{id}`、
+`POST /incidents/correlate`、`POST /incidents/rebuild-attribution`、`GET /iocs`、
+`GET /iocs/{id}/associations`）。关联计算必须走 `incident_engine`（`IncidentEngine.correlate`），
+归属重建走 `incident_engine.attribution`，不要在路由里重写关联逻辑；行序列化用共享 presenter，
+列表时间过滤用 `api/query_filters.py::string_time_filter`。边界由 `tests/test_incident_ioc_boundaries.py` 检查。
 
 ## 与其他文档的关系
 

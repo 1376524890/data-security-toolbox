@@ -176,9 +176,44 @@
   本批未导入测试数据、未操作真实探针。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-asset-route-split-20260920`。
 
+## 第六批：事件与情报域路由拆分（2026-09-20）
+
+基线 `e8994a9`，同一分支。目标：按指南 §C 把事件（incidents）与情报（iocs）域路由从 `api/v1.py` 独立，
+路径/方法/鉴权/分页与响应结构不变；对应后续批次第 1 项的第四个域。
+
+已完成代码：
+
+- 事件与情报路由移至 `api/incidents.py`：`GET /incidents`、`GET /incidents/{incident_id}`、
+  `PATCH /incidents/{incident_id}`、`POST /incidents/correlate`、`POST /incidents/rebuild-attribution`、
+  `GET /iocs`、`GET /iocs/{ioc_id}/associations` 共 7 条路径；关联计算仍在 `incident_engine`
+  （路由只调用 `IncidentEngine().correlate`），归属重建仍在 `incident_engine.attribution`。
+- 列表时间过滤（原 v1 私有 `_string_time_filter`）下沉为 `api/query_filters.py::string_time_filter`，
+  供事件域与其他列表域共用；v1 以别名导入，检测列表调用点不变。
+- 行序列化继续复用第五批已下沉的 presenter（检测/事件/IOC/资产），本批不新增序列化副本。
+- `v1.router` 以 `include_router(incidents_router)` 只注册一次，`/api/v1` 前缀只叠加一次。
+- 新增 `tests/test_incident_ioc_boundaries.py`（8 项）：7 条路径/方法冻结、仅由 `api/incidents.py` 声明、
+  仍挂 `/api/v1` 下、全应用无重复「方法 + 路径」、事件域不导入 workers/extensions、
+  复用而非复制共享 presenter、关联计算未在路由里重写、时间过滤只有一份实现、v1 只聚合一次。
+
+验证：
+
+- 本机 .venv 隔离全量 637 项：630 passed / 6 failed / 1 skipped；6 项失败与第五批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **排序后字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute），
+  162 条「方法 + 路径 + 端点名」与拆分前逐条相同；8 个移动函数的 AST 与拆分前逐节点完全一致
+  （唯一的差异是过滤函数改名）；无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 新增/拆出文件 ruff check 与 ruff format 通过（长行按既有模块标准折行）；`v1.py` 1763 → 1674 行，
+  只减不增，无因拆分产生的未使用导入。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 真实环境只读复验：登录后 18 个只读接口全部 200（含 `/incidents`、`/incidents/{id}`、`/iocs`、
+  `/iocs/{id}/associations` 与资产、文件、PCAP、数据资产接口），`/test/status present=false`、
+  迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-incident-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 继续按域拆其余 v1 路由（PCAP、files、assets 域已完成）：alerts → tasks/audit/reports →
+1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs 域已完成）：alerts → tasks/audit/reports →
    incidents/iocs → dashboard，重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
