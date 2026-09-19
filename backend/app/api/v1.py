@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -8,13 +7,10 @@ from typing import Any
 from fastapi import (
     APIRouter,
     Depends,
-    File,
-    Form,
     HTTPException,
     Query,
     Request,
     Response,
-    UploadFile,
 )
 from sqlalchemy import false, func, select
 from sqlalchemy.orm import Session
@@ -54,7 +50,9 @@ from app.api.finding_presenter import _serialize_detection as _serialize_detecti
 from app.api.incidents import (
     router as incidents_router,
 )
-from app.api.pagination import page_response
+from app.api.integrations import (
+    router as integrations_router,
+)
 from app.api.pcaps import (
     router as pcaps_router,
 )
@@ -66,11 +64,11 @@ from app.api.reports import (
     router as reports_router,
 )
 from app.api.rule_presenter import rule_file_entries
+from app.api.runtime_status import engine_rule_counts, merge_capability, read_worker_capabilities
 from app.api.task_presenter import serialize_task
 from app.api.tasks import (
     router as tasks_router,
 )
-from app.application.analysis import upsert_incident
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import (
@@ -81,24 +79,9 @@ from app.core.security import (
     set_admin_cookie,
     verify_password,
 )
-from app.core.storage import safe_path
-from app.engine.core.context import DetectionContext
-from app.engine.risk_engine.engine import RiskEngine
-from app.incident_engine.engine import IncidentEngine
-from app.integrations import integration_registry
-from app.integrations.offline_manager import (
-    import_offline_path,
-    import_uploaded_offline,
-    list_local_cves,
-    list_offline_resources,
-)
-from app.integrations.runner import run_adapter
 from app.models import (
     AdminSession,
-    Alert,
     Asset,
-    DetectionFinding,
-    LocalCve,
     Probe,
     Task,
     User,
@@ -106,11 +89,6 @@ from app.models import (
 from app.schemas import (
     LoginRequest,
     ScanRequest,
-)
-from app.services.alert_service import (
-    create_finding_alert,
-    create_incident_alert,
-    publish_alert,
 )
 from app.services.task_dispatch import (
     NETWORK_SCAN,
@@ -120,7 +98,6 @@ from app.services.task_service import create_task
 from app.services.test_service import clear_test_data, import_test_data, test_status
 
 router = APIRouter(prefix="/api/v1")
-incident_engine = IncidentEngine()
 
 
 @router.post("/auth/login")
@@ -169,52 +146,6 @@ def _require_test_data_import() -> None:
         raise HTTPException(403, "test data import is disabled")
 
 
-def _read_worker_capabilities() -> list[dict[str, Any]]:
-    try:
-        import redis as redis_lib
-        client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=1, socket_timeout=1)
-        keys = list(client.scan_iter("worker:capability:*"))
-        items = []
-        for key in keys:
-            try:
-                value = client.get(key)
-                if value:
-                    items.append(json.loads(value))
-            except Exception:
-                continue
-        return items
-    except Exception:
-        return []
-
-
-def _merge_capability(capabilities: list[dict[str, Any]]) -> dict[str, Any]:
-    merged: dict[str, Any] = {}
-    for item in capabilities:
-        for tool in ("tshark", "zeek", "suricata"):
-            info = item.get(tool) or {}
-            if not merged.get(tool):
-                merged[tool] = {"available": False, "version": "", "rule_count": 0}
-            merged[tool]["available"] = bool(merged[tool]["available"] or info.get("available"))
-            merged[tool]["version"] = merged[tool]["version"] or info.get("version", "")
-            merged[tool]["rule_count"] = max(merged[tool].get("rule_count", 0), int(info.get("rule_count") or 0))
-    return merged
-
-
-def _engine_rule_counts() -> dict[str, int]:
-    base = Path(__file__).resolve().parents[1] / "rules"
-    counts: dict[str, int] = {}
-    for sub, engine in (("network", "traffic_engine"), ("data", "data_engine"), ("logs", "sigma_log_engine"), ("compliance", "compliance_engine")):
-        directory = base / sub
-        count = 0
-        if directory.exists():
-            for path in directory.rglob("*"):
-                if path.is_file() and path.suffix in {".yaml", ".yml", ".yar"}:
-                    count += 1
-        counts[engine] = count
-    counts["yara"] = sum(1 for _ in (base / "data").glob("*.yar")) if (base / "data").exists() else 0
-    return counts
-
-
 @router.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     redis_ok = False
@@ -238,12 +169,12 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     probe_statuses = {item: 0 for item in ("online", "degraded", "offline", "auth_error")}
     for probe in probes:
         probe_statuses[serialize_probe(probe)["status"]] = probe_statuses.get(serialize_probe(probe)["status"], 0) + 1
-    capabilities = _read_worker_capabilities()
+    capabilities = read_worker_capabilities()
     # A worker is online only if its Redis capability heartbeat is fresh.
     analysis_worker = "online" if capabilities else "offline"
     if capabilities and any(item["tshark"].get("available") for item in capabilities if isinstance(item.get("tshark"), dict)):
         analysis_worker = "ready"
-    merged = _merge_capability(capabilities)
+    merged = merge_capability(capabilities)
     # Overall status reflects the core API/DB/Redis dependency chain. Analysis
     # worker capability is reported granularly and separately below.
     status = "ok" if redis_ok else "degraded"
@@ -259,7 +190,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "tshark": merged.get("tshark", {"available": False, "version": ""}),
         "zeek": merged.get("zeek", {"available": False, "version": ""}),
         "suricata": merged.get("suricata", {"available": False, "version": "", "rule_count": 0}),
-        "engine_rule_counts": _engine_rule_counts(),
+        "engine_rule_counts": engine_rule_counts(),
         "storage_usage_bytes": storage_bytes,
         "storage_max_bytes": settings.pcap_storage_max_gb * 1024 * 1024 * 1024,
         "queue": {"pending": db.scalar(select(func.count(Task.id)).where(Task.status == "Pending")) or 0, "running": running, "oldest_pending_age": oldest_age},
@@ -339,128 +270,6 @@ def get_test_status(db: Session = Depends(get_db)) -> dict[str, Any]:
     return test_status(db)
 
 
-@router.get("/integrations")
-def list_integrations() -> list[dict[str, Any]]:
-    entries = list(integration_registry.metadata())
-    # The API container may lack the Zeek/Suricata binaries while a live
-    # analysis worker reports the capability (published to Redis). Surface the
-    # worker's availability so the UI doesn't show a working engine as
-    # "unavailable" just because the API container can't run it.
-    worker_caps = _merge_capability(_read_worker_capabilities())
-    for entry in entries:
-        name = str(entry.get("name", ""))
-        if name in {"zeek", "suricata"}:
-            cap = worker_caps.get(name)
-            if cap and cap.get("available") and not entry.get("healthy"):
-                entry["installed"] = True
-                entry["healthy"] = True
-                entry["runtime_version"] = entry.get("runtime_version") or cap.get("version", "")
-                entry["status"] = "ready"
-                entry["message"] = "available via analysis worker"
-                entry["last_error"] = ""
-                entry["worker_available"] = True
-                if name == "suricata":
-                    entry["rule_count"] = max(
-                        entry.get("rule_count") or 0, int(cap.get("rule_count") or 0)
-                    )
-    sigma_count = _engine_rule_counts().get("sigma_log_engine", 0)
-    entries.append({
-        "name": "sigma",
-        "version": "1.0.0",
-        "adapter_version": "1.0.0",
-        "installed": True,
-        "enabled": True,
-        "healthy": True,
-        "runtime_version": "builtin",
-        "supported_types": ["log", "text"],
-        "capabilities": ["log_detection"],
-        "rule_count": sigma_count,
-        "status": "ready",
-        "message": "Sigma-style log rule interpreter (built-in)",
-        "last_check": datetime.now(UTC).isoformat(),
-    })
-    return entries
-
-
-@router.post("/integrations/{name}/analyze")
-def run_integration(name: str, payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
-    try:
-        adapter = integration_registry.get(name)
-    except KeyError as exc:
-        raise HTTPException(404, "integration not found") from exc
-    context = DetectionContext(target_type="integration", target_id=name, data=payload.get("context", {}))
-    result = run_adapter(adapter, payload, context, RiskEngine())
-    alerts: list[tuple[Alert, bool]] = []
-    for item in result.findings:
-        finding = DetectionFinding(
-            target_type="integration",
-            target_id=name,
-            engine=item.engine,
-            rule_id=item.rule_id,
-            severity=item.severity,
-            confidence=item.confidence,
-            evidence=item.evidence,
-            recommendation=item.recommendation,
-            risk_score=item.risk_score,
-            risk_level=item.risk_level,
-            timestamp=item.timestamp,
-        )
-        db.add(finding)
-        db.flush()
-        alert, created = create_finding_alert(db, finding)
-        if alert:
-            alerts.append((alert, created))
-    for incident in incident_engine.correlate(result.findings):
-        row = upsert_incident(db, incident, None)
-        alert, created = create_incident_alert(db, row)
-        if alert:
-            alerts.append((alert, created))
-    db.commit()
-    for alert, created in alerts:
-        publish_alert(alert.id, event_type="alert.created" if created else "alert.updated")
-    return result.to_dict()
-
-
-@router.post("/integrations/offline/upload")
-async def upload_offline(file: UploadFile = File(...), resource_type: str | None = Form(None), name: str | None = Form(None), version: str | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
-    data = await file.read()
-    return import_uploaded_offline(db, file.filename or "offline.bundle", data, resource_type, name, version).to_dict()
-
-
-@router.post("/integrations/offline/import")
-def import_offline(payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
-    path = payload.get("path", "")
-    if not path:
-        raise HTTPException(400, "path is required")
-    candidate = safe_path(settings.integration_dir, path)
-    return import_offline_path(db, candidate, payload.get("resource_type"), payload.get("name"), payload.get("version")).to_dict()
-
-
-@router.get("/offline/resources")
-def offline_resources(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    return list_offline_resources(db)
-
-
-@router.get("/offline/cves")
-def offline_cves(search: str | None = None, limit: int = Query(100, ge=1, le=1000),
-                 page: int | None = Query(None, ge=1), page_size: int = Query(50, ge=1, le=200),
-                 db: Session = Depends(get_db)) -> Any:
-    # Keep the legacy array contract for existing integrations.
-    if page is None:
-        return list_local_cves(db, search or "", limit)
-    query = select(func.count()).select_from(LocalCve)
-    if search:
-        query = query.where(LocalCve.cve_id.ilike(f"%{search}%"))
-    total = db.scalar(query) or 0
-    return page_response(list_local_cves(db, search or "", page_size, (page - 1) * page_size), page, page_size, total)
-
-
-@router.post("/offline/upload")
-async def upload_offline_alt(file: UploadFile = File(...), resource_type: str | None = Form(None), name: str | None = Form(None), version: str | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
-    data = await file.read()
-    return import_uploaded_offline(db, file.filename or "offline.bundle", data, resource_type, name, version).to_dict()
-
-
 @router.get("/rules")
 def list_rules(rule_type: str | None = Query(None), engine: str | None = Query(None), include_content: bool = Query(True), db: Session = Depends(get_db)) -> dict[str, Any]:
     """List Sigma / Suricata / YARA rules with content."""
@@ -500,3 +309,4 @@ router.include_router(detections_router)
 router.include_router(engines_router)
 router.include_router(dashboard_router)
 router.include_router(probes_router)
+router.include_router(integrations_router)

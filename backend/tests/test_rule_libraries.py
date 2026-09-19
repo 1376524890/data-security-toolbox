@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.api.integrations import router as integrations_router
 from app.api.libraries import router
 from app.core.config import settings
 from app.core.database import get_db
@@ -30,6 +31,8 @@ def environment(tmp_path, monkeypatch):
     with Session(engine) as db:
         app = FastAPI()
         app.include_router(router)
+        # The offline CVE / Grype routes moved to the integrations domain.
+        app.include_router(integrations_router, prefix='/api/v1')
         app.dependency_overrides[get_db] = lambda: db
         with TestClient(app) as client:
             yield client, db

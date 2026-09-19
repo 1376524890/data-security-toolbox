@@ -1,20 +1,24 @@
-"""Rule authoring and asynchronous vulnerability-library maintenance."""
+"""Rule authoring: the DLP/sensitive rule catalogue and manual rule imports.
+
+The offline vulnerability-library maintenance (CVE entries and the Grype
+database jobs) lives in ``api/integrations.py`` with the rest of the
+``/offline`` surface.
+"""
 import json
-import re
 import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import SessionLocal, get_db
-from app.models import LocalCve, SystemSetting
+from app.core.database import get_db
+from app.models import SystemSetting
 from app.services.audit_service import record_audit
 from app.services.rule_library import (atomic_json, managed_rules, rule_confidence, save_manual_rule,
                                        sensitive_entity, update_presidio)
@@ -211,92 +215,3 @@ def create_detection_rule(payload: DetectionRule, db: Session = Depends(get_db))
         temporary = Path(handle.name)
     temporary.replace(target)
     return {'imported': 1, 'path': str(target)}
-
-
-class CveRule(BaseModel):
-    cve_id: str = Field(pattern=r'^CVE-\d{4}-\d{4,}$')
-    severity: Literal['Critical', 'High', 'Medium', 'Low', 'Unknown'] = 'Medium'
-    cvss_score: float = Field(default=0, ge=0, le=10)
-    description: str = Field(min_length=1, max_length=50000)
-
-
-@router.post('/offline/cves')
-def add_cve(payload: CveRule, db: Session = Depends(get_db)):
-    existing = db.scalar(select(LocalCve).where(LocalCve.cve_id == payload.cve_id))
-    if existing:
-        raise HTTPException(409, 'CVE 已存在；批量更新请使用 JSON 导入')
-    row = LocalCve(**{**payload.model_dump(), 'description': {'text': payload.description}, 'source': 'manual'})
-    db.add(row)
-    db.commit()
-    return {'cve_id': row.cve_id}
-
-
-def job_path(identifier):
-    if not re.fullmatch('[a-f0-9]{32}', identifier):
-        raise HTTPException(404, '任务不存在')
-    return settings.storage_dir / 'library_jobs' / (identifier + '.json')
-
-
-def run_grype_job(identifier, source=None):
-    from app.services.grype_library import download_latest, import_database, import_lock
-    state = {'id': identifier, 'status': 'running'}
-    def progress(**values):
-        state.update(values)
-        atomic_json(job_path(identifier), state)
-    try:
-        with import_lock(), tempfile.TemporaryDirectory(dir=settings.integration_dir) as directory:
-            progress(stage='starting')
-            metadata = {}
-            if source is None:
-                source, metadata = download_latest(directory, progress)
-            with SessionLocal() as db:
-                result = import_database(db, source, metadata, progress)
-            progress(status='completed', stage='completed', result=result)
-    except Exception as exc:
-        progress(status='failed', error=str(exc))
-    finally:
-        if source and Path(source).parent == settings.storage_dir / 'library_uploads':
-            Path(source).unlink(missing_ok=True)
-
-
-@router.post('/offline/grype/update', status_code=202)
-def update_grype(background: BackgroundTasks):
-    identifier = uuid.uuid4().hex
-    state = {'id': identifier, 'status': 'queued'}
-    atomic_json(job_path(identifier), state)
-    background.add_task(run_grype_job, identifier)
-    return state
-
-
-@router.post('/offline/grype/import', status_code=202)
-def upload_grype(background: BackgroundTasks, file: UploadFile = File(...)):
-    from app.services.grype_library import MAX_ARCHIVE
-    identifier = uuid.uuid4().hex
-    directory = settings.storage_dir / 'library_uploads'
-    directory.mkdir(parents=True, exist_ok=True)
-    target = directory / identifier
-    try:
-        size = 0
-        with target.open('wb') as output:
-            while chunk := file.file.read(1024 * 1024):
-                size += len(chunk)
-                if size > MAX_ARCHIVE:
-                    raise HTTPException(413, '上传文件超过 2 GB；支持 .tar.zst / .tar.gz / SQLite DB')
-                output.write(chunk)
-        if not size:
-            raise HTTPException(422, '文件为空')
-    except Exception:
-        target.unlink(missing_ok=True)
-        raise
-    state = {'id': identifier, 'status': 'queued'}
-    atomic_json(job_path(identifier), state)
-    background.add_task(run_grype_job, identifier, target)
-    return state
-
-
-@router.get('/offline/grype/jobs/{identifier}')
-def grype_job(identifier: str):
-    path = job_path(identifier)
-    if not path.is_file():
-        raise HTTPException(404, '任务不存在')
-    return json.loads(path.read_text(encoding='utf-8'))

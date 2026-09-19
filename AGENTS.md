@@ -82,7 +82,7 @@ source/
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
 - 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
   `alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`probes.py`、`extensions.py`、
-  `data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
+  `integrations.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
@@ -262,6 +262,21 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 （原 v1 `_dispatch`，v1 不再保留副本）。探针下发/回收、规则下发、扫描任务与采集上报分属
 `api/deployments.py`、`api/rulesets.py`、`api/extensions.py`、`api/data_collection.py`，不要混在一起。
 边界由 `tests/test_probe_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
+
+## 集成与离线导入域路由入口
+
+第三方适配器目录与 `/offline` 导入面在 `api/integrations.py`（11 条路径：`GET /integrations`、
+`POST /integrations/{name}/analyze`、`POST /integrations/offline/upload|import`、
+`GET /offline/resources`、`GET|POST /offline/cves`、`POST /offline/upload`、
+`POST /offline/grype/update|import`、`GET /offline/grype/jobs/{identifier}`）。
+适配器元数据与执行仍走 `app.integrations`（registry/runner）、离线包解析仍走
+`app.integrations.offline_manager`、Grype 库仍在 `services/grype_library.py`、告警仍在
+`services/alert_service.py`、事件聚合仍走 `incident_engine`，路由只做鉴权与响应结构。
+`/offline/grype/*` 与 `POST /offline/cves` 原先在 `api/libraries.py`，本域收拢后 `libraries.py`
+只保留 dlp 规则/规则源/规则导入；这四条保留了历史上的 `rule-libraries` tag，OpenAPI 不变。
+worker 能力与规则清单的读取（`read_worker_capabilities`、`merge_capability`、`engine_rule_counts`）
+下沉到 `api/runtime_status.py`，`/health` 与 `/integrations` 共用，不要在任一域里重写。
+边界由 `tests/test_integration_offline_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
 
 ## 与其他文档的关系
 

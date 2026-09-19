@@ -10,12 +10,27 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | c2dc28b / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | dc07b2f / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第十一批：探针域路由拆分；前十批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域）见下方记录 |
+| 本批范围 | 第十二批：集成与离线导入域路由拆分；前十一批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域）见下方记录 |
 
 ## 本批已落地结构
 
+- 适配器目录/手动执行与整个 `/offline` 面收拢为 `api/integrations.py`（11 条路径：`GET /integrations`、
+  `POST /integrations/{name}/analyze`、`POST /integrations/offline/upload|import`、
+  `GET /offline/resources`、`GET|POST /offline/cves`、`POST /offline/upload`、
+  `POST /offline/grype/update|import`、`GET /offline/grype/jobs/{identifier}`）。
+  `/offline/*` 原先分散在 `api/v1.py`（资源/CVE 列表、上传）与 `api/libraries.py`（手工 CVE、Grype 任务），
+  本批归位后 `libraries.py` 只保留 dlp 规则、规则源与规则导入（302 → 217 行），
+  被迁走的 `CveRule`、`job_path`、`run_grype_job` 随域下沉。
+- worker 能力与规则清单读取（原 v1 私有 `_read_worker_capabilities`、`_merge_capability`、
+  `_engine_rule_counts`）下沉到共享 `api/runtime_status.py`（公开为 `read_worker_capabilities`、
+  `merge_capability`、`engine_rule_counts`），`/health` 与 `/integrations` 共用一份实现；
+  v1 侧随之删除已无使用者的 `incident_engine = IncidentEngine()` 句柄（`incident_engine` 逻辑不变）。
+- 从 `libraries.py` 迁出的四条 `/offline` 路由保留历史上的 `rule-libraries` tag，OpenAPI 拆分前后
+  排序后**字节一致**（含 tags），不是行为改动。
+- 第十一批边界维持：探针域路由在 `api/probes.py`（9 条路径），探针鉴权/登记/删除/卸载/任务行仍在
+  `core/security.py`、`api/dependencies.py`、`deployment/*`、`services/probe_service.py`、`services/task_service.py`。
 - 探针注册/心跳/列表/删除/分析/扫描/指标与加密画像独立为 `api/probes.py`（9 条路径：`/probes/register`、
   `/probes/{probe_id}/heartbeat`、`/probes`、`/probes/{probe_id}`、`/probes/{probe_id}/analyze`、
   `/probes/{probe_id}/tasks`、`/probes/{probe_id}/scan`、`/probes/{probe_id}/metrics`、
@@ -55,7 +70,10 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
-| backend/app/api/v1.py | 2557 | 502 |
+| backend/app/api/v1.py | 2557 | 312 |
+| backend/app/api/integrations.py | 0（本批新增） | 318 |
+| backend/app/api/runtime_status.py | 0（本批新增） | 75 |
+| backend/app/api/libraries.py | 302 | 217 |
 | backend/app/api/probes.py | 0（本批新增） | 370 |
 | backend/app/api/dependencies.py | 12 | 60 |
 | backend/app/api/dashboard.py | 0（本批新增） | 403 |
@@ -85,6 +103,22 @@
 
 ## 验证与已知限制
 
+- 第十二批（本机 .venv 隔离全量）688 项：681 passed / 6 failed / 1 skipped；6 项失败与第十一批基线集合完全相同，
+  无新增失败、无新增错误（其中 8 项为本批新增边界测试）。拆分前后 OpenAPI **排序后字节一致**
+  （144 条路径 / 158 个操作，含从 `libraries.py` 迁出的四条路由的 `tags`）；路由仍 162 条记录（158 APIRoute），
+  162 条「方法 + 路径 + 端点函数名」与拆分前逐条相同；`/integrations*` 与 `/offline*` 由 v1 中段与
+  libraries 段集中到 v1 末尾随子路由注册，逐条比对 158 个操作的「方法 + 路径」首个命中函数与拆分前完全一致；
+  无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 集成/离线导入域 AST 逐节点比对：14 个移动定义（`list_integrations`、`run_integration`、`upload_offline`、
+  `import_offline`、`offline_resources`、`offline_cves`、`upload_offline_alt`、`CveRule`、`add_cve`、
+  `job_path`、`run_grype_job`、`update_grype`、`upload_grype`、`grype_job`）中 9 个与拆分前完全相同，
+  另 5 处差异全部是本批声明过的改动：`list_integrations` 的三处共享助手改名，以及四条迁出路由新增
+  `tags=["rule-libraries"]`（为保持 OpenAPI 不变）；三个能力助手在改名后与拆分前逐节点一致。
+- 测试迁移：`tests/test_rule_libraries.py` 的独立 app 现在同时挂 `libraries` 与 `integrations`
+  子路由；`tests/test_gap_fixes.py` 的 monkeypatch 目标由 `app.api.v1` 改到真实查找位置
+  `app.api.integrations`（与 PCAP/探针批同一约定）。
+- `v1.py` ruff 存量 46 → 26（27 E501 → 15、19 B008 → 11），`libraries.py` 15 → 11（7 B008 → 5、6 E501 → 4），
+  均只减不增；新增模块与新增测试 ruff check/format 通过。
 - 第十一批（本机 .venv 隔离全量）680 项：673 passed / 6 failed / 1 skipped；6 项失败与第十批基线集合完全相同，
   无新增失败、无新增错误（其中 9 项为本批新增边界测试）。拆分前后 OpenAPI **排序后字节一致**
   （144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute），162 条「方法 + 路径 + 端点函数名」
@@ -232,8 +266,8 @@
 
 - 其余大路由、其他前端页面、模型包和探针尚按总体指南待拆分（已完成：分析任务编排与 Celery 入口、
   PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、
-  探针域路由；
-  待拆：`integrations`/`offline`、`rules`，
+  探针域、集成与离线导入域路由；
+  待拆：`rules`，
   以及 `auth`、`health`、`test`、`scan` 等待收敛的入口）。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。

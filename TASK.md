@@ -414,10 +414,59 @@
   重构前后数字差异来自真实数据继续写入，不是本次结构拆分导致的数据迁移。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-probe-route-split-20260920`。
 
+## 第十二批：集成与离线导入域路由拆分（2026-09-20）
+
+基线 `dc07b2f`，同一分支。目标：按指南 §C 把适配器目录与 `/offline` 导入面收拢成一个域，
+路径/方法/鉴权/分页不变；对应后续批次第 1 项的下一个域（指南中记为 integrations/offline）。
+
+已完成代码：
+
+- 新建 `api/integrations.py`（11 条路径）：`GET /integrations`、`POST /integrations/{name}/analyze`、
+  `POST /integrations/offline/upload`、`POST /integrations/offline/import`、`GET /offline/resources`、
+  `GET /offline/cves`、`POST /offline/upload`、`POST /offline/cves`、`POST /offline/grype/update`、
+  `POST /offline/grype/import`、`GET /offline/grype/jobs/{identifier}`；`CveRule`、`job_path`、
+  `run_grype_job` 随域下沉，`v1.router` 与既有域一致地只 include 一次、`/api/v1` 前缀只叠加一次。
+- `/offline` 原先分散两处：`api/v1.py`（资源/CVE 列表、上传）与 `api/libraries.py`（手工 CVE、Grype
+  更新/导入/任务）。本批一并归位，`libraries.py` 只留 dlp 规则、规则源与规则导入（302 → 217 行）。
+- 共享边界不复制：适配器元数据/执行仍在 `app.integrations`（registry/runner），离线包解析仍在
+  `app.integrations.offline_manager`，Grype 库仍在 `services/grype_library.py`，告警仍在
+  `services/alert_service.py`，事件聚合仍走 `incident_engine`，路径校验复用 `core/storage.safe_path`，
+  分页复用 `api/pagination.page_response`。
+- worker 能力与规则清单读取（原 v1 私有 `_read_worker_capabilities`、`_merge_capability`、
+  `_engine_rule_counts`）下沉到共享 `api/runtime_status.py`（改名 `read_worker_capabilities`、
+  `merge_capability`、`engine_rule_counts`），`/health` 与 `/integrations` 共用一份实现；
+  v1 因此删除已无使用者的 `incident_engine = IncidentEngine()` 句柄（事件聚合逻辑与调用点未变）。
+- 从 `libraries.py` 迁出的四条 `/offline` 路由保留原 `rule-libraries` tag（仅文档分组，不涉行为），
+  使拆分前后 OpenAPI 排序后仍**字节一致**。
+- 新增 `tests/test_integration_offline_boundaries.py`（8 项）：11 条路径/方法冻结、仅由本域声明、
+  v1 与 libraries 不再声明 `/integrations*` 与 `/offline*`、libraries 仍保留规则编写面、
+  仍挂 `/api/v1` 下、全应用无重复「方法 + 路径」、本域不导入 workers/v1/extensions、
+  不复制共享守卫、能力读取归 `runtime_status`、v1 只聚合一次。
+- 测试迁移：`tests/test_rule_libraries.py` 的独立 app 同时挂 `libraries` 与 `integrations` 子路由；
+  `tests/test_gap_fixes.py` 的 monkeypatch 目标由 `app.api.v1` 改到 `app.api.integrations`。
+
+验证：
+
+- 本机 .venv 隔离全量 688 项：681 passed / 6 failed / 1 skipped；6 项失败与第十一批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **排序后字节一致**（144 条路径 / 158 个操作，含 tags）；路由仍 162 条记录（158 APIRoute）、
+  162 条「方法 + 路径 + 端点函数名」与拆分前逐条相同；158 个操作的「方法 + 路径」首个命中函数完全一致；
+  无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 14 个移动定义的 AST 比对：9 个完全相同，5 处差异均为本批声明的改名与 tag 保留；三个能力助手改名后逐节点一致。
+- 新增模块/测试 ruff check 与 ruff format 通过；`v1.py`（46 → 26）与 `libraries.py`（15 → 11）ruff 存量只减不增，
+  没有顺带批量重排老文件。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy，worker 仍注册 12 个 `security_toolbox.*` 任务名，日志无 Traceback/ERROR/unregistered。
+- 真实环境只读复验：登录后 38 个只读接口 + 本域与探针域明细共 41 项全部 200，其中 `/integrations` 8 条、
+  `/offline/resources` 1 行、`/offline/cves` 旧数组契约仍为定长数组、分页契约返回 `{items,total,page,page_size}`
+  且 `total=394371`；`/test/status present=false`、迁移仍 `0015_alert_hits`（head）；
+  本批未导入测试数据、未操作真实探针主机，也未调用 `/offline/*` 的写接口。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-integration-offline-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts、tasks/audit/reports、
-   detections/engine、dashboard、probes 域已完成）：integrations/offline → rules，
+   detections/engine、dashboard、probes、integrations/offline 域已完成）：rules，
    重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。

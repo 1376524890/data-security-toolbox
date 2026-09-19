@@ -140,9 +140,9 @@ def test_integrations_reports_worker_zeek_suricata_capability(monkeypatch) -> No
             "suricata": {"available": True, "version": "7.0.0", "rule_count": 12},
         }
     ]
-    import app.api.v1 as v1
+    import app.api.integrations as integrations
 
-    monkeypatch.setattr(v1, "_read_worker_capabilities", lambda: fake_capabilities)
+    monkeypatch.setattr(integrations, "read_worker_capabilities", lambda: fake_capabilities)
     with TestClient(app) as client:
         body = client.get("/api/v1/integrations").json()
         by_name = {item["name"]: item for item in body}
