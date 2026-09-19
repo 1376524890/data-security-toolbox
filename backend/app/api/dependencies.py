@@ -1,6 +1,7 @@
-"""Shared HTTP authentication; this module does not register routes."""
+"""Shared HTTP authentication and cross-domain helpers; this module does not register routes."""
 
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException, Request
 from sqlalchemy import func, select
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import get_session_user, require_probe_headers
 from app.models import Task
+from app.services.task_dispatch import dispatch_task_row
 
 
 def authenticated_probe(probe_id, request, db):
@@ -33,6 +35,15 @@ def upload_probe_id(request: Request, db: Session, form_probe_id: int | None) ->
             if user:
                 return form_probe_id
         raise
+
+
+def dispatch_task(task_id: int, task_name: str, *args: Any) -> None:
+    """Queue one of the platform's analysis tasks by its registered name.
+
+    The task row id always travels as the last argument, which is the calling
+    convention every worker task keeps.
+    """
+    dispatch_task_row(task_name, task_id, *args)
 
 
 def enforce_queue_backpressure(db: Session) -> None:

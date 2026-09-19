@@ -10,12 +10,24 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 25cbbd5 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | c2dc28b / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第十批：看板/流量视图域路由拆分；前九批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域）见下方记录 |
+| 本批范围 | 第十一批：探针域路由拆分；前十批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域）见下方记录 |
 
 ## 本批已落地结构
 
+- 探针注册/心跳/列表/删除/分析/扫描/指标与加密画像独立为 `api/probes.py`（9 条路径：`/probes/register`、
+  `/probes/{probe_id}/heartbeat`、`/probes`、`/probes/{probe_id}`、`/probes/{probe_id}/analyze`、
+  `/probes/{probe_id}/tasks`、`/probes/{probe_id}/scan`、`/probes/{probe_id}/metrics`、
+  `/crypto/probe-profile`），连同本域私有辅助 `_merge_metadata`、`_latest_ruleset_version`、
+  `_probe_removal_target` 一并下沉；探针鉴权（`core/security.py`、`api/dependencies.py`）、
+  登记入册（`deployment/enrollment.py`）、删除与远端卸载（`services/probe_service.py`、
+  `deployment/removal.py`）、任务行（`services/task_service.py`）仍在原处，只做 HTTP 边界。
+- 本域原先在 v1 内用的私有派发 `_dispatch(task_id, 注册名, ...)` 下沉为共享
+  `api/dependencies.py::dispatch_task`（docstring 原样保留，参数顺序不变），v1 不再保留副本；
+  另按 ruff B904 把随域移动的两处 `raise HTTPException(...)` 补为 `raise ... from exc`（异常类型与状态码不变）。
+- 第十批边界维持：看板、风险总览、关系图与全局流量视图在 `api/dashboard.py`（13 条路径），
+  全部数字仍由 `app/models.py` 的行实时聚合，未新增缓存或派生表。
 - 看板、风险总览、关系图与全局流量视图独立为 `api/dashboard.py`（13 条路径：`/risk/summary`、`/graph`、
   `/dashboard/summary|risk-trend|severity|engines|incidents|high-risk-assets|sensitive-data|incident-trend`、
   `/flows`、`/protocols`、`/network/live`），全部数字仍由 `app/models.py` 的行实时聚合，未新增缓存或派生表。
@@ -43,7 +55,9 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
-| backend/app/api/v1.py | 2557 | 804 |
+| backend/app/api/v1.py | 2557 | 502 |
+| backend/app/api/probes.py | 0（本批新增） | 370 |
+| backend/app/api/dependencies.py | 12 | 60 |
 | backend/app/api/dashboard.py | 0（本批新增） | 403 |
 | backend/app/api/detections.py | 0（第九批新增） | 110 |
 | backend/app/api/engines.py | 0（第九批新增） | 110 |
@@ -61,7 +75,6 @@
 | backend/app/api/files.py | 0（第四批新增） | 206 |
 | backend/app/api/pcaps.py | 0（第三批新增） | 649 |
 | backend/app/api/task_presenter.py | 0（第三批新增） | 25 |
-| backend/app/api/dependencies.py | 12 | 49 |
 | backend/app/api/extensions.py | 718 | 364 |
 | backend/app/services/data_object_service.py | 1165 | 58（兼容导出） |
 | backend/app/workers/tasks.py | 981 | 43（兼容门面） |
@@ -72,6 +85,20 @@
 
 ## 验证与已知限制
 
+- 第十一批（本机 .venv 隔离全量）680 项：673 passed / 6 failed / 1 skipped；6 项失败与第十批基线集合完全相同，
+  无新增失败、无新增错误（其中 9 项为本批新增边界测试）。拆分前后 OpenAPI **排序后字节一致**
+  （144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute），162 条「方法 + 路径 + 端点函数名」
+  与拆分前逐条相同；本批探针路由由 v1 中段的零散位置改为在 v1 末尾随子路由注册（末位注册、无重复），
+  经逐条比对，158 个操作的「方法 + 路径」首个命中函数与拆分前完全一致，匹配优先级未变；
+  无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 探针域 AST 逐节点比对：11 个移动函数与拆分前完全相同（`heartbeat`、`_latest_ruleset_version`、
+  `list_probes`、`delete_probe`、`_probe_removal_target`、`probe_tasks`、`_merge_metadata` 等），
+  另 5 处差异全部是本批声明过的改动：`analyze_probe_assets`/`probe_scan` 的 `_dispatch` → `dispatch_task`、
+  `probe_metrics` 的 `_aware` → `aware`（导入别名改名）、`register_probe` 与 `crypto_probe_profile` 的
+  `raise ... from exc`（B904）。
+- 本批修掉拆分造成的 1 项回归：`tests/deployment/test_removal.py` 原先 monkeypatch `v1.dispatch_probe_deployment`，
+  改到真实查找位置 `app.api.probes`（与 PCAP 批迁移 monkeypatch 目标同一约定）；该文件 ruff 存量
+  仍为 7 项 E501，与拆分前逐项相同。
 - 第十批（本机 .venv 隔离全量）671 项：664 passed / 6 failed / 1 skipped；6 项失败与第九批基线集合完全相同，
   无新增失败、无新增错误（其中 7 项为本批新增边界测试）。拆分前后 OpenAPI 排序后字节一致；
   路由仍 162 条记录（158 APIRoute），162 条「方法 + 路径 + 端点函数名」与拆分前逐条相同；
@@ -204,8 +231,9 @@
 ## 剩余事项
 
 - 其余大路由、其他前端页面、模型包和探针尚按总体指南待拆分（已完成：分析任务编排与 Celery 入口、
-  PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域路由；
-  待拆：探针域（`/probes/*`、`/crypto/probe-profile`）、`integrations`/`offline`、`rules`，
+  PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、
+  探针域路由；
+  待拆：`integrations`/`offline`、`rules`，
   以及 `auth`、`health`、`test`、`scan` 等待收敛的入口）。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。

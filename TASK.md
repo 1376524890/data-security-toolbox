@@ -365,10 +365,59 @@
   迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-dashboard-route-split-20260920`。
 
+## 第十一批：探针域路由拆分（2026-09-20）
+
+基线 `c2dc28b`，同一分支。目标：按指南 §C 把探针域路由从 `api/v1.py` 独立，路径/方法/鉴权/分页不变；
+对应后续批次第 1 项的下一个域（指南中记为 probes），也是探针模块化之前的最后一块探针相关 HTTP 边界。
+
+已完成代码：
+
+- 探针注册、心跳、列表、删除、分析、任务、扫描、指标与加密画像移至 `api/probes.py`（9 条路径）：
+  `POST /probes/register`、`POST /probes/{probe_id}/heartbeat`、`GET /probes`、`DELETE /probes/{probe_id}`、
+  `POST /probes/{probe_id}/analyze`、`GET /probes/{probe_id}/tasks`、`POST /probes/{probe_id}/scan`、
+  `GET /probes/{probe_id}/metrics`、`GET /crypto/probe-profile`，连同本域私有辅助
+  `_merge_metadata`、`_latest_ruleset_version`、`_probe_removal_target` 一并随域下沉。
+- 共享边界不复制：探针鉴权仍在 `core/security.py` 与 `api/dependencies.py`，登记入册仍在
+  `deployment/enrollment.py`，删除记录与远端卸载仍在 `services/probe_service.py`、`deployment/removal.py`，
+  任务行仍在 `services/task_service.py`，行序列化复用 `api/probe_presenter.py::serialize_probe` 与
+  `api/task_presenter.py::serialize_task`；探针下发/回收、规则下发、扫描任务与采集上报仍分属
+  `api/deployments.py`、`api/rulesets.py`、`api/extensions.py`、`api/data_collection.py`。
+- 本域原先在 v1 内使用的私有派发 `_dispatch(task_id, 注册名, ...)` 下沉为共享
+  `api/dependencies.py::dispatch_task`（docstring 原样保留、参数顺序与回退语义不变），v1 删除该本地定义。
+- 随域移动的两处 `raise HTTPException(...)` 按 ruff B904 补 `from exc`（异常类型与状态码不变，
+  是纯 lint 修复，不是行为改动）；`v1.py` ruff 存量由 68 项（37 E501 / 29 B008 / 2 B904）降为 46 项
+  （27 E501 / 19 B008），只减不增。
+- 新增 `tests/test_probe_boundaries.py`（9 项）：9 条路径/方法冻结、仅由 `api/probes.py` 声明、
+  仍挂 `/api/v1` 下、全应用无重复「方法 + 路径」、域不导入 workers/extensions、不复制共享守卫、
+  派发走共享端口、v1 只聚合一次。
+- 拆分造成的 1 项测试回归已修：`tests/deployment/test_removal.py` 的 monkeypatch 目标从
+  `v1.dispatch_probe_deployment` 迁到真实查找位置 `app.api.probes`（PCAP 批同一约定）；
+  `tests/test_ruleset_release.py` 的 `_latest_ruleset_version` 导入改到 `app.api.probes`。
+
+验证：
+
+- 本机 .venv 隔离全量 680 项：673 passed / 6 failed / 1 skipped；6 项失败与第十批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **排序后字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute）、
+  162 条「方法 + 路径 + 端点函数名」与拆分前逐条相同；探针路由由 v1 中段零散位置改为随子路由在末尾注册，
+  逐条比对 158 个操作的「方法 + 路径」首个命中函数与拆分前完全一致（匹配优先级未变）；无数据库变更，
+  迁移仍 `0015_alert_hits`（head）。
+- 11 个移动函数的 AST 与拆分前逐节点一致；另 5 处差异均为本批声明过的改名/`from exc`（见上）。
+- 新增/拆出文件 ruff check 与 ruff format 通过；`v1.py` 只减不增且 `--select F` 全通过。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 真实环境只读复验：登录后 38 个只读接口 + 本域 3 个明细接口（`/probes/{id}/tasks`、`/probes/{id}/metrics`、
+  `/crypto/probe-profile?probe_id=`）共 41 项全部 200；探针 1 台（`test123`）、指标 15 个键、
+  任务行 9 条、加密画像 11 个键；`/test/status present=false`、迁移仍 `0015_alert_hits`（head）；
+  本批未导入测试数据、未对真实探针主机做任何写操作（仅 GET 读取）。
+- 真实环境资产/图/流量等数字是时点采样值，会随真实 PCAP/探针任务持续写入而变化；
+  重构前后数字差异来自真实数据继续写入，不是本次结构拆分导致的数据迁移。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-probe-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts、tasks/audit/reports、
-   detections/engine、dashboard 域已完成）：probes → integrations/offline → rules，
+   detections/engine、dashboard、probes 域已完成）：integrations/offline → rules，
    重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。

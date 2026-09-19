@@ -81,7 +81,7 @@ source/
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
 - 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
-  `alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`extensions.py`、
+  `alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`probes.py`、`extensions.py`、
   `data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
@@ -248,6 +248,20 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 `api/pcaps.py::serialize_flow`、`api/probe_presenter.py::serialize_probe`，协议分层复用
 `services/protocol_service.py::protocol_layer`，分页复用 `api/pagination.py`。
 边界由 `tests/test_dashboard_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
+
+## 探针域路由入口
+
+探针注册/心跳/列表/删除/分析/扫描/指标与加密画像在 `api/probes.py`（`POST /probes/register`、
+`POST /probes/{probe_id}/heartbeat`、`GET /probes`、`DELETE /probes/{probe_id}`、
+`POST /probes/{probe_id}/analyze`、`GET /probes/{probe_id}/tasks`、`POST /probes/{probe_id}/scan`、
+`GET /probes/{probe_id}/metrics`、`GET /crypto/probe-profile` 共 9 条路径）。探针鉴权走
+`core/security.py` 与 `api/dependencies.py`，登记入册走 `deployment/enrollment.py`，
+删除记录与远端卸载走 `services/probe_service.py`、`deployment/removal.py`，任务行仍由
+`services/task_service.py` 创建；行序列化复用 `api/probe_presenter.py::serialize_probe` 与
+`api/task_presenter.py::serialize_task`。队列派发统一走 `api/dependencies.py::dispatch_task`
+（原 v1 `_dispatch`，v1 不再保留副本）。探针下发/回收、规则下发、扫描任务与采集上报分属
+`api/deployments.py`、`api/rulesets.py`、`api/extensions.py`、`api/data_collection.py`，不要混在一起。
+边界由 `tests/test_probe_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
 
 ## 与其他文档的关系
 

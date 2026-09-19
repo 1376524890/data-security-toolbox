@@ -352,7 +352,7 @@ def test_a_legacy_probe_heartbeat_still_works_without_the_new_fields() -> None:
 
 
 def test_heartbeat_reports_the_latest_ruleset_version_to_a_new_probe() -> None:
-    from app.api.v1 import _latest_ruleset_version
+    from app.api.probes import _latest_ruleset_version
 
     session = SessionLocal()
     try:
