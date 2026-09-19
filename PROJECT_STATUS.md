@@ -10,12 +10,24 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 9bcfd74 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 38efb98 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第十九批：前端扫描配置与规则版本页状态解耦；前十八批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态）见下方记录 |
+| 本批范围 | 第二十批：前端文件分析、网络 DLP 与敏感发现页状态解耦；前十九批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态）见下方记录 |
 
 ## 本批已落地结构
 
+- 文件分析页、网络 DLP 页与敏感发现页的状态收拢到
+  `frontend/src/modules/data-security/composables/useFileAnalysis.ts`（110 行）、
+  `useNetworkDlp.ts`（106 行）与 `useSensitiveDiscovery.ts`（63 行），三个页面只保留模板
+  （`FileAnalysis.vue` 185 → 115、`NetworkDlp.vue` 142 → 83、`SensitiveDiscovery.vue` 102 → 71 行）；
+  去掉缩进后，被移动的 67 行、65 行与 36 行脚本逐行未改，三个页面模板全部逐字节未改
+  （本批没有模板改动）。
+- 文件分析的 4 秒抽屉刷新 timer 归 composable，页面卸载即停；网络 DLP 的 `evidenceRequest`
+  竞态守卫随 `openTransfer()` 进 composable；`FileRecord`/`FileDetail` 由 composable 导出，
+  视图按类型导入，这是唯一的修饰改动（两个接口加 `export`）。
+- 敏感发现页的 `totals`/`entities`/`sources` 与图表投影仍全部来自服务端响应，不在前端重算；
+  翻页沿用原有的 `onPageChange()`，因此模板无需改动。
+- 数据安全域的前端页面到此全部完成状态解耦；其余前端页面按实际改动需求再拆。
 - 扫描配置页与规则版本页的状态收拢到
   `frontend/src/modules/data-security/composables/useScanProfiles.ts`（188 行）与
   `useRuleVersions.ts`（141 行），两个页面只保留模板（`ScanProfiles.vue` 289 → 155、
@@ -145,6 +157,12 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
+| frontend/src/modules/data-security/FileAnalysis.vue | 185 | 115 |
+| frontend/src/modules/data-security/NetworkDlp.vue | 142 | 83 |
+| frontend/src/modules/data-security/SensitiveDiscovery.vue | 102 | 71 |
+| frontend/src/modules/data-security/composables/useFileAnalysis.ts | 0（本批新增） | 110 |
+| frontend/src/modules/data-security/composables/useNetworkDlp.ts | 0（本批新增） | 106 |
+| frontend/src/modules/data-security/composables/useSensitiveDiscovery.ts | 0（本批新增） | 63 |
 | frontend/src/modules/data-security/ScanProfiles.vue | 289 | 155 |
 | frontend/src/modules/data-security/RuleVersions.vue | 256 | 156 |
 | frontend/src/modules/data-security/composables/useScanProfiles.ts | 0（本批新增） | 188 |
@@ -193,6 +211,19 @@
 
 ## 验证与已知限制
 
+- 第二十批（前端）：`npm run typecheck` 通过；全量 vitest 17 个文件 109 项通过（原 87 项 + 本批新增
+  `file-analysis-state.test.ts` 9 项与 `network-dlp-discovery-state.test.ts` 13 项）；生产构建
+  `npm run build`（未启用 `VITE_DEMO_MODE`）通过。逐行比对：去掉缩进后，三个页面迁入 composable 的
+  67 行、65 行与 36 行脚本逐行未改，三个页面模板逐字节未改。
+- 第二十批镜像（前端）：legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/`、入口 chunk 与 `FileAnalysis`/`NetworkDlp`/
+  `SensitiveDiscovery` chunk 均 200，chunk 名与本地构建一致、线上字节与本地构建 SHA256 相同、
+  无 demo/mock 代码；回退标签 `source-frontend:pre-data-security-pages-state-20260920`。
+- 第二十批真实环境只读复验（后端未改）：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/files`、`/files/{id}`、`/dlp/policy`、`/dlp/transfers`、`/dlp/rules`、`/scan-profiles`、
+  `/rulesets`、`/tasks?kind=data_asset_scan`、`/probes`、`/data/assets`、`/data-types`、
+  `/data-objects`、`/asset-instances`、`/sensitive/findings`、`/sensitivity-levels` 均 200；
+  未调用测试数据导入接口，未操作真实探针主机，迁移仍 `0015_alert_hits`（head）。
 - 第十九批（前端）：`npm run typecheck` 通过；全量 vitest 15 个文件 87 项通过（原 70 项 + 本批新增
   `scan-profile-rule-version-state.test.ts` 17 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
   逐行比对：去掉缩进后，两个页面迁入 composable 的 132 行与 96 行脚本逐行未改；规则版本页模板
@@ -444,8 +475,8 @@
 - 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
-  其余待办：前端其余页面按实际改动需求再拆（数据目录四个页面、采集任务页与扫描配置/规则版本页
-  的状态已抽入 composable）、模型包拆分，最后是探针模块与分发包。
+  其余待办：前端其余页面（资产中心、事件/告警/检测中心、引擎详情、看板、探针页等）按实际改动
+  需求再拆（数据安全域的页面已全部抽入 composable）、模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

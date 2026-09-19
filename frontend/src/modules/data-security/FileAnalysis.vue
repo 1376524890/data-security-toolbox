@@ -1,8 +1,4 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { apiGet, apiPost, apiUpload } from '../../api/client'
-import type { PageResult } from '../../types/common'
 import StateBox from '../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../components/common/FilterBar.vue'
 import DetailDrawer from '../../components/common/DetailDrawer.vue'
@@ -12,24 +8,19 @@ import JsonViewer from '../../components/evidence/JsonViewer.vue'
 import RawViewer from '../../components/evidence/RawViewer.vue'
 import { formatBytes, formatDateTime } from '../../utils/format'
 import { downloadUrl } from '../../api/client'
+import { useFileAnalysis, type FileRecord } from './composables/useFileAnalysis'
+
+// The list, its filters and the detail drawer live in the composable; this
+// view only keeps the filter field config, the download helper and the
+// row-to-badge wording.
+const {
+  loading, error, rows, total, detail, drawer, uploading, hiddenInfo, filters,
+  load, handleUpload, open, reanalyze, reset,
+} = useFileAnalysis()
 
 function downloadOriginal(id: number): void {
   window.open(downloadUrl(`/files/${id}/download`), '_blank')
 }
-
-interface FileRecord { id: number; name: string; path: string; size: number; sha256: string; file_type: string; metadata_json: Record<string, unknown>; risk_level: string; created_at: string }
-interface FileDetail { file: FileRecord; findings: Array<Record<string, unknown>>; data_assets: Array<Record<string, unknown>> }
-
-const loading = ref(true)
-const error = ref('')
-const rows = ref<FileRecord[]>([])
-const total = ref(0)
-const detail = ref<FileDetail | null>(null)
-const drawer = ref(false)
-const uploading = ref(false)
-const hiddenInfo = computed(() => detail.value?.file.metadata_json.hidden_info as { hidden: boolean; findings: Array<{ kind: string; description: string; bytes?: number; preview?: string }> } | undefined)
-let refreshTimer: ReturnType<typeof setInterval> | undefined
-const filters = reactive({ search: '', file_type: '', risk_level: '', page: 1, page_size: 50 })
 
 const filterFields: FilterField[] = [
   { key: 'search', label: '搜索文件名', placeholder: '搜索文件名', width: '220px' },
@@ -48,67 +39,6 @@ function scanOutcome(row: FileRecord): { kind: 'pending' | 'incomplete' | 'risk'
   if (status === 'unsupported') return { kind: 'incomplete', label: '未支持' }
   return { kind: 'risk', label: row.risk_level }
 }
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const result = await apiGet<PageResult<FileRecord>>('/files', { ...filters })
-    rows.value = result.items
-    total.value = result.total
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleUpload(file: File): Promise<void> {
-  if (!file) return
-  uploading.value = true
-  try {
-    await apiUpload('/files/upload', file)
-    ElMessage.success('文件已上传')
-    await load()
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : String(err))
-  } finally {
-    uploading.value = false
-  }
-}
-
-async function open(row: FileRecord): Promise<void> {
-  try {
-    detail.value = await apiGet<FileDetail>(`/files/${row.id}`)
-    drawer.value = true
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : String(err))
-  }
-}
-
-async function reanalyze(row: FileRecord): Promise<void> {
-  try {
-    await apiPost(`/files/${row.id}/analyze`)
-    ElMessage.success('已触发重新分析')
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : String(err))
-  }
-}
-
-function reset(): void { filters.page = 1; load() }
-
-onMounted(() => {
-  load()
-  refreshTimer = setInterval(async () => {
-    if (!drawer.value || !detail.value) return
-    const id = detail.value.file.id
-    try {
-      const updated = await apiGet<FileDetail>(`/files/${id}`)
-      if (drawer.value && detail.value?.file.id === id) detail.value = updated
-    } catch { /* Manual refresh retains the normal error message. */ }
-  }, 4000)
-})
-onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
 </script>
 
 <template>

@@ -364,6 +364,18 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 `probedVersion`/`probeField`/`shortHash` 是模板要用的纯函数，随 composable 一起导出。
 回归：`frontend/src/__tests__/scan-profile-rule-version-state.test.ts`（17 项）。
 
+## 文件分析、网络 DLP 与敏感发现页状态边界
+
+文件分析、网络 DLP 与敏感发现（`FileAnalysis.vue`、`NetworkDlp.vue`、`SensitiveDiscovery.vue`）
+的状态分别在 `modules/data-security/composables/useFileAnalysis.ts`（110 行）、
+`useNetworkDlp.ts`（106 行）与 `useSensitiveDiscovery.ts`（63 行），页面只保留模板
+（185 → 115、142 → 83、102 → 71 行）；去掉缩进后，被移动的 67 行、65 行与 36 行脚本逐行未改，
+三个页面模板逐字节未改。文件分析的 4 秒抽屉刷新 timer 归 composable 并在卸载时清除；
+网络 DLP 的 `evidenceRequest` 竞态守卫随 `openTransfer()` 一起进 composable，不要在页面里再写一份；
+`FileRecord`/`FileDetail` 由 composable 导出（视图按类型导入），这是唯一的修饰改动。
+回归：`frontend/src/__tests__/file-analysis-state.test.ts`（9 项）与
+`frontend/src/__tests__/network-dlp-discovery-state.test.ts`（13 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

@@ -21,6 +21,10 @@
 `ScanProfiles.vue -> useScanProfiles -> api/scanProfiles|api/probes`（配置行 + 草稿 + 下发弹窗）与
 `RuleVersions.vue -> useRuleVersions -> api/ruleSets|api/probes`（规则集 + 版本 + 探针已观测版本）
 同样只渲染：扫描配置翻页走 `setPage()`，探针版本分类（已同步/待更新/同步失败）在 composable 里。
+`FileAnalysis.vue -> useFileAnalysis -> api/client`（文件行 + 筛选 + 详情抽屉 + 4 秒刷新）、
+`NetworkDlp.vue -> useNetworkDlp -> api/client`（策略表单 + 传输记录 + 正则规则 + 证据竞态守卫）与
+`SensitiveDiscovery.vue -> useSensitiveDiscovery -> api/dataAssets`（服务端发现统计 + 图表投影）
+同样只渲染。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

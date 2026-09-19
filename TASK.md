@@ -726,12 +726,51 @@
   本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-scan-profile-rule-version-state-20260920`。
 
+## 第二十批：前端文件分析、网络 DLP 与敏感发现页状态解耦（2026-09-20）
+
+基线 `38efb98`，同一分支。目标：按指南 §F 把数据安全域剩下三个页面的状态抽到 composable，
+模板与交互不变。本批没有模板改动。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/data-security/composables/useFileAnalysis.ts`（110 行）、
+  `useNetworkDlp.ts`（106 行）与 `useSensitiveDiscovery.ts`（63 行）；`FileAnalysis.vue`
+  185 → 115 行、`NetworkDlp.vue` 142 → 83 行、`SensitiveDiscovery.vue` 102 → 71 行。
+  去掉缩进后，迁入的 67 行、65 行与 36 行脚本逐行比对未改。
+- 文件分析：列表+筛选+详情抽屉+4 秒刷新 timer 全部进 composable（卸载即停，抽屉关闭时不轮询）；
+  视图保留 `filterFields`、`scanOutcome`（行 → 徽标文案）与 `downloadOriginal`（下载窗口）。
+- 网络 DLP：策略表单、传输记录、正则规则与 `evidenceRequest` 竞态守卫一起进 composable。
+- 敏感发现：服务端返回的 totals/entities/sources 与图表投影进 composable，翻页沿用原有
+  `onPageChange()`，所以模板一个字都不用改。
+- 唯一修饰改动：`FileRecord`/`FileDetail` 改为在 composable 模块作用域声明并 `export`，
+  视图按类型导入。
+- 新增两个测试文件：`frontend/src/__tests__/file-analysis-state.test.ts`（9 项：首屏加载与服务端 total、
+  重置回第一页、上传后重查、详情成功才开抽屉、隐写块透出、重新分析与被拒、4 秒刷新与卸载停止、
+  抽屉关闭时不轮询、失败进页面状态）与 `network-dlp-discovery-state.test.ts`（13 项：策略+传输+规则
+  一起加载、保存时文本框切回列表、保存被拒、内置规则开关镜像到 categories、新增规则与被拒、
+  Presidio 导入、慢证据响应不覆盖后点的行、无二进制时不请求、命中是否可告警、失败进页面状态；
+  敏感发现的加载与投影、翻页重查、失败进页面状态）。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 17 个文件 109 项通过（原 87 项 + 本批 22 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与三个页面 chunk 均 200，chunk 名与本地构建一致、
+  线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/health`、`/test/status`（`present=false`）、`/auth/me`、`/files`、`/files/{id}`、
+  `/dlp/policy`、`/dlp/transfers`、`/dlp/rules`、`/scan-profiles`、`/rulesets`、`/probes`、
+  `/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、`/sensitive/findings`、
+  `/sensitivity-levels` 均 200；本批未导入测试数据、未操作真实探针主机；后端未重建，
+  迁移仍 `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-data-security-pages-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端其余页面（敏感发现、文件分析、网络 DLP、资产中心、探针页等）按实际改动需求再拆
-   （同一模式：先抽状态，再抽视图；数据目录四个页面、采集任务页与扫描配置/规则版本页已完成）。
+1. 前端其余页面（资产中心、事件/告警/检测中心、引擎详情、看板、探针页等）按实际改动
+   需求再拆（同一模式：先抽状态，再抽视图；数据安全域的各页面已完成状态解耦）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。
