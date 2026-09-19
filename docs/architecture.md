@@ -1,6 +1,19 @@
 # 架构
 
-当前实现见本文；后续拆分步骤见 [解耦操作指南](解耦操作指南.md)。该指南是计划，尚未实施，不代表当前目录结构。
+当前实现见本文；后续拆分步骤见 [解耦操作指南](解耦操作指南.md)。该指南按批次实施；以下第一批数据资产边界已落地，其他拟新增模块仍按计划描述。
+
+## 数据资产采集与展示边界（2026-09-19 第一批）
+
+`DataAsset.vue -> useDataAssetCollection -> api/probes -> api/data_collection -> probe_task_service`
+负责采集任务；`useDataAssetList -> api/dataAssets -> api/data_assets` 负责旧资产列表/详情。
+类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
+
+上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，
+仍由路由持有同一 Session 并 commit；模型、旧投影与任务状态在同一事务保存。
+`data_object_service.py` 保留兼容导出。探针鉴权由 `api/dependencies.py` 复用，
+任务创建冲突由服务抛领域异常，再由 `api/error_handlers.py` 映射为原 404/409。
+具体修改路径见 [数据资产开发入口](数据资产开发入口.md)。
+
 
 系统由三部分组成：
 

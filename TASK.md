@@ -1,398 +1,52 @@
-# Current Task
+# 当前任务：分批解耦（数据资产采集与展示优先）
 
-## 2026-09-19 当前任务：v2.12.0 源码发布与解耦指南
+## 用户需求与约定
 
-本段优先于下方历史快照。发布现有整改，以 `v2.12.0` Git 注释标签标识；遵守“不修改代码”，
-平台自报仍为 2.11.0、探针源码声明仍为 3.5.0，本轮不重建镜像或探针包、不操作真实探针。
-本机数据库只读核验为 `0015_alert_hits (head)`；健康检查 ok、测试导入关闭。
-前端 typecheck 与 34 项单测通过；本轮隔离后端 579 passed / 17 failed，具体限制见
-[发布记录](docs/releases/v2.12.0.md)。历史“未提交”“仅 6 项失败”保留为当时快照，不代表本轮核验口径。
-发布提交 `d1c1569` 与注释标签 `v2.12.0` 已推送 origin。
-[解耦操作指南](docs/解耦操作指南.md) 已完成：实际耦合点、分阶段文件/函数迁移、契约验收、回退、日常修改定位。
-指南在发布后以独立文档提交交付；本轮不移动函数、拆分模块或更改判定逻辑。
-同环境发布前基线为 541 passed / 17 failed，失败集合与本版一致（新增失败 0）。
+- 用户提出业务需求，AI 负责后续代码修改；优先让数据资产采集方式与展示方式更易维护。
+- 按批次持续推进后端与前端解耦，探针放在最后；本机服务允许短暂停机更新。
+- 每批保持现有行为/API/数据库/探针协议兼容，以隔离回归和真实环境只读检查验收。
+- 禁止导入测试数据、生产 mock；未授权操作真实探针主机。
 
+## 第一批：数据资产边界（2026-09-19）
 
-> 本文件只记录**当前正在做的任务**。历史任务见文末 `## Task History`。
-> 长期稳定信息见 `AGENTS.md`，项目整体状态见 `PROJECT_STATUS.md`。
+基线 `5c5b1d4`，分支 `refactor/data-asset-boundaries`。
 
-## 业务逻辑与数据真实性整改（2026-09-19，代码完成，未提交）
+已完成代码：
 
-目标：按工作区 `业务逻辑与数据真实性整改清单.md` 的 29 项 P1/P2 修正判定逻辑与展示口径，全程只允许真实数据。
+- 公共鉴权移至 `api/dependencies.py`；采集建任务移至 `services/probe_task_service.py`；
+  服务领域异常在 `api/error_handlers.py` 转为原有 404/409。提交时点和任务快照不变。
+- 采集协议 `api/data_collection_schemas.py`、采集接口 `api/data_collection.py`、
+  旧资产页与敏感发现接口 `api/data_assets.py` 从大路由独立；旧入口保留兼容导出。
+- 数据对象服务拆为 `services/data_objects/{definitions,values,identity,coverage,persistence,evidence,ingestion,projection,queries,progress}.py`；
+  旧 `data_object_service.py` 仅为 58 行兼容导出，新生产调用使用具体模块。
+- 前端 `DataAsset.vue` 从 285 行缩至 144 行；列表/详情与采集任务状态分别由两个 composable 管理，模板不变。
+- 增加 3 项后端依赖边界检查、3 项前端行为回归；明确禁止循环依赖与服务反向导入 API/worker。
+- 新增 [数据资产开发入口](docs/数据资产开发入口.md)，压缩当前上下文，旧记录完整归档。
 
-- 判定与漏检（01—05、10—14、18、21）：DNS 隧道要“同一源+注册域下 ≥3 个编码左标签且 ≥20 次查询”才算发现；
-  CVE 先记候选 `CVE_CANDIDATE_001`，只有版本落在受影响范围才生成 `CVE_<id>`；端口扫描按最忙窗口统计不同目的端口；
-  脚本上传要求 `multipart/octet-stream` + 脚本扩展名（Zeek 同样要求脚本文件名）；C2 心跳默认 10 包 / 60s / 间隔 ≥1s / 间隔 CV<0.2 且必须有明确 src+dst；
-  数据引擎只产出确认类发现；API Key 只按 `AKIA`/`ASIA` 精确 16 位判定；字段名先 token 化再做值级确认；
-  文档解析区分 SCAN_COMPLETE / PARTIAL / UNSUPPORTED / FAILED；采样合并区间、末行无换行、覆盖率取并集。
-- 状态与关联（06—08、15—17、23、25、28）：事件阶段只按规则 id 归类，未知即 `unknown`（不再用证据文本猜）；
-  告警抑制改用 `fingerprint(rule, source, asset, ioc, probe)`，新增 `alert_hits` 记录被抑制的每次命中（first/latest/highest-risk）；
-  PCAP 暴露面按内网 2.0 / 外网 3.0 并在 `risk_model.exposure_basis` 说明依据；完成扫描替换实例类别、部分扫描只叠加；
-  迟到报告不得让在位实例退役；对象/实例计数改为按“受影响对象集合”重算；数据资产与文件改用 `extra.file_id` 关联；
-  重新分析先把上一轮文件派生结果标 `superseded` 并删除旧的按文件 DataAsset；投影重建从扫描快照恢复字段与证据，不用类别伪造字段名。
-- 展示与交付真实性（09、19、20、22、24、26—27、29）：`POST /api/v1/test/import` 由 `TEST_DATA_IMPORT_ENABLED` 控制，
-  生产环境启用即启动失败，非授权环境返回 403；`/health.features.test_data_import` 暴露状态，前端据此隐藏入口与自动清理；
-  敏感发现页总数改由 `GET /sensitive/findings` 全表聚合给出（列表分页、来源分列、在位与历史未观测分开）；
-  数据类型中心顶部卡片改用服务端跨类型去重的 `totals`，单个 partial 对象显示“待确认身份”而不是“疑似副本”；
-  文件类型筛选兼容扩展名/MIME；数据资产详情返回字段级 PII 汇总；Partial/取消扫描给出明确原因；
-  数据库端口发现标为“疑似数据库服务（端口推断）”，不再默认 Medium 或算作已识别内容；
-  分级覆盖 `sensitivity_levels` 现在同时作用于类型中心、对象与实例的列表/详情，并返回 `level_source`，扫描时等级仍留在 `sensitivity` 与版本字段。
-- 数据库：新增迁移 `0015_alert_hits`（`alert_hits` 表 + `detections.sample_limit`），head 由 `0014_probe_removal` 变为 `0015_alert_hits`；
-  迁移为加列/建表且幂等，对 `create_all` 建出的库可安全重跑（已在本机 SQLite 上验证 upgrade→downgrade→upgrade）。
-- 验证：后端全量仅剩 6 项既有环境失败（缺 tshark/`sample.pcap`、探针身份、health、PCAP 工作台、协议 watchdog 与索引上限）；
-  前端 `npx vue-tsc --noEmit` 与 `npx vitest run`（34 passed）通过。新增回归集中在 `backend/tests/test_data_objects.py`、
-  `test_gap_fixes.py`、`test_alerts.py`、`tests/shared/test_detection_truthfulness.py`、`tests/shared/test_scanning_coverage.py`、
-  `tests/engine/test_threat_intel_cve.py`、`tests/e2e/test_continuous_detection.py`。
-- 镜像与部署（2026-09-19）：按 `AGENTS.md` 用 legacy builder 重建 `source-backend`（api）、`source-worker`（analysis-worker，另打
-  `source-beat` / `source-deployment-worker` 标签）、`source-frontend`，并 `--force-recreate` 重建 backend/worker/beat/deployment-worker/frontend；
-  backend 启动时自动执行 `alembic upgrade 0014_probe_removal -> 0015_alert_hits`，迁移成功。`/health` 显示 database/redis/celery 正常、
-  容器内 tshark 4.4.18 / zeek 9.0.0 / suricata 7.0.10（52,270 条签名）可用、`features.test_data_import=false`、探针在线。
-- 真实数据 dry-run（2026-09-19，只读）：新增 `scripts/remediation_dry_run.py`，输出见工作区
-  `整改dry-run报告-2026-09-19.txt`。关键结论：对象 #6 缓存计数 1/1 与实际 0/0 不符（与清单快照一致）；
-  14 个对象的类别已无当前检测支撑；5 条历史 detection 无采样上限（不补造）；旧投影 456 条中 447 条可从快照恢复结构、
-  3 条列名被写成敏感类别（重建时会标 `fabricated_columns`）、9 条无快照（保留原值并标 `structure_restored=false`）；
-  433 条告警中 325 条可按 `finding_id` 回填 `alert_hits`、107 条事件类告警无 finding 需人工，另有约 14,700 次被抑制的历史命中旧表未保存、无法还原；
-  类型中心旧口径按行相加 5/5，去重后真实为 4 个对象 / 4 个实例；敏感发现页旧口径 200（实际 456 条资产，在位 452 / 历史未观测 4）。
-- dry-run 复跑（2026-09-19 探针验证后，报告已刷新为当前真实数据）：检测 16 条（迁移前写入、无 `sample_limit` 的历史记录 3 条，不补造）；
-  旧投影 917 条（可从快照恢复字段与证据 643 条、列名被写成敏感类别 3 条）；告警 447 条（可按 `finding_id` 回填 325 条，
-  110 条事件类告警无 finding 需人工）；对象 #6 缓存计数仍待重算。“类别无当前检测支撑”排除目录/数据库服务的汇总标签后由 19 降为 8 条
-  （脚本已区分两者，避免把目录汇总当成漂移）。
-- 真实探针验证（2026-09-19）：探针 #2 `test123`（kali / 192.168.191.130，agent 3.4.1，ruleset `builtin-1.rollback2`）在线，
-  下发 3 次受限真实采集（`paths=["/etc"]`，max_files 200、row 预算）核对整改口径。判定类数据符合新规则：文件检测按类别各自
-  保留置信度（email 0.85 / credential 0.85 / se_organisationsnummer 0.6）、`hit_count == sample_hit_count`、`sample_limit=25`
-  已落库、`scan_id` 与实例 `last_scan_id` 一致、证据只含规则/字段不含原值；类型中心只统计真正命中的文件
-  （credential 4 / email 7 / se_organisationsnummer 1，12 个对象 / 12 个实例），`/sensitive/findings` 的 `object_model`
-  来源计数（12）与 detections 一致，页面对在位与历史未观测资产分别统计。
-- 探针验证暴露并修复的 3 个真实问题：(a) 目录条目只上报子项类目并集且 `counts={}`，服务端却按每个类目建了一条
-  `hit_count=0` 的“检测”——这是凭空出现的发现，还污染了类型中心；现在 `ingest_report` 只对上报了计数的类目
-  （`category in counts`）建检测，`probe/data_assets.py::_directory_asset` 在证据中显式标注 `aggregate: true`。
-  (b) 目录与端口推断条目没有解析覆盖度，原先默认 `coverage="complete"`，于是 Partial 采集里的目录节点也显示“已完整扫描”；
-  现在回退到本次报告自身的覆盖率与终止原因，Partial 采集的目录节点显示 `partial / row_budget`。
-  (c) 探针（agent 3.4.1）本地的严重度映射滞后于它刚下载的规则集：`se_organisationsnummer` 在上报的 `sensitivity` 里是 `Low`，
-  而同一文件的检测结果是 `Medium`；旧投影 `data_assets.sensitivity` 原样照抄上报值，于是列表 Low、详情 Medium。
-  现在 `project_asset` 取“平台映射与上报值中更严格者”（`Unknown` 等非严重度值保持原样），与 `rebuild_projection` 路径一致。
-  实测 `/etc/X11/app-defaults/XFontSel` 真实重扫后列表与详情同为 Medium；`/etc/sudo_logsrvd.conf` 未被该次扫描覆盖，
-  按同一谓词修正该投影行。探针侧 `category_severity` 仍使用冻结的旧映射，服务端不再依赖它。
-- 数据修复（2026-09-19，真实库）：删除 5 条由 (a) 产生的伪造零命中目录检测（`/boot/grub/i386-pc` 2 条、`/etc` 3 条，
-  均 `hit_count=0` / `sample_size=0` / `confidence=0` 且没有证据行）；按已记录的 Partial 报告 `e4099b01…`（终止原因
-  `file_budget`）把 5 个目录实例的 `coverage` 从 `complete` 修正为 `partial`。未改动任何文件类检测与证据。
-- 样本口径确认：`sample_size`（探针 `rows_read`）是“实际读取并扫描的行数”，`sample_limit`（探针 `sample_rows`）是
-  “单条命中保留的样本值上限”，两者单位不同（如 `/etc/libccid_Info.plist` 样本行 10149 / 上限 25）。前端“样本行”列展示前者，
-  没有把上限伪装成行数，因此不修改历史值。
-- 未做：未执行历史数据重算/修复（dry-run 已出，需先备份再按清单第四节执行）、未导入测试数据、未提交。
-  探针侧改动（`aggregate` 标记）要等探针包重建/升级后才在主机生效，服务端不依赖该标记。
+验证：
 
-## v2.11.0 发布（2026-09-18）
+- 同环境后端基线 579 passed / 17 failed；本批 582 passed / 17 failed，失败集合一致。
+- 前端 typecheck、37 项单测、生产构建通过；新增/拆出的后端模块 ruff 通过。
+- 拆分前后 OpenAPI、162 个路由记录、38 张表的列/索引定义完全一致；没有新增迁移。
+- Python 模块语法检查、git diff --check 通过。全量回归中发现并修正的遗漏 `re` 导入已验证。
+- 切换前真实环境 8 个只读 API 均 200，`/test/status present=false`；资产数 1087（时点值，不是固定验收值）。
 
-目标：把工作区里未提交的「引擎规则库 + PCAP 工作台」改动整理成 v2.11.0 发布。
+已完成：应用镜像于 2026-09-19 重建并切换本机服务（backend/worker/beat/deployment-worker/frontend 正常）；
+切换后复验 8 个只读接口均 200、`/test/status present=false`、迁移仍为 `0015_alert_hits`（head）。
+回退标签 `source-{backend,worker,frontend}:pre-data-asset-refactor-20260919` 可用。第一批含切换收尾完成。
 
-- 版本：平台 2.10.0 → **2.11.0**（`backend/app/main.py`、`frontend/package.json`、`frontend/package-lock.json`）；
-  探针未改代码，保持 **3.5.0**；迁移仍为 `0014_probe_removal (head)`，无需执行迁移。
-- 文档：`CHANGELOG.md` 新增 `v2.11.0` 段（规则库、上游同步、命中快照、引擎总览、归属修复、PCAP 工作台、
-  集成修复、验证结论）；`docs/versioning.md` 追加 `v2.11` 版本行；`PROJECT_STATUS.md` 更新版本表与发布状态。
-- 标签与推送：`v2.11.0`（注释标签）与 `develop` 已推送 `origin`；推送前用 ruff 清零本版新增文件的 lint
-  （26 处 E501、6 处可自动修复项、1 处 E731、1 处未使用导入），仅剩 2 处历史 E501 按 `AGENTS.md` 惯例不动。
-- 验证：前端 `npx vitest run` 34 passed、`npx vue-tsc --noEmit` 通过；后端在 `source-backend-1` 容器内
-  （镜像自带 tshark）跑规则执行/告警/PCAP 工作台定向回归通过；全量后端 16 项失败与既有环境基线逐条一致。
-  本机 Windows 直跑 `tests/test_pcap_workbench.py::test_native_exporter_retains_response_without_python_reassembly`
-  会因缺 tshark 失败，属环境差异，容器内通过。
-- 未做：未重建镜像（运行容器仍是发布前构建的镜像，`/openapi.json` 报 2.10.0）、未操作真实探针主机、未导入测试数据。
+## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-## PCAP 工作台修复结果（2026-09-18 09:10，优先于下方快照）
+1. 分析/事件关联编排与 Celery 入口分离，替换 API 对 worker 私有函数的引用。
+2. 继续按域拆其余 v1 路由，重点明确文件/PCAP 对数据资产结果的写入边界。
+3. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
+4. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 
-用户目标：修复手动上传、展示从数据流分离的文件及文本/Hex、修复打开后的包列表。
-本轮代码已部署到本机 backend / worker / beat / deployment-worker / frontend。
+不要把本批的结构移动与历史数据回填或检测规则修改混在一起。
 
-- 上传根因实测：现有 `2.pcapng` 上传返回 HTTP 200、`duplicate=true`、`id=651`，
-  原页面忽略返回 ID，仅刷新按新旧排序的当前页，造成“上传没有成功”的观感。
-  先前认定 120 秒超时就是本次根因缺少证据，现以该实际响应为准。
-- 上传后直接定位返回的抓包，重复文件有明确提示；新任务自动跟踪进度并刷新结果。
-  保留独立 30 分钟上传超时与进度，网关关闭请求缓冲；无效抓包返回明确错误。
-  重复确认先于队列背压检查，队列繁忙不再阻止确认已存在的文件。
-- 包列表改为上方全宽表、下方协议树/字节视图，提供分页和搜索；概览显示真实总数，
-  标明已索引数。补齐 IPv6/非 IP 帧地址，时间保留微秒；Hex 列固定字符宽度防止错位。
-- 新增 `services/pcap_files.py`，HTTP 上传文件/响应体及 TShark 原生对象导出独立于 DLP
-  告警保存；标明缺包、限制与加密流。文件清单支持原始附件下载、分页文本/Hex/ASCII。
-  文件预览是字节解码，不承诺 PDF/Office 等格式的文档正文渲染。
-- 新 API `GET /pcaps/{id}/files/{sha256}`；原下载端点接受字符串文件 ID，并以本抓包的
-  提取清单校验归属，不再信任事件中的任意存储路径。无需数据库迁移。
-- 验证：后端相关 49 passed；前端 34 passed（含重复上传定位、翻页、文本/Hex 组件交互），
-  typecheck、生产构建、nginx 配置及 diff 检查通过。无可用浏览器会话，未完成截图验收。
-- 真实运行验证：原始 PCAP #2026 经手动上传接口产生 #2112 / 任务 #2144，分析 Success，
-  38 个包，提取 5 项内容（含 16,227 字节的实际传输文件）；所有下载 SHA256 与 Hex 预览一致。
-  同一文件再上传返回 #2112 与 duplicate=true。
-- `2.pcapng` #651 重分析任务 #2145 为 Success；284 包，分页第二页返回 100 条，从第 101 包开始，
-  第 101 包原始 518 字节、5 个协议层。该抓包未提取到文件，覆盖信息为 16 条加密流、4 个异常报文。
-- 后端和 worker 健康；`/test/status` 为 present=false。未导入测试数据、未操作真实探针主机、未提交。
+## 历史
 
-后续：旧抓包需重新分析才生成文件提取清单；本轮已重分析上述真实样本。全量后端既有 16 项失败
-仍按下方规则库任务记录处理，本轮只运行与变更相关的回归。
-
-## 规则库结果（2026-09-18，优先于下方历史快照）
-
-本轮目标：修复安全引擎规则为 0，展示实际规则和告警命中依据，在线更新支持的上游规则，
-并让本地引擎真正加载执行。代码、镜像与本机服务已更新，未操作真实探针主机。
-
-- 已部署 backend / worker / beat / deployment-worker / frontend；入口 `http://localhost:8088/engines`。
-- 通过前端网关实测全部 15 个引擎规则数非 0，清单共 3,512 项，逐引擎计数与清单一致。
-  资源数包含规则文件、代码检查和敏感检测定义；不等于单条签名数。
-- 已在线获取：Sigma 2,943 份兼容规则（635 份不支持已跳过）、Suricata ET Open 52 份文件、
-  Zeek 234 份参考脚本、osquery 9 份查询包、Wazuh 4.14.7 的 167 份规则、
-  OpenSCAP 0.1.82 的 4 份 Linux datastream、Presidio 2.2.364 的 134 条识别器。
-- `/health.suricata` 实测可用，实际签名数 52,270。在线更新采用暂存校验和原子版本切换，
-  失败保留旧规则；原文按需加载，规则页支持按引擎搜索和分页。
-- Presidio 在线更新接口已通过前端网关实测，成功记录 `rule_source_state` 和审计。
-  其余初次下载通过维护命令执行，有磁盘版本清单，但不冒充 API 同步审计记录。
-- 告警 #1 / #5 返回对应 DLP / 扫描规则及条件；历史无快照时标识 `current_definition`。
-  新检测保存规则原文及 SHA256，优先解释实际命中版本。
-- 修复 Zeek JSON 开关、JSON `.log` 解析、Suricata 错误使用 `-q`、Linux cooked-v2 抓包兼容，
-  原生命令错误不再吞成空结果。真实 PCAP #2026 原生回放成功；重分析任务 #2080 为 Success，
-  解析 38 个包，产生 Zeek Finding #834（`ZEK_WEIRD_001`），已保存规则快照。
-- 验证：最新后端定向回归 33 passed / 1 deselected；前端 31 passed，typecheck 与生产构建通过。
-  本轮全量后端回归仍有既有 16 项失败（打包、分发、Redis/worker 能力等），不能宣称全量通过。
-  `git diff --check` 通过（仅行尾警告）；浏览器工具不可用，未完成截图视觉验收。
-- `/test/status` 实测 `present=false`；未调用测试导入、未启用生产 mock、未提交或推送工作区。
-
-边界：下载 Wazuh/osquery/OpenSCAP 规则不等于已在目标机运行，仍需部署或配置对应组件；
-Zeek 上游整库脚本不自动执行；Presidio 独立引擎开关未擅自开启，识别器接入已有 DLP 规则库。
-这些状态在页面区分为已接入、外部资源、不支持或不完整。Sigma 上游规则要求相应日志来源元数据。
-
-后续独立事项：外部组件部署与凭证配置、修复既有全量测试失败、浏览器视觉验收。
-
-## 历史快照（以下旧 TODO / 未部署描述不再代表当前状态）
-
-### 2026-09-17 会话恢复核验（优先于下方旧快照）
-
-- 已依次重读四个上下文文件，并核对 Git、工作区差异、容器与真实 API。
-- `develop` 当前仍为 `ecf8a6f`，领先本地跟踪的 `origin/develop` 4 个提交。
-- **告警规则解析已进入运行后端**：容器可加载 16 条 `BUILTIN_RULES`；真实
-  `GET /api/v1/alerts/1` 返回 `DLP_TRANSFER_001` 与策略条件，`/alerts/5` 返回
-  `NET_SCAN_001` 与 `port_count > 20`。下方“尚未部署、DLP rule=null”记录已过期。
-- 未查到关联 `CVE_*` Finding 的现存 Alert，因此本次未完成 CVE 告警 HTTP 验证。
-- `GET /api/v1/test/status` 返回 `present=false`，未导入测试数据。
-- 工作区另有旧快照未记录的未提交改动：`rules/catalog.py`、`library.py`、`sync.py`、
-  多个引擎/适配器规则目录、`api/libraries.py` 的来源/同步接口，以及资产、协议、DLP、
-  情报引擎的规则参数接入。运行镜像尚无 `app.rules.catalog`，这批改动未部署。
-- `$env:TEMP\bt_full3.txt` 的失败列表与记录的 16 项一致，但文件尾没有汇总行；
-  容器 `nostalgic_meitner` 仍在执行挂载工作区的 `pytest -q`，尚无最终结果。
-- 下一步先核验这批规则库改动的完整性与测试结果，再决定构建范围；不能把旧测试记录
-  当作新增规则库改动的验证结果，也不能按下方旧步骤直接提交全部工作区。
-
-让工具在**全部使用真实数据**的前提下，把「数据安全合规检查服务」相关功能做到演示可用。
-本轮两个目标：
-
-1. **导航栏瘦身**：不再为每个引擎单列菜单，全部引擎收敛到**一个**「引擎总览」页。
-2. **告警可解释**：看到告警时必须能看到「**命中的规则**」和「**告警匹配到的具体内容**」。
-
-## Requirements
-
-1. 导航栏只保留必要入口，众多引擎放进一个展示栏。
-2. 告警详情必须能看到规则与告警匹配的具体内容。
-3. 不做演示用假数据，所有数据来自真实链路。
-4. 保持既有接口路径 / 返回结构兼容（只做**追加**字段与**新增**查询参数）。
-
-## Completed
-
-### 一、导航收敛为单一「引擎总览」
-
-| 文件 | 修改 |
-| --- | --- |
-| `frontend/src/router/menu.ts` | 安全引擎组由 12 个逐引擎入口（6 适配器 + 6 平台引擎）改为**唯一** `{ path: '/engines', title: '引擎总览', icon: 'Cpu' }` |
-| `frontend/src/router/index.ts` | 新增 `/engines` 路由（置于 `/engines/:name` 之前） |
-| `frontend/src/modules/engines/EnginesOverview.vue` | **新文件**：一张表列出全部引擎 —— 中文名 + 引擎 id、类型标签（`bridge` 有值 = 第三方适配器，否则平台内置）、版本、状态、规则文件数、检测数、规则来源、「查看详情」；行点击进 `/engines/<slug>`；另有关键字过滤、3 个 StatCard、刷新；按检测数倒序 |
-| `frontend/src/api/engine.ts` | `EngineInfo` 追加 `bridge?: string` |
-| `frontend/src/modules/engines/EngineDetail.vue` | 工具栏加「← 引擎总览」 |
-| `frontend/src/__tests__/soc.test.ts` | 断言导航含 `/engines`，且**不存在**任何 `/engines/` 开头的子项 |
-
-### 二、告警显示「命中规则 + 命中内容」
-
-**后端**
-
-| 文件 | 修改 |
-| --- | --- |
-| `backend/app/api/v1.py` | `alert_detail` 追加 `rule` 字段；`_rule_definition(db, rule_id, engine, evidence)` 改为**三层解析**；新增 `import re`；`models` 导入补 `SystemSetting` |
-| `backend/app/rules/builtin.py` | **新文件**：`BUILTIN_RULES`（16 条**由引擎代码实现**的规则定义）+ `builtin_rule_definition()` + `dlp_rule_definition()` + `cve_rule_definition()` |
-
-`_rule_definition` 的三层解析顺序：
-
-1. **规则库文件**（原有逻辑，未改）：`app/rules/{logs,data,network,compliance}` 的 YAML/YAR + suricata `.rules`，
-   命中 `rule_id` 后解析出 `title/severity/condition/recommendation/detection` 与规则原文。
-2. **代码内置规则**（`builtin.py`，新）：`PROTO_*`(4) / `NETWORK_PORT_SCAN` / `NET_C2_BEACON_001` /
-   `broad_communication` / `high_packet_rate` / `COMP_WEAK_PROTOCOL_001` / `DATA_PII_001` / `DATA_SECRET_001` /
-   `DATA_YARA_001` / `ASSET_PUBLIC_DB_001` / `ASSET_DB_WEAK_AUTH_001` / `ASSET_PUBLIC_WEB_001` / `TI_IOC_001`。
-   每条含 `engine/title/severity/condition/recommendation/source`，`source` 指向**真正实现它的 .py 文件**，
-   条件文本与引擎代码里的阈值逐条对齐（不是编造的描述）。
-3. **数据驱动规则**（新）：
-   - `DLP_TRANSFER_001`：从 `system_setting: dlp_policy` 现读现渲染（categories / keywords / fingerprints /
-     min_matches / min_confidence），因为 DLP 引擎没有规则文件，它执行的就是策略本身。
-   - `CVE_***`：优先读平台本地漏洞库 `local_cves`（实测 394,371 条，来源 grype）取 severity / CVSS /
-     published / description，读不到时回退 `finding.evidence.cve`。
-
-**前端**
-
-| 文件 | 修改 |
-| --- | --- |
-| `frontend/src/components/evidence/RuleMatchPanel.vue` | **新文件**：上半「命中规则」（引擎 / 规则 ID / 规则名 / 等级 / 置信度 / 目标 / **命中条件** / 处置建议 / **规则来源** / 可展开查看规则原文），下半「命中内容」（标量证据键值对，带中文+原始键双标签；`matches`/`queries`/`services`/`dst_ports` 等数组渲染为表格或标签；过滤 `risk_model`/`probe_id` 噪声；值经 `maskSensitiveValue` 脱敏） |
-| `frontend/src/modules/operations/alerts/AlertCenter.vue` | 原「检测来源」描述块替换为 `<RuleMatchPanel :rule="detail.rule" :finding="detail.finding" />` |
-| `frontend/src/types/alert.ts` | `AlertDetail.rule?: RuleDefinition \| null`，新增导出 `RuleDefinition` |
-| `backend/tests/test_alerts.py` | 新增 2 个回归用例；并修复其中一个用例的**执行顺序依赖**（见 Known Issues #2） |
-
-## In Progress
-
-无代码在写。**唯一未完成动作**：重新构建 `source-backend:latest` 并 `--force-recreate source-backend-1`。
-本轮后端改动（`builtin.py` + `_rule_definition` 三层解析）**尚未进入运行镜像**，因此线上 `GET /alerts/1`（DLP）
-目前仍返回 `rule: null`。
-
-## TODO
-
-- [ ] **重建后端镜像并重启容器**（本轮唯一阻塞项，命令见 `Next Step`）。
-- [ ] 重建后实测：`GET /alerts/1`（DLP）应返回 `rule.condition`；任取一条 `threat_intel` 的 CVE 告警应返回 `rule.title = "<CVE> 影响 <service>"`。
-- [ ] 全量后端套件**回读结果**（会话 1751 / `$env:TEMP\bt_full3.txt`）确认 16 失败基线、新用例转绿。
-- [ ] CRLF 归一化后提交本轮改动，建议信息 `feat(ui,api): one engine overview entry and show the matched rule in alerts`。
-- [ ] 把提交号写入本文件 `Task History`，并刷新 `PROJECT_STATUS.md` 的「当前版本 / 前端状态 / API 状态 / 兼容性变更记录」。
-- [ ] 决策项（上一轮遗留，用户未回复）：资产详情 IOC 页签在情报库无命中时如何呈现。
-- [ ] 决策项（上一轮遗留）：控制台顶部「测试数据 → 导入/清除测试数据」下拉是否在生产构建隐藏。
-- [ ] 决策项：是否把 `2026-09-17` 起的 4 个未推送提交推到 `origin/develop`（目前 origin 停在 `e815a54`）。
-- [ ] 刷新 `docs/领导演示方案.md` 的数字。
-- [ ] `RulesCenter.vue`（`/threat/rules`）页签仍按 `type` 分组，`network/`+`compliance/` 的 YAML 会显示在 Sigma 页签下；数据已带正确 `engine`，页签改造本轮**有意不做**。
-- [ ] 可选：发 `v2.10.1` 补丁版本。
-
-## Modified Files
-
-本轮（**未提交**）：
-
-| 文件 | 原因 |
-| --- | --- |
-| `frontend/src/router/menu.ts` | 安全引擎组收敛为单一「引擎总览」 |
-| `frontend/src/router/index.ts` | 新增 `/engines` 路由 |
-| `frontend/src/modules/engines/EnginesOverview.vue` | 新增：全部引擎一张表 |
-| `frontend/src/api/engine.ts` | `EngineInfo.bridge` |
-| `frontend/src/modules/engines/EngineDetail.vue` | 「← 引擎总览」按钮 |
-| `frontend/src/components/evidence/RuleMatchPanel.vue` | 新增：命中规则 + 命中内容面板 |
-| `frontend/src/modules/operations/alerts/AlertCenter.vue` | 接入 `RuleMatchPanel` |
-| `frontend/src/types/alert.ts` | `AlertDetail.rule` / `RuleDefinition` |
-| `frontend/src/__tests__/soc.test.ts` | 导航断言改为「有 `/engines`、无 `/engines/` 子项」 |
-| `backend/app/api/v1.py` | `alert_detail` 输出 `rule`；`_rule_definition` 三层解析；补 `SystemSetting` 导入 |
-| `backend/app/rules/builtin.py` | 新增：代码内置规则目录 + DLP/CVE 定义渲染 |
-| `backend/tests/test_alerts.py` | 新增 2 用例 + 修 1 个顺序依赖 |
-
-上一轮已提交的改动见 `Task History`。
-
-## Known Issues
-
-1. **本轮后端改动未进运行镜像**（见 `In Progress`）。前端产物已包含 `引擎总览` 与 `命中内容`（已在
-   `source-frontend-1` 的 js 产物中 grep 确认）。
-2. **新用例的执行顺序依赖（已修，待全量确认）**：`test_alert_detail_exposes_the_matched_rule_and_its_content`
-   单独跑通过、在全量套件里失败（`assert rule is not None` → `None is not None`）。根因：更早的测试留下了
-   同 `(rule_id, engine, asset, ioc)` 指纹的 Alert，本用例先删了 `NET_SCAN_001` 的 finding，再 `create_finding_alert`
-   就被**抑制**进那条旧 Alert（`alert_service.create_finding_alert` 第 126 行 `existing.finding_id = existing.finding_id or finding.id`
-   会保留已删除的 finding_id），于是 `alert_detail` 解析不到 finding → `rule` 为 `None`。修法：用例创建前一并清掉同指纹
-   Alert（含 `AlertDelivery`），并补 `assert body["finding"] is not None` 使下次失败更直观。
-3. 上一轮遗留：66 条历史告警的 `fingerprint`/`correlation_key` 仍是 `rules` 派生值（只纠正了可见的 `source`）。
-4. 上一轮遗留：两个「规则数」口径并存（注册表 = 规则文件数；`/health` = `sid:` 数）。
-5. 上一轮遗留：`PROTO_DNS_TUNNEL_001` 证据无主机地址 → 1 条事件仍归 `global`。
-6. 完整仓库布局下仍有 16 个环境相关失败用例（基线，见 `Verification`）。
-
-## Verification
-
-### 本轮已执行并记录结果
-
-| 验证 | 命令 / 方式 | 结果 |
-| --- | --- | --- |
-| 前端类型检查 | `source/frontend` 下 `npx vue-tsc --noEmit` | 通过（exit 0） |
-| 前端单测 | `npx vitest run` | 8 文件 / **31 passed** |
-| 后端定向用例（本轮新） | 容器内 `pytest tests/test_alerts.py -q` | 8 passed |
-| 新代码语法/解析 | 容器内 `ast.parse` + 直接调用 `builtin.*` | `BUILTIN_RULES` 16 条；`PROTO_DNS_TUNNEL_001.title = DNS 隧道 / 异常编码域名`；DLP 条件串含 `min_confidence`；CVE 取到本地库 severity |
-| 线上实测（**上一版镜像**） | `GET /api/v1/alerts/5` | `rule.rule_id=NET_SCAN_001`、`title=端口扫描`、`condition=port_count > 20`、`engine=traffic_engine`、`file=scan.yaml`、`content` 144 字符 |
-| 线上实测（**上一版镜像**） | `GET /api/v1/alerts/1`（DLP） | `rule = null` —— 正是本轮新增 `dlp_rule_definition()` 要修的点 |
-| 前端产物 | `source-frontend-1` 内 grep | `引擎总览`（`index-*.js`、`EngineDetail-*.js`）、`命中内容`（`AlertCenter-*.js`）均存在 |
-| 容器状态 | `docker ps` | `source-backend-1` healthy、`source-frontend-1` Up |
-| 全量后端套件 | 固定口径 `pytest -q`（输出留档 `$env:TEMP\bt_full3.txt`） | **16 failed / 其余全通过**，16 条与基线逐条一致 → 零回归；本轮新增用例**在套件内已转绿** |
-
-### 未执行
-
-- 浏览器端截图确认：本机 cua 浏览器不可用（`Browsers: unsupported Codex auth method: apikey`），
-  改为「接口契约 + 构建产物 grep + 类型检查 + 单测」四重间接验证，未做像素级确认。
-
-### 重要说明：测试基线口径
-
-镜像不包含 `tests/`、`pyproject.toml`、`probe_packages/`，因此必须用固定挂载口径，否则 `pytest` 会因环境缺失产生
-16 个失败（`test_package.py` 4 个、`test_distribution.py` 10 个、`test_health`、`test_gap_fixes::test_integrations_...`），
-与代码无关：
-
-```powershell
-$src = (Resolve-Path ".\00-数据安全工具箱\source").Path
-docker run --rm -v "${src}\backend\app:/app/app" -v "${src}\backend\tests:/app/tests" `
-  -v "${src}\backend\pyproject.toml:/app/pyproject.toml" -v "${src}\probe:/app/probe" `
-  -v "${src}\shared:/app/shared" -v "${src}\probe_packages:/app/probe_packages" `
-  -w /app source-backend:latest python -m pytest -q
-```
-
-## Next Step
-
-1. 需要在别的机器复现本版时，按 `AGENTS.md` 用 legacy builder 重建 backend / deployment-worker / frontend 镜像；
-   探针代码未变，无需重建探针包。
-2. 若要让本机运行栈报 2.11.0，重建 backend / frontend 镜像并重建容器（会让 8088 短暂中断）。
-3. 全量后端套件按下方「测试基线口径」的挂载命令复跑，确认 16 项环境失败基线不变、新增用例转绿。
-
-## Task History
-
-| 日期 | 任务 | 结果 | Commit |
-| --- | --- | --- | --- |
-| 2026-09-18 | 发布 v2.11.0（引擎规则库 + PCAP 工作台） | 完成：版本号、CHANGELOG、标签、状态文档 | tag `v2.11.0` |
-| 2026-09-18 | PCAP 工作台修复（上传定位、包列表分页、传输文件提取与文本/Hex 预览） | 完成并部署验证 | 随 v2.11.0 发布 |
-| 2026-09-17 | 导航收敛为单一「引擎总览」+ 告警显示命中规则与命中内容（含代码内置规则目录、DLP 策略与本地 CVE 库解析） | 完成并随 v2.11.0 发布 | 随 v2.11.0 发布 |
-| 2026-09-17 | 安全引擎规则归属修复（幽灵引擎 `rules`）+ 引擎下拉/规则显示改读注册表 + 真实数据归属纠正 | 完成并部署验证，零回归 | `573d9e9` / `ecf8a6f` |
-| 2026-09-17 | 资产归属根因修复 + 事件归属重算端点 + 回归用例 | 完成并部署验证，零回归 | `0cf03de` / `8d0c3c8` |
-| 2026-09-17 | 探针远程卸载（含生产文件清理，E2E 零残留） | 完成并发布 | `735a657` / `3967e82` (v2.10.0) |
-| 2026-09-17 | 下发/回收各阶段中文标签 + 演示方案文档 | 完成 | `2ff8390` |
-| 2026-09-17 | 前端三处可见缺陷 + 资产详情关联查询 | 完成，46 端点全 200 | `e815a54` |
-| 2026-09-17 | 建立 `AGENTS.md` / `TASK.md` / `PROJECT_STATUS.md` / `docs/architecture.md` | 完成 | （`e815a54` 之后） |
-
-### 上一轮详情（安全引擎规则归属，`573d9e9` / `ecf8a6f`）
-
-问题：「安全引擎的规则是不是都正确匹配到了规则，为什么规则的显示都是空？」三个根因：
-
-1. `backend/app/rules/interpreter.py::interpret_rules()` 硬编码 `engine="rules"`（注册表里不存在的幽灵引擎），
-   而 `TrafficEngine` 与 `ComplianceEngine` 都调用它 → 78 条网络规则检测挂在幽灵引擎下、引擎页过滤全为 0、
-   66 条告警 `source='rules'`。修复：引擎名由调用方传入 `self.name`。
-2. 前端三处引擎下拉是硬编码且与 `detection_findings.engine` 真实取值对不上（`EngineDetail.vue`、`DetectionCenter.vue`、
-   `SensitiveDiscovery.vue` 用 `'data'` 而非 `'data_engine'`）→ 所有过滤为空。修复：`GET /engine/registry` 追加
-   `slug`/`label`/`rule_count`/`detection_engine`/`detection_count`，前端全部改读注册表。
-3. `EngineDetail.vue` 用 `health[name].rule_count` 覆盖真实规则数，而 `/health` 只有 tshark/zeek/suricata 三个键 →
-   其余引擎规则数渲染成空。修复：规则数与规则清单统一由注册表 + `GET /rules?engine=` 提供；
-   同时修掉 `workers/tasks.py::_worker_capability()` 里 suricata 恒为 0 的假 0（改为按实际加载的规则文件统计）。
-
-真实数据归属纠正（只改 engine 字段，不增删记录、不改 fingerprint）：`detection_findings` 79 行 `rules`→`traffic_engine`、
-18 条事件的 `findings.items[*].engine`、66 条 `alerts.source`。正向验证：用真实 PCAP（pcap 1807）重新分析
-（任务 #1852 Success）→ 新 finding id=820 `engine=traffic_engine`，证明新代码不再产生 `rules`。
-
-线上真实取值：`protocol_engine` 375、`threat_intel` 332、`traffic_engine` 98、`dlp_engine` 14、`compliance_engine` 1；
-`/dashboard/engines` 合计 820 = `detection_findings` 总数；库内 `engine='rules'` 已归零。
-
-### 更早详情（资产归属修复，`0cf03de` / `8d0c3c8`）
-
-根因是「资产身份」被以三种互相矛盾的方式解读，修复后实测：
-
-| 资产 | IP | 关联检测 | 关联事件 | 数据资产 |
-| --- | --- | --- | --- | --- |
-| 2 / 14 | 192.168.191.130（探针主机） | 0 → **99** | 0 → **20** | 100 |
-| 4 / 5 | 192.168.110.168 | 52 | 0 → **6** | 0 |
-| 209 | 192.168.191.168 | 100 | 0 → **28** | 0 |
-
-1. **事件归属**：`incident_engine` 读不到真实字段——情报引擎把资产嵌在 `evidence.asset` 字典里（旧代码拼成
-   `192.168.191.168:192.168.191.168:telnet:23`，任何资产页都匹配不上，还把一台主机按端口拆成多个事件）；
-   流量引擎用 `src`/`dst`；规则引擎只在 `metrics["src:<ip>:ports"]` 里带主机。旧代码全部忽略 → 16 条事件退化成 `global`。
-2. **多主机事件**：改为记录 `evidence.assets`（事件覆盖的全部主机），展示标签 `evidence.asset` 保留，资产页按成员归属判定。
-3. **关联检测**：`asset_detail` 原先只匹配 `evidence.asset.ip` / `evidence.ip`，漏掉只出现在 `src`/`dst`/`metrics` 里的主机
-   （实测 192.168.191.130 有 98 条真实 findings 被漏掉：rules 74 + dlp 14 + traffic 10）。
-4. **IOC 联动**：补读威胁情报引擎的 `matched_iocs`。
-5. **findings 去重签名**：`workers/tasks.py::_finding_signature()` 旧实现只看 `src_ip/dst_ip/asset`，对流量引擎 findings
-   恒为空串，会把不同主机的 findings 误合并；现复用同一套身份解析。
-
-归属重算实测：`POST /api/v1/incidents/rebuild-attribution` 首次
-`scanned=54, recovered=50, relabelled=53, globals_before=16, globals_after=0, hosts=33`；
-再跑一次（幂等）`scanned=55, recovered=1, globals_before=2, globals_after=1`。
-
-同期完成：前端可见缺陷 3 项（`e815a54`）、`docs/领导演示方案.md`、v2.10.0 探针远程卸载闭环、四个上下文文件、
-核实库内无测试数据（`GET /api/v1/test/status` → `present=false`）。
+- [本批前任务全文](docs/history/task-before-data-asset-refactor-2026-09-19.md)
+- [本批前项目状态全文](docs/history/project_status-before-data-asset-refactor-2026-09-19.md)
+- [v2.12.0 发布记录](docs/releases/v2.12.0.md)
+- [总体解耦指南](docs/解耦操作指南.md)

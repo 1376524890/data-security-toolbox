@@ -153,6 +153,14 @@ make up / down / logs / migrate / shell / test / lint / format     # 见 Makefil
 - 本机 `apply_patch` 需要与文件行尾一致（仓库文件为 CRLF）；补丁分块尽量小。
 - 不要在未确认的情况下操作真实探针主机（当前在线探针 `test123` 位于 `192.168.191.130`）。
 
+## 数据资产修改入口
+
+数据资产采集/展示优先读 `docs/数据资产开发入口.md`。采集协议在 `api/data_collection_schemas.py`，
+采集路由在 `api/data_collection.py`，任务创建在 `services/probe_task_service.py`；
+对象身份/覆盖/写入/投影/查询已拆入 `services/data_objects/`。旧 `data_object_service.py` 仅作兼容门面，
+不要向其中新增实现。前端列表与采集状态分别在 `modules/data-security/composables/useDataAssetList.ts`
+和 `useDataAssetCollection.ts`，页面负责组装。边界由 `tests/test_data_asset_boundaries.py` 检查。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`
