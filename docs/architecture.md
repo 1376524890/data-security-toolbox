@@ -39,6 +39,8 @@
 `Dashboard.vue -> useDashboard -> api/dashboard`（汇总、两条趋势、四组图表序列与两张表）加上
 `api/risk`、`api/health` 同样只渲染；视图保留路由与格式化函数，`levelBreakdown` 让两处环形图
 共用同一套四级刻度与配色。
+`SecurityAudit.vue -> useSecurityAudit -> api/audit`（审计汇总只读 + 粘贴日志分析）同样只渲染；
+视图保留 `riskLabels` 这类静态标签与格式化函数，`matchGroups` 由 composable 提供。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

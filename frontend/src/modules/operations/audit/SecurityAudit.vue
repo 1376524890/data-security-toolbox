@@ -1,65 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { getAuditSummary, analyzeLog, type AuditSummary, type LogAnalysisResult } from '../../../api/audit'
 import StateBox from '../../../components/common/StateBox.vue'
 import StatCard from '../../../components/common/StatCard.vue'
 import RiskBadge from '../../../components/security/RiskBadge.vue'
 import SeverityTag from '../../../components/security/SeverityTag.vue'
 import { formatRiskScore } from '../../../utils/format'
+import { useSecurityAudit } from './composables/useSecurityAudit'
 
-const loading = ref(true)
-const error = ref('')
-const summary = ref<AuditSummary | null>(null)
-
-const logContent = ref('')
-const logRunning = ref(false)
-const logResult = ref<LogAnalysisResult | null>(null)
-const logError = ref('')
+// The audit summary and the log-analysis run live in the composable; this view
+// keeps the static risk labels and binds the state into the template below.
+const {
+  loading, error, summary, logContent, logRunning, logResult, logError,
+  load, runLogAnalysis, matchGroups,
+} = useSecurityAudit()
 
 const riskLabels: Record<string, string> = { Critical: '严重', High: '高危', Medium: '中危', Low: '低危' }
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    summary.value = await getAuditSummary()
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function runLogAnalysis(): Promise<void> {
-  if (!logContent.value.trim()) {
-    ElMessage.warning('请输入待分析日志内容')
-    return
-  }
-  logRunning.value = true
-  logError.value = ''
-  try {
-    logResult.value = await analyzeLog(logContent.value)
-  } catch (err) {
-    logError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    logRunning.value = false
-  }
-}
-
-function matchGroups(result: LogAnalysisResult): Array<{ key: string; label: string; lines: string[] }> {
-  const labels: Record<string, string> = {
-    auth_failure: '认证失败',
-    sql_error: 'SQL 错误',
-    port_scan: '端口扫描',
-    privilege: '提权/特权',
-    traversal: '路径穿越',
-  }
-  const matches: Record<string, string[] | undefined> = (result?.log_summary?.matches as Record<string, string[] | undefined>) || {}
-  return Object.entries(labels).map(([key, label]) => ({ key, label, lines: matches[key] || [] })).filter((item) => item.lines.length > 0)
-}
-
-onMounted(load)
 </script>
 
 <template>

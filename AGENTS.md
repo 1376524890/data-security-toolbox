@@ -430,6 +430,16 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 接口多出来的档位（例如敏感类别的 `Unknown`）仍排在刻度之后。回归：
 `frontend/src/__tests__/dashboard-state.test.ts`（7 项）。
 
+## 安全审计页状态边界
+
+安全审计（`frontend/src/modules/operations/audit/SecurityAudit.vue`）的状态在
+`modules/operations/audit/composables/useSecurityAudit.ts`（69 行），页面只保留模板
+（167 → 121 行）；去掉缩进后，迁入的 50 行脚本逐行未改，模板与样式逐字节未改。页面保留
+`riskLabels` 这类静态标签与 `formatRiskScore`；审计汇总、日志分析输入与结果、以及模板直接调用的
+`matchGroups`（把服务端 `log_summary.matches` 投影成固定顺序的分组）整块进 composable。
+汇总页只读；日志分析失败进 `logError`（页面级 `error` 不受影响），空内容不发请求。回归：
+`frontend/src/__tests__/security-audit-state.test.ts`（7 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`
