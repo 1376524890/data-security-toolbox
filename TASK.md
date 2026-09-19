@@ -587,11 +587,44 @@
   工作台 chunk 内仍是真实 API 调用、无 demo/mock 代码；本批未导入测试数据、未操作真实探针主机。
 - 回退标签 `source-frontend:pre-pcap-workbench-state-20260920`。
 
+## 第十六批：前端数据资产采集任务页状态解耦（2026-09-20）
+
+基线 `1abca8c`，同一分支。目标：按指南 §F「前端先抽状态，再抽视图」把采集任务页的状态、派发与
+轮询从组件里抽出来，模板与交互不变。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/data-security/composables/useDataAssetJobs.ts`（159 行），
+  `DataAssetJobs.vue` 只保留模板与按钮（251 → 131 行）；迁入的 113 行脚本逐行比对，
+  只有一处声明过的改动：任务列表原来由页面直接调 `apiGet('/tasks', ...)`，改用
+  `api/tasks.ts::listTasks`（同一个请求）。
+- 探针与扫描配置下拉、任务列表、派发/取消/移除与统计卡计数仍在 composable；5 秒自动刷新 timer 归
+  composable 所有，`onMounted` 启动、`onBeforeUnmount` 清除，离开页面即停止轮询（指南 §F 第 3 条）。
+- 派发 payload 语义原样保留：显式路径按行切分并去空行，优先于扫描配置；路径非空且选了配置时两个
+  字段都发；没有选中探针时不发请求。API 仍只走 `frontend/src/api`，没有第二套 HTTP 客户端。
+- 新增 `frontend/src/__tests__/data-asset-jobs-state.test.ts`（9 项）：加载探针/配置/任务与默认选中、
+  加载失败进页面状态、统计卡计数、路径优先 payload、空路径只发 profile_id、无探针拒绝派发、
+  派发失败不改任务列表、取消/移除后刷新、5 秒轮询与关闭自动刷新、卸载停止轮询。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 12 个文件 55 项通过（原 46 项 + 本批 9 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与 `DataAssetJobs` chunk 均 200，线上 chunk 与本地
+  构建 SHA256 一致、无 demo/mock 代码。
+- 真实环境只读复验：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/tasks?kind=data_asset_scan`、`/probes`、`/scan-profiles`、`/data/assets`、`/data-types`、
+  `/data-objects`、`/asset-instances`、`/sensitive/findings`、`/sensitivity-levels` 均 200；
+  本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-data-asset-jobs-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端类型中心、对象详情、采集任务页按实际需求逐批拆分（同一模式：先抽状态，再抽视图）。
+1. 前端类型中心、类型详情、对象详情、实例详情页按实际需求逐批拆分（同一模式：先抽状态，
+   再抽视图；PCAP 工作台与采集任务页的状态已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。

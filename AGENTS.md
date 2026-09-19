@@ -161,8 +161,9 @@ make up / down / logs / migrate / shell / test / lint / format     # 见 Makefil
 数据资产采集/展示优先读 `docs/数据资产开发入口.md`。采集协议在 `api/data_collection_schemas.py`，
 采集路由在 `api/data_collection.py`，任务创建在 `services/probe_task_service.py`；
 对象身份/覆盖/写入/投影/查询已拆入 `services/data_objects/`。旧 `data_object_service.py` 仅作兼容门面，
-不要向其中新增实现。前端列表与采集状态分别在 `modules/data-security/composables/useDataAssetList.ts`
-和 `useDataAssetCollection.ts`，页面负责组装。边界由 `tests/test_data_asset_boundaries.py` 检查。
+不要向其中新增实现。前端列表、采集状态与采集任务页分别在 `modules/data-security/composables/` 的
+`useDataAssetList.ts`、`useDataAssetCollection.ts`、`useDataAssetJobs.ts`，页面只做组装；
+边界由 `tests/test_data_asset_boundaries.py` 检查。
 
 ## 分析编排与任务入口
 
@@ -323,6 +324,16 @@ worker 能力与规则清单的读取（`read_worker_capabilities`、`merge_capa
 API 调用仍只走 `frontend/src/api`，不在组件里拼第二套 HTTP 客户端。
 回归：`frontend/src/__tests__/pcap-workbench.test.ts`（组件行为）、
 `pcap-workbench-state.test.ts`（状态、竞态与轮询）、`npm run typecheck`、`npm test`。
+
+## 数据资产采集任务页状态边界
+
+采集任务页（`modules/data-security/DataAssetJobs.vue`）的状态与 API 编排在
+`frontend/src/modules/data-security/composables/useDataAssetJobs.ts`（159 行），页面只保留模板与按钮
+（251 → 131 行）。任务列表按 `kind=data_asset_scan` 走 `api/tasks.ts::listTasks`——原来是页面自己调
+`apiGet('/tasks', ...)`，两处是同一个请求；探针与扫描配置下拉、派发、取消、移除和 5 秒自动刷新都在
+composable 里，轮询 timer 归 composable 所有并在卸载时清除，不要把 timer 挪回页面。
+派发 payload 的既有语义：显式路径优先于扫描配置，路径非空且选了配置时两个字段都发；没有选中探针时
+直接返回、不发请求。回归：`frontend/src/__tests__/data-asset-jobs-state.test.ts`（9 项）。
 
 ## 与其他文档的关系
 

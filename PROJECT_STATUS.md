@@ -10,12 +10,19 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | e7eb701 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 1abca8c / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第十五批：前端 PCAP 工作台状态解耦（状态与 API 编排进 composable）；前十四批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口）见下方记录 |
+| 本批范围 | 第十六批：前端数据资产采集任务页状态解耦（状态、派发与轮询进 composable）；前十五批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态）见下方记录 |
 
 ## 本批已落地结构
 
+- 前端数据资产采集任务页的状态与 API 编排收拢到
+  `frontend/src/modules/data-security/composables/useDataAssetJobs.ts`（159 行），
+  `DataAssetJobs.vue` 只保留模板与按钮（251 → 131 行）；被移动的 113 行脚本除下面一处逐行未改：
+  任务列表原来由页面直接调 `apiGet('/tasks', ...)`，改用 `api/tasks.ts::listTasks`（同一个请求）。
+- 派发/取消/移除、探针与扫描配置下拉、统计卡计数与 5 秒自动刷新的 timer 都在 composable 里：
+  `onMounted` 启动轮询、`onBeforeUnmount` 清除，离开页面即停止轮询；派发 payload 语义不变
+  （显式路径优先于扫描配置，路径非空且选了配置时两个字段都发，未选探针不发请求）。
 - 前端 PCAP 工作台的状态与 API 编排收拢到
   `frontend/src/modules/network/pcap/composables/usePcapWorkbench.ts`（382 行），
   `PcapWorkbench.vue` 只保留模板、弹窗与格式化（582 → 312 行）；被移动的 278 行脚本除下面两处
@@ -103,6 +110,8 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
+| frontend/src/modules/data-security/DataAssetJobs.vue | 251 | 131 |
+| frontend/src/modules/data-security/composables/useDataAssetJobs.ts | 0（本批新增） | 159 |
 | backend/app/api/v1.py | 2557 | 288 |
 | backend/app/api/rules.py | 0（本批新增） | 197 |
 | backend/app/api/libraries.py | 302 | 101 |
@@ -137,6 +146,18 @@
 
 ## 验证与已知限制
 
+- 第十六批（前端）：`npm run typecheck` 通过；全量 vitest 12 个文件 55 项通过（原 46 项 + 本批新增
+  `data-asset-jobs-state.test.ts` 9 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+  逐行比对：迁入 composable 的 113 行脚本除 1 处声明过的改动（`apiGet('/tasks', ...)` 改用
+  `api/tasks.ts::listTasks`，同一个请求）外与拆分前完全一致；模板与样式区域逐字节未改。
+- 第十六批镜像（前端）：legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/`、入口 chunk 与 `DataAssetJobs` chunk 均 200，
+  线上 chunk 与本地构建 SHA256 相同、无 demo/mock 代码；回退标签
+  `source-frontend:pre-data-asset-jobs-state-20260920`。
+- 第十六批真实环境只读复验（后端未改）：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/tasks?kind=data_asset_scan`、`/probes`、`/scan-profiles`、`/data/assets`、`/data-types`、
+  `/data-objects`、`/asset-instances`、`/sensitive/findings`、`/sensitivity-levels` 均 200；
+  未调用测试数据导入接口，未操作真实探针主机，迁移仍 `0015_alert_hits`（head）。
 - 第十五批（前端）：`npm run typecheck` 通过；全量 vitest 11 个文件 46 项通过（原 37 项 + 本批新增
   `pcap-workbench-state.test.ts` 9 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
   逐行比对：迁入 composable 的 278 行脚本除 2 处声明过的改动（`streamData` 用 `TcpStreamFollow`、
@@ -337,8 +358,8 @@
 - 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
-  其余待办：其他前端页面（类型中心、对象详情、采集任务页；PCAP 工作台的状态已抽入 composable）、
-  模型包拆分，最后是探针模块与分发包。
+  其余待办：其他前端页面（类型中心、类型详情、对象详情、实例详情；PCAP 工作台与采集任务页的状态
+  已抽入 composable）、模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

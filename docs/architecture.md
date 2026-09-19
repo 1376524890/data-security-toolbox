@@ -10,6 +10,8 @@
 负责采集任务；`useDataAssetList -> api/dataAssets -> api/data_assets` 负责旧资产列表/详情。
 `PcapWorkbench.vue -> usePcapWorkbench -> api/pcaps`：工作台只渲染，抓包列表与上传、分析轮询、
 包分页与详情、文件预览、TCP 流跟踪的状态与竞态防护都在 composable 里。
+`DataAssetJobs.vue -> useDataAssetJobs -> api/tasks|api/probes|api/scanProfiles`：采集任务页只渲染，
+任务列表按 `kind=data_asset_scan` 查询，派发/取消/移除与 5 秒自动刷新（卸载即停）都在 composable 里。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，
