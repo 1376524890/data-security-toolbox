@@ -248,9 +248,49 @@
   `/test/status present=false`、迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-alert-route-split-20260920`。
 
+## 第八批：任务/审计/报表域路由拆分（2026-09-20）
+
+基线 `d5e7f73`，同一分支。目标：按指南 §C 把任务队列、审计与报表路由从 `api/v1.py` 独立，
+路径/方法/鉴权/分页与响应结构不变；对应后续批次第 1 项的下一个域（指南中记为 tasks/audit/reports）。
+
+已完成代码：
+
+- 任务路由移至 `api/tasks.py`：`GET /tasks`、`POST /tasks`、`GET /tasks/{task_id}`、
+  `POST /tasks/{task_id}/stop`、`DELETE /tasks/{task_id}` 共 5 条路径；行创建仍走
+  `services/task_service.py::create_task`、过期仍走 `services/probe_task_service.py`
+  （`expire_probe_tasks`、`visible_tasks`），停止/删除的 `PROBE_TASK_KINDS`、`TERMINAL` 判定随域移动。
+- 审计与报表路由移至 `api/reports.py`：`POST /audit/logs`、`GET /audit/summary`、
+  `POST /reports/generate`、`GET /reports`、`GET /reports/{report_id}/download` 共 5 条路径；
+  汇总/日志分析仍在 `services/audit_service.py`、报告构建/渲染仍在 `services/report_service.py`。
+- 报告行序列化 `_serialize_report` 随域下沉为 `api/reports.py::serialize_report`，v1 不再保留副本；
+  资产/文件/PCAP/检测/事件/数据资产行继续复用既有 presenter，本批不新增序列化副本。
+- `v1.router` 以 `include_router(tasks_router)`、`include_router(reports_router)` 各只注册一次。
+- 新增 `tests/test_tasks_reports_boundaries.py`（10 项）：两组路径/方法冻结、仅由对应模块声明、
+  仍挂 `/api/v1` 下、全应用无重复「方法 + 路径」、两域均不导入 workers/extensions、
+  Task 行与共享 presenter 复用而未复制、任务/报表逻辑仍在 service、`serialize_report` 未复制回 v1、
+  v1 各只聚合一次。
+
+验证：
+
+- 本机 .venv 隔离全量 655 项：648 passed / 6 failed / 1 skipped；6 项失败与第七批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **排序后字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute），
+  162 条「方法 + 路径 + 端点名」与拆分前逐条相同，仅注册顺序变化（子路由在 v1 末尾追加；
+  全应用无单段通配路径，匹配结果不变）；11 个移动函数的 AST 与拆分前逐节点一致（唯一差异是
+  `_serialize_report`→`serialize_report` 改名与改名后的调用，长行折行不改 AST）；无数据库变更，
+  迁移仍 `0015_alert_hits`（head）。
+- 新增/拆出 3 个模块 ruff check 与 ruff format 通过；`v1.py` 1320 → 1176 行，只减不增，
+  另清理了拆分造成的 6 处未使用导入。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 真实环境只读复验：登录后 28 个只读接口全部 200（含 `/tasks`、`/tasks/{id}`、`/audit/summary`、`/reports`），
+  任务详情返回 13 个字段、审计汇总返回 8 个键；任务 3795 条、报告 2 条为时点采样值，随真实采集变化；
+  `/test/status present=false`、迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-task-report-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts 域已完成）：tasks/audit/reports →
+1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts、tasks/audit/reports 域已完成）：
    detections/engine → dashboard → probes，重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。

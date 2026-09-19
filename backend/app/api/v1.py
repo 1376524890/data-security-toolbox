@@ -19,11 +19,10 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse
 from sqlalchemy import false, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.services.probe_task_service import PROBE_TASK_KINDS, TERMINAL, expire_probe_tasks, visible_tasks
+from app.services.probe_task_service import expire_probe_tasks, visible_tasks
 from app.api.data_assets import router as data_assets_router
 from app.api.data_assets import _serialize_data_asset as _serialize_data_asset
 from app.api.data_assets import data_assets as data_assets
@@ -90,15 +89,12 @@ from app.models import (
     User,
 )
 from app.schemas import (
-    GenerateReportRequest,
     Heartbeat,
-    LogAnalysisRequest,
     LoginRequest,
     ProbeDeleteRequest,
     ProbeRegister,
     ProbeScanRequest,
     ScanRequest,
-    TaskCreate,
 )
 from app.services.alert_service import (
     create_finding_alert,
@@ -107,11 +103,9 @@ from app.services.alert_service import (
     serialize_alert,
 )
 from app.rules.catalog import CATALOG
-from app.services.audit_service import audit_summary, log_analysis
 from app.services.crypto_profile import build_crypto_profile
 from app.services.protocol_service import protocol_layer
 from app.services.test_service import clear_test_data, import_test_data, test_status
-from app.services.report_service import build_summary, render_html, render_pdf
 from app.application.analysis import upsert_incident
 from app.services.task_dispatch import (
     ANALYZE_ASSETS,
@@ -123,14 +117,12 @@ from app.services.task_dispatch import (
 from app.services.task_service import create_task
 from app.api.pcaps import (
     router as pcaps_router,
-    serialize_anomaly,
     serialize_flow,
     serialize_pcap,
 )
 from app.api.task_presenter import serialize_task
 from app.api.files import (
     router as files_router,
-    serialize_file,
 )
 from app.api.assets import (
     router as assets_router,
@@ -146,23 +138,15 @@ from app.api.alerts import (
 )
 from app.api.probe_presenter import serialize_probe
 from app.api.rule_presenter import rule_file_entries
+from app.api.tasks import (
+    router as tasks_router,
+)
+from app.api.reports import (
+    router as reports_router,
+)
 
 router = APIRouter(prefix="/api/v1")
 incident_engine = IncidentEngine()
-
-
-def _serialize_report(item: Report) -> dict[str, Any]:
-    path = Path(item.storage_path)
-    return {
-        "id": item.id,
-        "title": item.title,
-        "report_type": item.report_type,
-        "format": item.format,
-        "summary": item.summary,
-        "storage_path": item.storage_path,
-        "size": path.stat().st_size if path.exists() else 0,
-        "created_at": item.created_at,
-    }
 
 
 def _dispatch(task_id: int, task_name: str, *args: Any) -> None:
@@ -653,136 +637,6 @@ def probe_scan(probe_id: int, payload: ProbeScanRequest, request: Request, db: S
         _dispatch(task.id, NETWORK_SCAN)
         tasks.append(serialize_task(task))
     return {"tasks": tasks}
-
-
-
-
-@router.get("/tasks")
-def list_tasks(status: str | None = None, kind: str | None = None, search: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
-    expire_probe_tasks(db)
-    db.commit()
-    query = select(Task).where(visible_tasks())
-    if status:
-        query = query.where(Task.status == status)
-    if kind:
-        query = query.where(Task.kind == kind)
-    if search:
-        query = query.where(or_(Task.kind.ilike(f"%{search}%"), Task.current_stage.ilike(f"%{search}%"), Task.error.ilike(f"%{search}%")))
-    result = paginate(db, query.order_by(Task.id.desc()), page, page_size)
-    return page_response([serialize_task(item) for item in result["items"]], page, page_size, result["total"])
-
-
-@router.post("/tasks")
-def create_generic_task(payload: TaskCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
-    task = create_task(db, payload.kind, payload.payload)
-    return serialize_task(task)
-
-
-@router.get("/tasks/{task_id}")
-def task_detail(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    task = db.get(Task, task_id)
-    if not task or task.payload.get("deleted"):
-        raise HTTPException(404, "task not found")
-    return serialize_task(task)
-
-
-@router.post("/tasks/{task_id}/stop", dependencies=[Depends(require_active_admin)])
-def stop_task(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
-    if not task or task.payload.get("deleted"):
-        raise HTTPException(404, "任务不存在")
-    if task.kind not in PROBE_TASK_KINDS:
-        raise HTTPException(409, "当前仅支持停止探针扫描和数据资产采集任务")
-    if task.status not in TERMINAL:
-        task.status, task.current_stage = "Cancelled", "已停止；已领取任务由探针检查后退出"
-        task.finished_at = datetime.now(UTC)
-        db.commit()
-    return serialize_task(task)
-
-
-@router.delete("/tasks/{task_id}", dependencies=[Depends(require_active_admin)])
-def delete_task(task_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
-    if not task or task.payload.get("deleted"):
-        raise HTTPException(404, "任务不存在")
-    if task.status not in TERMINAL:
-        raise HTTPException(409, "请先停止任务，或等待任务完成后再删除")
-    # Keep a tombstone for late probe reports and linked analysis evidence.
-    task.payload = {**task.payload, "deleted": True}
-    db.commit()
-    return {"status": "ok"}
-
-
-@router.post("/audit/logs")
-def analyze_log(payload: LogAnalysisRequest) -> dict[str, Any]:
-    lines = payload.content.splitlines()
-    context = DetectionContext(target_type="log", data={}, log_lines=lines)
-    pipeline = DetectionPipeline(registry, RiskEngine())
-    result = pipeline.run(context)
-    return {"log_summary": log_analysis(lines), "findings": [item.to_dict() for item in result.findings], "risk": {"score": result.risk_score, "level": result.risk_level}}
-
-
-@router.get("/audit/summary")
-def audit(db: Session = Depends(get_db)) -> dict[str, Any]:
-    assets = [serialize_asset(item) for item in db.scalars(select(Asset)).all()]
-    files = [serialize_file(item) for item in db.scalars(select(FileRecord)).all()]
-    pcaps = [serialize_pcap(item) for item in db.scalars(select(PcapRecord)).all()]
-    anomalies = [serialize_anomaly(item) for item in db.scalars(select(Anomaly)).all()]
-    return audit_summary(assets, files, pcaps, anomalies)
-
-
-@router.post("/reports/generate")
-def generate_report(payload: GenerateReportRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
-    assets = [serialize_asset(item) for item in db.scalars(select(Asset)).all()]
-    files = [serialize_file(item) for item in db.scalars(select(FileRecord)).all()]
-    pcaps = [serialize_pcap(item) for item in db.scalars(select(PcapRecord)).all()]
-    anomalies = [serialize_anomaly(item) for item in db.scalars(select(Anomaly)).all()]
-    findings = [_serialize_detection(item) for item in db.scalars(select(DetectionFinding).order_by(DetectionFinding.risk_score.desc())).all()]
-    data_assets = [_serialize_data_asset(item) for item in db.scalars(select(DataAsset).order_by(DataAsset.id.desc())).all()]
-    incidents = [serialize_incident(item) for item in db.scalars(select(Incident).order_by(Incident.risk_score.desc())).all()]
-    summary = build_summary(assets, files, pcaps, anomalies, audit_summary(assets, files, pcaps, anomalies), findings, data_assets, incidents)
-    html = render_html(summary, assets, files, pcaps, anomalies, findings, data_assets, incidents)
-    report_format = payload.format
-    stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-    output = settings.report_dir / f"{payload.title.replace(' ', '_')}_{stamp}.{report_format}"
-    if report_format == "pdf":
-        try:
-            render_pdf(html, output)
-        except ImportError:
-            report_format = "html"
-            output = output.with_suffix(".html")
-            output.write_text(html, encoding="utf-8")
-    else:
-        output.write_text(html, encoding="utf-8")
-    record = Report(title=payload.title, report_type=payload.report_type, format=report_format, storage_path=str(output), summary=summary)
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return _serialize_report(record)
-
-
-@router.get("/reports")
-def list_reports(report_type: str | None = None, format: str | None = None, search: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
-    query = select(Report)
-    if report_type:
-        query = query.where(Report.report_type == report_type)
-    if format:
-        query = query.where(Report.format == format)
-    if search:
-        query = query.where(Report.title.ilike(f"%{search}%"))
-    result = paginate(db, query.order_by(Report.id.desc()), page, page_size)
-    return page_response([_serialize_report(item) for item in result["items"]], page, page_size, result["total"])
-
-
-@router.get("/reports/{report_id}/download")
-def download_report(report_id: int, db: Session = Depends(get_db)) -> FileResponse:
-    item = db.get(Report, report_id)
-    if not item:
-        raise HTTPException(404, "report not found")
-    path = Path(item.storage_path)
-    if not path.exists():
-        raise HTTPException(404, "report file not found")
-    return FileResponse(str(path), filename=path.name)
 
 
 @router.get("/analysis/results")
@@ -1318,3 +1172,5 @@ router.include_router(files_router)
 router.include_router(assets_router)
 router.include_router(incidents_router)
 router.include_router(alerts_router)
+router.include_router(tasks_router)
+router.include_router(reports_router)

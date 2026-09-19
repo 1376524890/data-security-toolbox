@@ -81,7 +81,8 @@ source/
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
 - 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
-  `alerts.py`、`extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
+  `alerts.py`、`tasks.py`、`reports.py`、`extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、
+  `profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
@@ -213,6 +214,18 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 不要在路由里重写。探针行序列化复用 `api/probe_presenter.py::serialize_probe`，规则解析复用
 `api/rule_presenter.py::rule_definition`（`/rules` 路由同样引用它），不要在 v1 里另留副本。
 边界由 `tests/test_alert_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
+
+## 任务、审计与报表域路由入口
+
+任务队列路由在 `api/tasks.py`（`GET|POST /tasks`、`GET /tasks/{task_id}`、
+`POST /tasks/{task_id}/stop`、`DELETE /tasks/{task_id}`），行创建仍在 `services/task_service.py`、
+过期仍在 `services/probe_task_service.py`（`expire_probe_tasks`、`visible_tasks`），Task 行序列化复用
+`api/task_presenter.py::serialize_task`，不要在路由里重写停止/删除判定。
+审计与报表路由在 `api/reports.py`（`POST /audit/logs`、`GET /audit/summary`、
+`POST /reports/generate`、`GET /reports`、`GET /reports/{report_id}/download`），
+汇总/日志分析仍在 `services/audit_service.py`，报告构建/渲染仍在 `services/report_service.py`；
+报告行序列化 `serialize_report` 是本域私有实现（原 v1 `_serialize_report`），不要再复制回 v1。
+边界由 `tests/test_tasks_reports_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
 
 ## 与其他文档的关系
 
