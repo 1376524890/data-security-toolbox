@@ -81,8 +81,8 @@ source/
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
 - 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
-  `alerts.py`、`tasks.py`、`reports.py`、`extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、
-  `profiles.py`、`rulesets.py`；
+  `alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`extensions.py`、`data_catalog.py`、
+  `deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
@@ -226,6 +226,18 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 汇总/日志分析仍在 `services/audit_service.py`，报告构建/渲染仍在 `services/report_service.py`；
 报告行序列化 `serialize_report` 是本域私有实现（原 v1 `_serialize_report`），不要再复制回 v1。
 边界由 `tests/test_tasks_reports_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
+
+## 检测与引擎域路由入口
+
+检测结果路由在 `api/detections.py`（`GET /detections`、`GET /detections/{detection_id}`、
+`GET /analysis/results`）；行序列化复用 `api/finding_presenter.py::_serialize_detection`、
+`api/incident_presenter.py::serialize_incident`、`api/pcaps.py::serialize_pcap`、
+`services/alert_service.py::serialize_alert`，列表时间过滤用 `api/query_filters.py::string_time_filter`，
+不要在路由里重写任一序列化或过滤。引擎目录路由在 `api/engines.py`（`GET /engine/registry`、
+`POST /engine/pipeline`）：引擎清单必须读 `app.engine.registry`，规则清单必须走
+`api/rule_presenter.py::rule_file_entries`，内部引擎名与 UI slug 的映射 `ENGINE_PRESENTATION`
+随域移动，不要在 v1 或其他域再放一份。检测判定仍在 `app/engine/*`。
+边界由 `tests/test_detection_engine_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
 
 ## 与其他文档的关系
 

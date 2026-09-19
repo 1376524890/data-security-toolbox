@@ -53,9 +53,7 @@ from app.core.storage import safe_path
 from app.deployment.enrollment import EnrollmentError, consume_enrollment
 from app.deployment.record import DeploymentError
 from app.deployment.removal import create_removal_deployment
-from app.engine import registry
 from app.engine.core.context import DetectionContext
-from app.engine.core.pipeline import DetectionPipeline
 from app.engine.risk_engine.engine import RiskEngine
 from app.incident_engine.engine import IncidentEngine
 from app.integrations import integration_registry
@@ -70,7 +68,6 @@ from app.models import (
     IOC,
     AdminSession,
     Alert,
-    AnalysisResult,
     Anomaly,
     Asset,
     DataAsset,
@@ -100,9 +97,7 @@ from app.services.alert_service import (
     create_finding_alert,
     create_incident_alert,
     publish_alert,
-    serialize_alert,
 )
-from app.rules.catalog import CATALOG
 from app.services.crypto_profile import build_crypto_profile
 from app.services.protocol_service import protocol_layer
 from app.services.test_service import clear_test_data, import_test_data, test_status
@@ -118,7 +113,6 @@ from app.services.task_service import create_task
 from app.api.pcaps import (
     router as pcaps_router,
     serialize_flow,
-    serialize_pcap,
 )
 from app.api.task_presenter import serialize_task
 from app.api.files import (
@@ -132,11 +126,16 @@ from app.api.incident_presenter import serialize_incident
 from app.api.incidents import (
     router as incidents_router,
 )
-from app.api.query_filters import string_time_filter as _string_time_filter
 from app.api.alerts import (
     router as alerts_router,
 )
 from app.api.probe_presenter import serialize_probe
+from app.api.detections import (
+    router as detections_router,
+)
+from app.api.engines import (
+    router as engines_router,
+)
 from app.api.rule_presenter import rule_file_entries
 from app.api.tasks import (
     router as tasks_router,
@@ -260,22 +259,6 @@ def _engine_rule_counts() -> dict[str, int]:
         counts[engine] = count
     counts["yara"] = sum(1 for _ in (base / "data").glob("*.yar")) if (base / "data").exists() else 0
     return counts
-
-
-# Internal engine name -> (UI slug, display label). The console routes predate
-# the engine names (``/engines/sigma`` vs ``sigma_log_engine``), so the mapping
-# lives server-side: every view that lists engines or filters findings by
-# engine reads it from ``/engine/registry`` instead of hard-coding a list.
-ENGINE_PRESENTATION: dict[str, tuple[str, str]] = {
-    "asset_engine": ("asset", "资产引擎"),
-    "protocol_engine": ("protocol", "协议引擎"),
-    "traffic_engine": ("traffic", "流量引擎"),
-    "data_engine": ("data", "数据引擎"),
-    "sigma_log_engine": ("sigma", "Sigma 日志引擎"),
-    "compliance_engine": ("compliance", "合规引擎"),
-    "dlp_engine": ("dlp", "数据防泄露引擎"),
-    "threat_intel": ("ioc", "威胁情报引擎"),
-}
 
 
 @router.get("/health")
@@ -639,65 +622,6 @@ def probe_scan(probe_id: int, payload: ProbeScanRequest, request: Request, db: S
     return {"tasks": tasks}
 
 
-@router.get("/analysis/results")
-def analysis_results(module: str | None = None, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    query = select(AnalysisResult)
-    if module:
-        query = query.where(AnalysisResult.module == module)
-    return [
-        {"id": item.id, "task_id": item.task_id, "module": item.module, "content": item.content, "score": item.score, "risk_level": item.risk_level, "created_at": item.created_at}
-        for item in db.scalars(query.order_by(AnalysisResult.id.desc())).all()
-    ]
-
-
-
-
-@router.get("/engine/registry")
-def engine_registry(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    """Every detection engine with its real rule inventory and finding count.
-
-    ``rule_count`` is the number of rule files backing the engine and
-    ``detection_count`` the findings it has actually produced, so the UI never
-    has to guess which ``detection_findings.engine`` value an engine writes --
-    the internal engine name and the value stored on a finding are not always
-    the same string (for example the built-in rule interpreter is registered as
-    ``sigma_log_engine``), and the UI routes predate both.
-    """
-    # Count each engine's own rule files so the number always matches the rule
-    # list the console renders for that engine.
-    rule_counts: dict[str, int] = {}
-    inventory = rule_file_entries(db, include_content=False)
-    for item in inventory:
-        rule_key = str(item.get("engine") or "")
-        rule_counts[rule_key] = rule_counts.get(rule_key, 0) + 1
-    finding_counts = {
-        str(name): int(total)
-        for name, total in db.execute(
-            select(DetectionFinding.engine, func.count(DetectionFinding.id)).group_by(DetectionFinding.engine)
-        ).all()
-    }
-    items: list[dict[str, Any]] = []
-    for engine in registry.all():
-        entry = dict(engine.metadata())
-        name = str(entry.get("name") or "")
-        slug, label = ENGINE_PRESENTATION.get(name, (name, name))
-        rule_count = rule_counts.get(name)
-        source = next((item for item in CATALOG if item.engine == name), None)
-        entry.update({
-            "slug": slug,
-            "label": label,
-            "rule_count": int(rule_count or 0),
-            "active_rule_files": sum(item['execution'] == 'active' for item in inventory
-                                     if item['engine'] == name),
-            "rule_source": source.source_name or '平台检查规则' if source else '平台检查规则',
-            "refreshable": bool(source and source.refreshable),
-            "detection_engine": name,
-            "detection_count": finding_counts.get(name, 0),
-        })
-        items.append(entry)
-    return items
-
-
 @router.get("/integrations")
 def list_integrations() -> list[dict[str, Any]]:
     entries = list(integration_registry.metadata())
@@ -818,53 +742,6 @@ def offline_cves(search: str | None = None, limit: int = Query(100, ge=1, le=100
 async def upload_offline_alt(file: UploadFile = File(...), resource_type: str | None = Form(None), name: str | None = Form(None), version: str | None = Form(None), db: Session = Depends(get_db)) -> dict[str, Any]:
     data = await file.read()
     return import_uploaded_offline(db, file.filename or "offline.bundle", data, resource_type, name, version).to_dict()
-
-
-@router.post("/engine/pipeline")
-def run_engine_pipeline(payload: dict[str, Any]) -> dict[str, Any]:
-    context = DetectionContext(
-        target_type=payload.get("target_type", "manual"),
-        target_id=payload.get("target_id"),
-        data=payload.get("data", {}),
-        assets=payload.get("assets", []),
-        flows=payload.get("flows", []),
-        packets=payload.get("packets", []),
-        metadata=payload.get("metadata", {}),
-        log_lines=payload.get("log_lines", []),
-    )
-    pipeline = DetectionPipeline(registry, RiskEngine())
-    return pipeline.run(context).to_dict()
-
-
-@router.get("/detections")
-def list_detections(severity: str | None = None, engine: str | None = None, risk_level: str | None = None, target_type: str | None = None, target_id: str | None = None, search: str | None = None, start_time: str | None = None, end_time: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
-    query = select(DetectionFinding)
-    if severity:
-        query = query.where(DetectionFinding.severity == severity)
-    if engine:
-        query = query.where(DetectionFinding.engine == engine)
-    if risk_level:
-        query = query.where(DetectionFinding.risk_level == risk_level)
-    if target_type:
-        query = query.where(DetectionFinding.target_type == target_type)
-    if target_id:
-        query = query.where(DetectionFinding.target_id == target_id)
-    if search:
-        query = query.where(or_(DetectionFinding.rule_id.ilike(f"%{search}%"), DetectionFinding.engine.ilike(f"%{search}%"), DetectionFinding.recommendation.ilike(f"%{search}%")))
-    query = _string_time_filter(query, DetectionFinding.timestamp, start_time, end_time)
-    result = paginate(db, query.order_by(DetectionFinding.risk_score.desc()), page, page_size)
-    return page_response([_serialize_detection(item) for item in result["items"]], page, page_size, result["total"])
-
-
-@router.get("/detections/{detection_id}")
-def detection_detail(detection_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    item = db.get(DetectionFinding, detection_id)
-    if not item:
-        raise HTTPException(404, "detection not found")
-    incidents = db.scalars(select(Incident).where(Incident.findings["items"].as_string().ilike(f"%{item.rule_id}%"))).all()
-    pcap = db.get(PcapRecord, int(item.target_id)) if item.target_type == "pcap" and str(item.target_id).isdigit() else None
-    alert = db.scalar(select(Alert).where(Alert.finding_id == item.id))
-    return {"detection": _serialize_detection(item), "related_incidents": [serialize_incident(item) for item in incidents], "pcap": serialize_pcap(pcap) if pcap else None, "alert": serialize_alert(alert) if alert else None}
 
 
 @router.get("/risk/summary")
@@ -1174,3 +1051,5 @@ router.include_router(incidents_router)
 router.include_router(alerts_router)
 router.include_router(tasks_router)
 router.include_router(reports_router)
+router.include_router(detections_router)
+router.include_router(engines_router)

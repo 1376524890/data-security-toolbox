@@ -288,10 +288,50 @@
   `/test/status present=false`、迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-task-report-route-split-20260920`。
 
+## 第九批：检测/引擎域路由拆分（2026-09-20）
+
+基线 `6e19403`，同一分支。目标：按指南 §C 把检测结果与引擎目录路由从 `api/v1.py` 独立，
+路径/方法/鉴权/分页与响应结构不变；对应后续批次第 1 项的下一个域（指南中记为 detections/engine）。
+
+已完成代码：
+
+- 检测结果路由移至 `api/detections.py`：`GET /detections`、`GET /detections/{detection_id}`、
+  `GET /analysis/results` 共 3 条路径；行序列化继续复用 finding/事件/PCAP/告警 presenter，
+  列表时间过滤改用共享 `api/query_filters.py::string_time_filter`（原 v1 `_string_time_filter` 别名）。
+- 引擎路由移至 `api/engines.py`：`GET /engine/registry`、`POST /engine/pipeline` 共 2 条路径；
+  引擎清单读 `app.engine.registry`、规则清单走 `api/rule_presenter.py::rule_file_entries`，
+  内部引擎名到 UI slug 的映射 `ENGINE_PRESENTATION`（原 v1 模块常量）随域移动，v1 不再保留。
+- 检测判定仍在 `app/engine/*`，本批未改任何引擎、规则或评分逻辑。
+- `v1.router` 以 `include_router(detections_router)`、`include_router(engines_router)` 各只注册一次。
+- 新增 `tests/test_detection_engine_boundaries.py`（9 项）：两组路径/方法冻结、仅由对应模块声明、
+  仍挂 `/api/v1` 下、全应用无重复「方法 + 路径」、两域均不导入 workers/extensions、
+  检测域复用而未复制共享 presenter 与时间过滤、引擎域读真实 registry 与规则清单、
+  `ENGINE_PRESENTATION` 未复制回 v1、v1 各只聚合一次。
+
+验证：
+
+- 本机 .venv 隔离全量 664 项：657 passed / 6 failed / 1 skipped；6 项失败与第八批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **排序后字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute），
+  162 条「方法 + 路径 + 端点名」与拆分前逐条相同；`analysis_results`、`detection_detail`、
+  `engine_registry`、`run_engine_pipeline` 的 AST 与拆分前逐节点一致，`list_detections` 只差
+  `_string_time_filter` 改名与改名后的调用，`ENGINE_PRESENTATION` 常量值一致；无数据库变更，
+  迁移仍 `0015_alert_hits`（head）。
+- 新增/拆出 3 个模块 ruff check 与 ruff format 通过；`v1.py` 1176 → 1055 行，只减不增，
+  另清理了拆分造成的 7 处未使用导入。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 真实环境只读复验：登录后 38 个只读接口全部 200（含 `/detections`、`/detections/{id}`、
+  `/analysis/results`、`/engine/registry`），检测详情返回 4 个键、引擎清单 15 项且带 UI slug；
+  检测 3502 条为时点采样值，随真实采集变化；`/test/status present=false`、迁移仍 `0015_alert_hits`（head）；
+  本批未导入测试数据、未操作真实探针。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-detection-engine-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts、tasks/audit/reports 域已完成）：
-   detections/engine → dashboard → probes，重点明确文件对数据资产结果的写入边界。
+1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts、tasks/audit/reports、
+   detections/engine 域已完成）：dashboard → probes → integrations/offline → rules，
+   重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 4. 旧的 `workers/tasks.py` 兼容门面与 `data_object_service.py` 在确无调用方后再删除。
