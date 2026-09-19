@@ -555,11 +555,43 @@
   也未调用 `POST /test/import`、`POST /test/clear` 等写接口。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-v1-residual-route-split-20260920`。
 
+## 第十五批：前端 PCAP 工作台状态解耦（2026-09-20）
+
+基线 `e7eb701`，同一分支。目标：按指南 §F「前端先抽状态，再抽视图」把工作台的状态与 API 编排
+从组件里抽出来，模板与交互不变。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/network/pcap/composables/usePcapWorkbench.ts`（382 行），
+  `PcapWorkbench.vue` 只保留模板、弹窗与格式化（582 → 312 行）；迁入的 278 行脚本逐行比对，
+  只有两处声明过的改动：`streamData` 改用 `api/pcaps.ts` 已有的 `TcpStreamFollow` 类型
+  （原来重复声明了一份等价的内联类型），以及新增 `closeFileDialog()`。
+- 模板原来在弹窗 `@closed` 上直接 `++fileVersion`；`let` 计数器不能通过 composable 的返回值
+  暴露成活绑定（返回值只是取值拷贝），因此改为调用 `closeFileDialog()`，语义不变：
+  关弹窗即作废在途的文件预览请求。
+- 过期响应防护与轮询原样保留：`viewVersion`（切换抓包）、`packetVersion`（包分页）、
+  `detailVersion`（包详情）、`fileVersion`（文件预览）、`taskVersion`（分析轮询）；
+  轮询 timer 在组件卸载时清除，离开页面即停止轮询（指南 §F 第 3 条）。API 仍只走
+  `frontend/src/api`，没有第二套 HTTP 客户端。
+- 新增 `frontend/src/__tests__/pcap-workbench-state.test.ts`（9 项）：列表失败进页面状态、
+  两次打开抓包的竞态只保留最新、去重上传定位到记录并清空筛选、空文件拒绝且不调 API、
+  包分页按当前查询并丢弃过期页、TCP 流跟踪与文件预览（无保留字节时拒绝）、
+  关弹窗后丢弃迟到的预览、分析轮询成功后重开抓包、返回列表并重新加载。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 11 个文件 46 项通过（原 37 项 + 本批 9 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：容器 Up，
+  `http://localhost:8088/`、入口 chunk 与 `PcapWorkbench` chunk 均 200，入口 chunk 名与本地构建一致，
+  工作台 chunk 内仍是真实 API 调用、无 demo/mock 代码；本批未导入测试数据、未操作真实探针主机。
+- 回退标签 `source-frontend:pre-pcap-workbench-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
+1. 前端类型中心、对象详情、采集任务页按实际需求逐批拆分（同一模式：先抽状态，再抽视图）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。

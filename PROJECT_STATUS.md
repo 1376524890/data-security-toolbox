@@ -10,12 +10,21 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 2da7390 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | e7eb701 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第十四批：`v1.py` 剩余零散入口收敛（auth / health / 网络扫描 / 测试数据四域，`v1.py` 自此只做聚合）；前十三批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域）见下方记录 |
+| 本批范围 | 第十五批：前端 PCAP 工作台状态解耦（状态与 API 编排进 composable）；前十四批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口）见下方记录 |
 
 ## 本批已落地结构
 
+- 前端 PCAP 工作台的状态与 API 编排收拢到
+  `frontend/src/modules/network/pcap/composables/usePcapWorkbench.ts`（382 行），
+  `PcapWorkbench.vue` 只保留模板、弹窗与格式化（582 → 312 行）；被移动的 278 行脚本除下面两处
+  逐行未改：`streamData` 改用 `api/pcaps.ts` 已有的 `TcpStreamFollow` 类型（去掉重复的内联类型），
+  以及新增 `closeFileDialog()`（模板原来直接 `++fileVersion`，而 `let` 计数器无法从 composable 的
+  返回值暴露成活的绑定，直接自增会丢掉“关弹窗即作废在途预览”的语义）。
+- 过期响应防护与轮询语义原样保留：`viewVersion`（切换抓包）、`packetVersion`（包分页）、
+  `detailVersion`（包详情）、`fileVersion`（文件预览）、`taskVersion`（分析轮询），
+  轮询 timer 在组件卸载时清除，离开页面即停止轮询；API 仍只走 `frontend/src/api`，未新增 HTTP 客户端。
 - `api/v1.py` 里最后的零散入口按域收拢，`v1.py` 自此**只做子路由聚合**（自身不再声明任何路径，
   288 → 79 行）：`api/auth.py`（3 条路径：`POST /auth/login`、`POST /auth/logout`、`GET /auth/me`）、
   `api/health.py`（`GET /health`）、`api/network_scan.py`（`POST /scan`、`GET /scan/{task_id}`）、
@@ -128,6 +137,14 @@
 
 ## 验证与已知限制
 
+- 第十五批（前端）：`npm run typecheck` 通过；全量 vitest 11 个文件 46 项通过（原 37 项 + 本批新增
+  `pcap-workbench-state.test.ts` 9 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+  逐行比对：迁入 composable 的 278 行脚本除 2 处声明过的改动（`streamData` 用 `TcpStreamFollow`、
+  新增 `closeFileDialog()`）外与拆分前完全一致。
+- 第十五批镜像（前端）：用同一 builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/` 与入口 chunk、`PcapWorkbench` chunk 均 200，
+  入口 chunk 名与本地构建一致；工作台 chunk 内仍是真实 API 调用、无 demo/mock 代码。
+  回退标签 `source-frontend:pre-pcap-workbench-state-20260920`。
 - 第十四批（本机 .venv 隔离全量）726 项：719 passed / 6 failed / 1 skipped；6 项失败与第十三批
   基线集合完全相同，无新增失败、无新增错误（其中 29 项为本批新增边界测试）。拆分前后 OpenAPI
   **完全一致**（144 条路径 / 158 个操作，含路径顺序与 tags）；路由仍 162 条记录（158 APIRoute）、
@@ -320,8 +337,8 @@
 - 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
-  其余待办：其他前端页面（类型中心、对象详情、采集任务页、PCAP 工作台）、模型包拆分，
-  最后是探针模块与分发包。
+  其余待办：其他前端页面（类型中心、对象详情、采集任务页；PCAP 工作台的状态已抽入 composable）、
+  模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

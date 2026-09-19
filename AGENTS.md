@@ -312,6 +312,18 @@ worker 能力与规则清单的读取（`read_worker_capabilities`、`merge_capa
 - 边界由 `tests/test_{auth,health,network_scan,test_data}_boundaries.py` 检查
   （路径/方法冻结、不复制共享守卫、全应用无重复注册、v1 只聚合一次）。
 
+## PCAP 工作台状态边界
+
+工作台的状态与 API 编排在 `frontend/src/modules/network/pcap/composables/usePcapWorkbench.ts`，
+`PcapWorkbench.vue` 只保留模板、弹窗与格式化（582 → 312 行）。
+抓包列表/上传/分析轮询、包分页与详情、文件预览、TCP 流跟踪都在 composable 里：
+`viewVersion`、`packetVersion`、`detailVersion`、`fileVersion`、`taskVersion` 的过期响应防护与
+轮询 timer（卸载时清除）不要挪回组件，切换抓包后哪些请求作废由这五个版本号定义。
+关闭预览弹窗的作废动作由 `closeFileDialog()` 承担——`let` 计数器不能靠返回值暴露给模板。
+API 调用仍只走 `frontend/src/api`，不在组件里拼第二套 HTTP 客户端。
+回归：`frontend/src/__tests__/pcap-workbench.test.ts`（组件行为）、
+`pcap-workbench-state.test.ts`（状态、竞态与轮询）、`npm run typecheck`、`npm test`。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`
