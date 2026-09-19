@@ -76,8 +76,12 @@ def parse(path: Path, size: int, *, budget, delimiter: str = ",", rows: int | No
         with path.open("rb") as handle:
             head_text = _region(handle, 0, min(REGION_BYTES, size), drop_first=False, budget=budget)
             result.bytes_read += len(head_text.encode("utf-8", errors="replace"))
-            records = _records(head_text, delimiter, limit + 1)
+            records = _records(head_text, delimiter, limit + 2)
             header = records[0] if records else []
+            # Ask for one row past the limit so "at the limit" and "over the
+            # limit" are distinguishable; a file whose value sits on row 26 of 31
+            # must not report complete coverage.
+            row_limited = len(records) - 1 > limit
             if size > REGION_BYTES:
                 # Middle and tail regions keep the sample representative; a region
                 # cut by a quote boundary is dropped, not repaired.
@@ -94,6 +98,12 @@ def parse(path: Path, size: int, *, budget, delimiter: str = ",", rows: int | No
                 result.termination_reason = "sampled"
                 result.note = "按头/中/尾区域采样，跨区引号字段被丢弃"
                 records = records[:1] + records[1:][-limit:] if header else records
+            elif row_limited:
+                result.coverage = COVERAGE_PARTIAL
+                result.termination_reason = "row_limit"
+                result.note = f"数据行超过采样上限 {limit}，未检查全部记录"
+            if row_limited:
+                records = records[: limit + 1]
     except BudgetExceeded as exc:
         result.coverage = COVERAGE_PARTIAL
         result.termination_reason = exc.reason

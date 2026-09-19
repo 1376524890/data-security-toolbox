@@ -28,6 +28,26 @@ def _builtin_patterns() -> dict[str, Any]:
 
 REGEX_RULES = _builtin_patterns()
 
+# Entity families behind the two file/text findings, and the confidence a hit
+# must reach before it may raise one. The threshold is the platform-wide alert
+# confidence so DLP and the file engine cannot disagree about what is "real".
+PII_FAMILIES = {"PHONE", "ID_CARD", "BANK_CARD", "EMAIL", "NAME", "ADDRESS", "MEDICAL_RECORD"}
+SECRET_FAMILIES = {"API_KEY", "TOKEN", "CREDENTIAL"}
+CONFIRMED_MIN_SCORE = 0.6
+_SEVERITY_RANK = {"Low": 1, "Medium": 2, "High": 3, "Critical": 4}
+
+
+def _confirmed_of(scan: dict[str, Any], families: set[str]) -> list[dict[str, Any]]:
+    """Value-level hits of one family from a :func:`scan_text` result."""
+    return [item for item in scan.get("confirmed_hits", []) if item.get("entity") in families]
+
+
+def _severity_of(items: list[dict[str, Any]], fallback: str) -> str:
+    """Highest severity carried by the evidence, never invented upward."""
+    ranked = max(items, key=lambda item: _SEVERITY_RANK.get(str(item.get("severity") or ""), 0), default=None)
+    current = str(ranked.get("severity") or "") if ranked else ""
+    return current if current in _SEVERITY_RANK else fallback
+
 
 def shannon_entropy(text: str) -> float:
     if not text:
@@ -37,10 +57,64 @@ def shannon_entropy(text: str) -> float:
     return -sum((count / length) * math.log2(count / length) for count in counter.values())
 
 
-def extract_text(path: Path) -> str:
+_TEXT_SUFFIXES = {
+    ".csv", ".txt", ".sql", ".log", ".json", ".jsonl", ".ndjson", ".xml", ".yaml", ".yml",
+    ".tsv", ".conf", ".cfg", ".ini", ".toml", ".properties", ".env", ".list", ".md",
+}
+
+# Scan outcome vocabulary. "complete" claims the whole document was read; an empty
+# string must never imply that, so unsupported/failed reads are named explicitly.
+SCAN_COMPLETE = "complete"
+SCAN_PARTIAL = "partial"
+SCAN_UNSUPPORTED = "unsupported"
+SCAN_FAILED = "failed"
+
+
+def _docx_text(path: Path) -> str:
+    """Extract paragraphs from a .docx without an optional third-party parser."""
+    import zipfile
+    from xml.etree import ElementTree
+
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    with zipfile.ZipFile(path) as archive:
+        with archive.open("word/document.xml") as handle:
+            root = ElementTree.parse(handle).getroot()
+    paragraphs = [
+        "".join(node.text or "" for node in paragraph.iter(f"{namespace}t"))
+        for paragraph in root.iter(f"{namespace}p")
+    ]
+    return "\n".join(paragraphs)
+
+
+def extract_document(path: Path) -> tuple[str, dict[str, Any]]:
+    """Read a document and report how complete the read really was.
+
+    Returns ``(text, status)``; ``status['status']`` is one of
+    ``complete``/``partial``/``unsupported``/``failed`` and carries the format,
+    character count, truncation flag and a reason. A format the engine cannot
+    parse (or a document that fails to parse) is reported as such instead of
+    coming back as an empty, apparently clean result.
+    """
     suffix = path.suffix.lower()
-    if suffix in {".csv", ".txt", ".sql", ".log", ".json", ".xml", ".yaml", ".yml"}:
-        return path.read_text(encoding="utf-8", errors="replace")
+    if suffix in _TEXT_SUFFIXES or path.name.lower().startswith(".env"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeError) as exc:
+            return "", {"status": SCAN_FAILED, "format": suffix or ".txt", "chars": 0,
+                        "truncated": False, "reason": type(exc).__name__}
+        return text, {"status": SCAN_COMPLETE, "format": suffix or ".txt", "chars": len(text),
+                      "truncated": False, "reason": ""}
+    if suffix == ".docx":
+        try:
+            text = _docx_text(path)
+        except Exception as exc:
+            return "", {"status": SCAN_FAILED, "format": ".docx", "chars": 0,
+                        "truncated": False, "reason": type(exc).__name__}
+        if not text.strip():
+            return text, {"status": SCAN_UNSUPPORTED, "format": ".docx", "chars": 0,
+                          "truncated": False, "reason": "no_extractable_text"}
+        return text, {"status": SCAN_COMPLETE, "format": ".docx", "chars": len(text),
+                      "truncated": False, "reason": ""}
     if suffix in {".xlsx", ".xlsm"}:
         try:
             from openpyxl import load_workbook
@@ -49,17 +123,33 @@ def extract_text(path: Path) -> str:
             for sheet in workbook.worksheets:
                 for row in sheet.iter_rows(values_only=True):
                     parts.append(" ".join(str(value) for value in row if value is not None))
-            return "\n".join(parts)
-        except Exception:
-            return ""
+            text = "\n".join(parts)
+        except Exception as exc:
+            return "", {"status": SCAN_FAILED, "format": suffix, "chars": 0,
+                        "truncated": False, "reason": type(exc).__name__}
+        return text, {"status": SCAN_COMPLETE, "format": suffix, "chars": len(text),
+                      "truncated": False, "reason": ""}
     if suffix == ".pdf":
         try:
             from PyPDF2 import PdfReader
             reader = PdfReader(str(path))
-            return "\n".join((page.extract_text() or "") for page in reader.pages)
-        except Exception:
-            return ""
-    return ""
+            text = "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as exc:
+            return "", {"status": SCAN_FAILED, "format": ".pdf", "chars": 0,
+                        "truncated": False, "reason": type(exc).__name__}
+        if not text.strip():
+            # A scanned PDF has no text layer; it was not checked, so it is not clean.
+            return "", {"status": SCAN_UNSUPPORTED, "format": ".pdf", "chars": 0,
+                        "truncated": False, "reason": "no_text_layer"}
+        return text, {"status": SCAN_COMPLETE, "format": ".pdf", "chars": len(text),
+                      "truncated": False, "reason": ""}
+    return "", {"status": SCAN_UNSUPPORTED, "format": suffix, "chars": 0,
+                "truncated": False, "reason": "unsupported_format"}
+
+
+def extract_text(path: Path) -> str:
+    """Backward-compatible text-only helper; see :func:`extract_document`."""
+    return extract_document(path)[0]
 
 
 def scan_text(text: str) -> dict[str, Any]:
@@ -67,13 +157,23 @@ def scan_text(text: str) -> dict[str, Any]:
     from app.services import sensitive_engine
 
     hits = sensitive_engine.scan_text(text, source_type="file")
+    confirmed = sensitive_engine.confirmed_hits(hits)
+    candidates = sensitive_engine.candidate_hits(hits)
     counts: dict[str, int] = {name: 0 for name in REGEX_RULES}
     counts.update(sensitive_engine.count_by_legacy_name(hits))
     return {
         "counts": counts,
         "hits": [hit.to_dict() for hit in hits],
-        "secret_count": sensitive_engine.secret_count(hits),
-        "pii_count": sensitive_engine.pii_count(hits),
+        # Counts feeding alerts use value-level, sufficiently confident hits
+        # only. A hash that looks like a token (0.3), a card number that fails
+        # Luhn (0.45) or a bare medical term (0.45) stays a candidate clue.
+        "confirmed_hits": [hit.to_dict() for hit in confirmed],
+        "candidate_hits": [hit.to_dict() for hit in candidates],
+        "secret_count": sensitive_engine.secret_count(confirmed),
+        "pii_count": sensitive_engine.pii_count(confirmed),
+        "candidate_count": len(candidates),
+        "max_confidence": sensitive_engine.max_confidence(confirmed),
+        "text_truncated": sensitive_engine.text_truncated(),
         # Legacy key. Entropy is now part of the per-rule confidence, so there is
         # no separate list of candidate secrets to hand around.
         "high_entropy_secrets": [],
@@ -82,10 +182,12 @@ def scan_text(text: str) -> dict[str, Any]:
 
 def infer_columns(text: str, source: str) -> list[dict[str, Any]]:
     columns: list[str] = []
+    rows: list[list[str]] = []
     if source.endswith(".csv"):
         try:
-            reader = csv.reader(text.splitlines())
-            columns = next(reader, [])
+            records = list(csv.reader(text.splitlines()))
+            columns = records[0] if records else []
+            rows = records[1:]
         except Exception:
             columns = []
     elif source.endswith(".sql"):
@@ -102,19 +204,37 @@ def infer_columns(text: str, source: str) -> list[dict[str, Any]]:
     from app.services import sensitive_engine
 
     engine = sensitive_engine.get_engine()
-    classified = []
-    for column in columns:
-        hits = [hit for hit in engine.scan_field(str(column), source_type="file", file_name=source) if hit.sensitive]
-        categories = [sensitive_engine.legacy_name(hit.entity) or str(hit.entity).lower() for hit in hits]
+    classified: list[dict[str, Any]] = []
+    for index, column in enumerate(columns):
+        values = [row[index] for row in rows if index < len(row)][:50]
+        hits = [
+            hit for hit in engine.scan(sensitive_engine.SensitiveDetectionContext(
+                text="\n".join(values), field_name=str(column),
+                file_name=source, source_type="file"))
+            if hit.sensitive
+        ]
+        confirmed = [hit for hit in hits if hit.confirmed]
+        candidates = [hit for hit in hits if not hit.confirmed]
+
+        def _names(items: list[Any]) -> list[str]:
+            return [sensitive_engine.legacy_name(hit.entity) or str(hit.entity).lower() for hit in items]
+
+        confirmed_categories = _names(confirmed)
+        candidate_categories = [name for name in _names(candidates) if name not in confirmed_categories]
+        strongest = max(confirmed or candidates, key=lambda hit: _SEVERITY_RANK.get(hit.severity, 0), default=None)
         # Legacy contract: this field is a binary "contains sensitive data" signal
-        # (High/Unknown) rather than a severity level. The L1..L4 classification is
-        # reported separately so the old pages keep working unchanged.
+        # (High/Unknown) rather than a severity level. Only a value-level hit may
+        # raise it: a header such as ``phone`` on an empty template is a candidate.
         classified.append({
             "name": column,
-            "sensitivity": "High" if categories else "Unknown",
-            "sensitivity_level": hits[0].level if hits else "",
-            "severity": hits[0].severity if hits else "",
-            "categories": categories,
+            "sensitivity": "High" if confirmed_categories else "Unknown",
+            "sensitivity_level": strongest.level if strongest else "",
+            "severity": strongest.severity if strongest else "",
+            "categories": confirmed_categories + candidate_categories,
+            "confirmed_categories": confirmed_categories,
+            "candidate_categories": candidate_categories,
+            "sample_size": len(values),
+            "sample_hit_count": sum(hit.count for hit in confirmed),
         })
     return classified
 
@@ -184,13 +304,16 @@ class DataEngine(DetectionEngine):
         for path in paths:
             if not path.exists():
                 continue
-            text = extract_text(path)
+            text, text_status = extract_document(path)
             scan = scan_text(text)
+            if text_status.get("truncated") or scan.get("text_truncated"):
+                text_status = {**text_status, "status": SCAN_PARTIAL, "truncated": True}
             presidio = presidio_scan(text) if text else []
             yara_matches = yara_scan(path, Path(__file__).resolve().parents[2] / "rules" / "data")
             evidence = {
                 "file": str(path),
                 "size": path.stat().st_size,
+                "text_status": text_status,
                 "regex": scan,
                 "presidio": presidio[:50],
                 "presidio_status": presidio_status(),
@@ -199,28 +322,57 @@ class DataEngine(DetectionEngine):
             columns = infer_columns(text, path.name)
             if columns:
                 evidence["columns"] = columns
+                has_confirmed = any(column["confirmed_categories"] for column in columns)
+                has_candidate = any(column["candidate_categories"] for column in columns)
                 context.data.setdefault("data_assets", []).append({
                     "name": path.name,
                     "asset_type": "file",
-                    "sensitivity": "High" if any(column["sensitivity"] == "High" for column in columns) else "Low",
+                    # A template whose only signal is a header name is not a
+                    # discovered PII file: report it as a candidate.
+                    "sensitivity": "High" if has_confirmed else ("Unknown" if has_candidate else "Low"),
                     "source": path.name,
                     "columns": columns,
                 })
-            if scan["pii_count"] > 0 or presidio:
+            elif text_status["status"] in {SCAN_FAILED, SCAN_UNSUPPORTED}:
+                # Say the file was not inspected instead of letting an empty scan
+                # look like a clean result.
+                context.data.setdefault("data_assets", []).append({
+                    "name": path.name,
+                    "asset_type": "file",
+                    "sensitivity": "Unknown",
+                    "source": path.name,
+                    "scan_status": text_status["status"],
+                    "scan_reason": text_status.get("reason", ""),
+                })
+            pii_confirmed = _confirmed_of(scan, PII_FAMILIES)
+            presidio_confirmed = [
+                item for item in presidio
+                if float(item.get("score") or 0) >= CONFIRMED_MIN_SCORE
+            ]
+            if pii_confirmed or presidio_confirmed:
+                confidence = max(
+                    [float(item.get("confidence") or 0) for item in pii_confirmed]
+                    + [float(item.get("score") or 0) for item in presidio_confirmed],
+                    default=0.0,
+                )
                 findings.append(DetectionResult(
                     engine=self.name,
                     rule_id="DATA_PII_001",
-                    severity="High",
-                    confidence=0.9 if scan["pii_count"] else 0.7,
+                    severity=_severity_of(pii_confirmed, "Medium"),
+                    confidence=confidence,
                     evidence=evidence,
                     recommendation="对包含身份证、手机号、银行卡、邮箱等 PII 的文件实施加密、脱敏和访问控制。",
                 ).normalize())
-            if scan["secret_count"] > 0 or scan["high_entropy_secrets"]:
+            secret_confirmed = _confirmed_of(scan, SECRET_FAMILIES)
+            if secret_confirmed:
                 findings.append(DetectionResult(
                     engine=self.name,
                     rule_id="DATA_SECRET_001",
-                    severity="Critical",
-                    confidence=0.85,
+                    severity=_severity_of(secret_confirmed, "High"),
+                    confidence=max(
+                        (float(item.get("confidence") or 0) for item in secret_confirmed),
+                        default=0.0,
+                    ),
                     evidence=evidence,
                     recommendation="立即轮换泄露的密钥/Token，并排查代码、配置和备份文件。",
                 ).normalize())
@@ -236,22 +388,24 @@ class DataEngine(DetectionEngine):
         text = context.data.get("text", "")
         if text:
             scan = scan_text(text)
-            if scan["pii_count"] > 0:
+            rules = (
+                ("DATA_PII_001", PII_FAMILIES, "Medium", "对文本中的 PII 进行脱敏和最小化采集。"),
+                ("DATA_SECRET_001", SECRET_FAMILIES, "High", "轮换泄露密钥，并从日志和配置中清除明文凭据。"),
+            )
+            for rule_id, families, fallback, recommendation in rules:
+                confirmed = _confirmed_of(scan, families)
+                if not confirmed:
+                    continue
                 findings.append(DetectionResult(
                     engine=self.name,
-                    rule_id="DATA_PII_001",
-                    severity="High",
-                    confidence=0.9,
-                    evidence={"counts": scan["counts"], "hits": scan["hits"]},
-                    recommendation="对文本中的 PII 进行脱敏和最小化采集。",
-                ).normalize())
-            if scan["secret_count"] > 0:
-                findings.append(DetectionResult(
-                    engine=self.name,
-                    rule_id="DATA_SECRET_001",
-                    severity="Critical",
-                    confidence=0.85,
-                    evidence={"counts": scan["counts"], "hits": scan["hits"]},
-                    recommendation="轮换泄露密钥，并从日志和配置中清除明文凭据。",
+                    rule_id=rule_id,
+                    severity=_severity_of(confirmed, fallback),
+                    confidence=max(
+                        (float(item.get("confidence") or 0) for item in confirmed),
+                        default=0.0,
+                    ),
+                    evidence={"counts": scan["counts"], "hits": scan["confirmed_hits"],
+                              "candidates": scan["candidate_hits"]},
+                    recommendation=recommendation,
                 ).normalize())
         return findings

@@ -5,6 +5,8 @@ export interface WorkerCapability { tshark?: { available: boolean; version: stri
 
 export interface HealthResponse {
   status: string
+  // Server capabilities the console must honour instead of probing for itself.
+  features?: { test_data_import?: boolean }
   service: string
   api: string
   database: string

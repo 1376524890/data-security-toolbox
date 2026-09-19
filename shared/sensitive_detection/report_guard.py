@@ -43,6 +43,7 @@ ASSET_KEYS = frozenset({
     "sha256", "hash_type", "partial_fingerprint", "object_key", "identity_confidence",
     "modified_at", "mtime_ns", "inode", "device", "owner", "group", "permission",
     "categories", "counts", "columns", "evidence", "detections", "coverage",
+    "confirmed_categories", "candidate_categories", "scan_status", "scan_reason",
     "termination_reason", "scan_id", "ruleset_version", "engine_version", "profile_version",
     "databases", "scanned_paths", "max_depth", "complete", "error", "observed_at", "scanner",
     "location", "duration_ms", "counts_by_level", "level", "presidio_sources",
@@ -51,6 +52,7 @@ ASSET_KEYS = frozenset({
 COLUMN_KEYS = frozenset({
     "name", "header_name", "column_index", "sheet_name", "detected_type", "inferred_type",
     "sensitivity", "sensitivity_level", "severity", "confidence", "categories", "count",
+    "confirmed_categories", "candidate_categories",
     "sample_size", "sample_hits", "sample_hit_count", "sample_values_count", "evidence",
     "value_kind", "level", "field_only", "rule_ids", "ruleset_version",
 })
@@ -70,7 +72,7 @@ _REDACT_PATTERNS = (
     ("ID_CARD", re.compile(r"(?<!\d)[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)")),
     ("PHONE", re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")),
     ("EMAIL", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
-    ("API_KEY", re.compile(r"\b(?:AKIA|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,})\b")),
+    ("API_KEY", re.compile(r"(?:\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bsk-[A-Za-z0-9]{20,}\b|\bghp_[A-Za-z0-9]{20,}\b|\bAIza[0-9A-Za-z_\-]{20,}\b)")),
     ("BANK_CARD", re.compile(r"(?<!\d)(?:62|4\d{3}|5[1-5]\d{2})[ -]?(?:\d[ -]?){12,17}(?!\d)")),
 )
 REDACTION_PLACEHOLDER = "[redacted]"

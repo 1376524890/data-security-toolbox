@@ -22,10 +22,39 @@ export function getDataAsset(id: number): Promise<DataAssetDetail> {
 
 export interface SensitiveFindings {
   categories: Array<{ category: string; count: number; severity: string; risk_score: number }>
-  details: Array<{ id: number; rule_id: string; severity: string; risk_level: string; file: string; target_id: string; counts: Record<string, number>; secret_count: number }>
-  data_assets: { total: number; by_sensitivity: Record<string, number> }
+  entities: Array<{ category: string; count: number }>
+  details: Array<{
+    id: number
+    engine: string
+    rule_id: string
+    severity: string
+    risk_level: string
+    risk_score: number
+    file: string
+    target_id: string
+    counts: Record<string, number>
+    secret_count: number
+  }>
+  sources: Array<{ source: string; kind: string; count: number }>
+  totals: {
+    findings: number
+    categories: number
+    entities: number
+    objects: number
+    instances: number
+    detections: number
+    data_assets: number
+  }
+  pagination: { page: number; page_size: number; total: number; pages: number }
+  note: string
+  data_assets: {
+    total: number
+    by_sensitivity: Record<string, number>
+    observed: { total: number; by_sensitivity: Record<string, number> }
+    not_observed: { total: number; by_sensitivity: Record<string, number> }
+  }
 }
 
-export function getSensitiveFindings(): Promise<SensitiveFindings> {
-  return apiGet('/sensitive/findings')
+export function getSensitiveFindings(query: { page?: number; page_size?: number } = {}): Promise<SensitiveFindings> {
+  return apiGet('/sensitive/findings', query as Record<string, unknown>)
 }

@@ -27,12 +27,31 @@ export interface DataTypeRow {
   host_count: number
   confirmed_duplicate_count: number
   candidate_count: number
+  /** Part-fingerprint objects with ≥2 instances: a real suspected copy. */
+  candidate_duplicate_count: number
+  /** Part-fingerprint objects seen on a single instance: identity unresolved. */
+  identity_pending_count: number
+  truncated: boolean
+}
+
+export interface DataTypeTotals {
+  /** Sensitive types that have an object in scope. */
+  types: number
+  /** De-duplicated objects: an object holding two types still counts once. */
+  objects: number
+  instances: number
+  hosts: number
+  confirmed_duplicates: number
+  candidate_duplicates: number
+  identity_pending: number
   truncated: boolean
 }
 
 export interface DataTypeCenter {
   items: DataTypeRow[]
   count: number
+  totals: DataTypeTotals
+  totals_scope: string
   dedup_rules: Record<string, string>
   levels: Record<string, { name: string; description: string }>
   mapping_source: string
@@ -51,6 +70,7 @@ export interface DataObjectRow {
   categories: string[]
   sensitivity: string
   level: string
+  level_source: string
   instance_count: number
   active_instance_count: number
   first_seen_at: string
@@ -75,6 +95,7 @@ export interface AssetInstanceRow {
   permission: string
   sensitivity: string
   level: string
+  level_source: string
   categories: string[]
   coverage: string
   termination_reason: string

@@ -85,6 +85,8 @@ services:
       WAZUH_POLL_SECONDS: ${WAZUH_POLL_SECONDS:-60}
       WAZUH_ALERT_LIMIT: ${WAZUH_ALERT_LIMIT:-200}
       OSQUERY_SOCKET: ${OSQUERY_SOCKET:-}
+      # Manual test-pack import. Off by default; APP_ENV=production refuses it.
+      TEST_DATA_IMPORT_ENABLED: ${TEST_DATA_IMPORT_ENABLED:-false}
       COOKIE_SECURE: "false"
     volumes:
       - backend_data:/app/data

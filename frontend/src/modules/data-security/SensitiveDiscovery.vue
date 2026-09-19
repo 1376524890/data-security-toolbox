@@ -1,11 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
-import { listDataAssets } from '../../api/dataAssets'
-import { listDetections } from '../../api/detections'
 import { getSensitiveFindings, type SensitiveFindings } from '../../api/dataAssets'
-import { getRiskSummary } from '../../api/risk'
-import type { DataAsset } from '../../types/dataAsset'
-import type { DetectionFinding } from '../../types/finding'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
 import DonutChart from '../../components/charts/DonutChart.vue'
@@ -15,43 +10,37 @@ import EvidenceViewer from '../../components/evidence/EvidenceViewer.vue'
 
 const loading = ref(true)
 const error = ref('')
-const assets = ref<DataAsset[]>([])
-const findings = ref<DetectionFinding[]>([])
-const risk = ref<{ data_sensitivity: Record<string, number> } | null>(null)
 const sensitive = ref<SensitiveFindings | null>(null)
+const page = ref(1)
+const pageSize = ref(50)
 
 const categoryLabels: Record<string, string> = {
-  id_card: '身份证', phone: '手机号', bank_card: '银行卡', email: 'Email', medical: '医疗数据', secret: 'Secret',
+  id_card: '身份证', phone: '手机号', bank_card: '银行卡', email: 'Email', medical_record: '医疗记录',
+  api_key: 'API 密钥', token: 'Token', credential: '凭证', name: '姓名', address: '地址', user_id: '用户标识',
 }
 
-const categoryCounts = computed(() => {
-  const counts: Record<string, number> = {}
-  sensitive.value?.categories.forEach((cat) => { counts[cat.category] = cat.count })
-  return counts
-})
-
-const categoryData = computed(() => Object.entries(categoryCounts.value).map(([name, value]) => ({ name: categoryLabels[name] || name, value })))
-const sensitivityData = computed(() => Object.entries(sensitive.value?.data_assets?.by_sensitivity || {}).map(([name, value]) => ({ name, value })))
+const assets = computed(() => sensitive.value?.data_assets)
+const totals = computed(() => sensitive.value?.totals)
+const entityData = computed(() => (sensitive.value?.entities || []).map(
+  (item) => ({ name: categoryLabels[item.category] || item.category, value: item.count })))
+const sensitivityData = computed(() => Object.entries(assets.value?.by_sensitivity || {}).map(([name, value]) => ({ name, value })))
+const sources = computed(() => sensitive.value?.sources || [])
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [assetResult, findingResult, riskResult, sensitiveResult] = await Promise.all([
-      listDataAssets({ page: 1, page_size: 200 }),
-      listDetections({ engine: 'data_engine', page: 1, page_size: 100 }),
-      getRiskSummary(),
-      getSensitiveFindings(),
-    ])
-    assets.value = assetResult.items
-    findings.value = findingResult.items
-    risk.value = riskResult
-    sensitive.value = sensitiveResult
+    sensitive.value = await getSensitiveFindings({ page: page.value, page_size: pageSize.value })
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
   }
+}
+
+function onPageChange(value: number): void {
+  page.value = value
+  void load()
 }
 
 onMounted(load)
@@ -61,23 +50,38 @@ onMounted(load)
   <div>
     <StateBox :loading="loading" :error="error" :empty="false" @retry="load">
       <div class="stat-grid cols-4">
-        <StatCard label="数据资产" :value="assets.length" />
-        <StatCard label="敏感检测" :value="findings.length" tone="warning" />
-        <StatCard label="敏感类目" :value="Object.keys(categoryCounts).length" tone="primary" />
+        <StatCard label="数据资产（在位）" :value="assets?.observed.total ?? 0"
+                  :sub="`历史未观测 ${assets?.not_observed.total ?? 0} 条，不计入在位`" />
+        <StatCard label="敏感检测（文件/网络）" :value="totals?.findings ?? 0" tone="warning"
+                  :sub="`全表聚合总数，当前页 ${sensitive?.details.length ?? 0} 条`" />
+        <StatCard label="对象检测（探针）" :value="totals?.detections ?? 0" tone="primary"
+                  :sub="`对象 ${totals?.objects ?? 0} · 实例 ${totals?.instances ?? 0}`" />
+        <StatCard label="敏感实体（对象检测）" :value="totals?.entities ?? 0" tone="danger"
+                  :sub="`引擎类目 ${totals?.categories ?? 0}`" />
       </div>
       <div class="grid cols-2" style="margin-top: 12px">
         <div class="soc-card">
-          <div class="soc-card-title"><span class="dot warn" />敏感类目分布</div>
-          <DonutChart :data="categoryData" :height="280" />
+          <div class="soc-card-title"><span class="dot warn" />敏感实体分布（对象检测）</div>
+          <DonutChart :data="entityData" :height="280" />
         </div>
         <div class="soc-card">
-          <div class="soc-card-title"><span class="dot" />数据敏感度分布</div>
+          <div class="soc-card-title"><span class="dot" />数据敏感度分布（含历史未观测）</div>
           <DonutChart :data="sensitivityData" :height="280" />
+          <div class="gap-note">在位资产见上方卡片；此处按全量资产投影统计</div>
         </div>
       </div>
       <div class="soc-card" style="margin-top: 12px">
+        <div class="soc-card-title"><span class="dot" />检测来源（分别统计，不跨源相加）</div>
+        <el-table :data="sources" size="small">
+          <el-table-column prop="source" label="来源" width="170" />
+          <el-table-column prop="kind" label="类型" min-width="180" />
+          <el-table-column prop="count" label="数量" width="110" />
+        </el-table>
+        <div class="gap-note">{{ sensitive?.note }}</div>
+      </div>
+      <div class="soc-card" style="margin-top: 12px">
         <div class="soc-card-title"><span class="dot danger" />敏感检测结果</div>
-        <el-table :data="findings" size="small">
+        <el-table :data="sensitive?.details || []" size="small">
           <el-table-column prop="id" label="ID" width="70" />
           <el-table-column prop="engine" label="引擎" width="110" />
           <el-table-column prop="rule_id" label="规则" min-width="150" show-overflow-tooltip />
@@ -85,6 +89,9 @@ onMounted(load)
           <el-table-column label="风险" width="90"><template #default="{ row }"><RiskBadge :score="row.risk_score" /></template></el-table-column>
           <el-table-column label="证据" min-width="200"><template #default="{ row }"><EvidenceViewer :evidence="row.evidence" /></template></el-table-column>
         </el-table>
+        <el-pagination background layout="prev, pager, next, total" :current-page="page"
+                       :page-size="pageSize" :total="totals?.findings ?? 0"
+                       style="margin-top: 8px" @current-change="onPageChange" />
       </div>
     </StateBox>
   </div>

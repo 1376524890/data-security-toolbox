@@ -31,5 +31,15 @@ export interface DataAsset {
 export interface DataAssetDetail {
   data_asset: DataAsset
   findings: DetectionFinding[]
+  /** Sensitive field count per category (legacy shape). */
   pii_summary: Record<string, number>
+  /** Fields and sample hits are different units; both are reported. */
+  pii_summary_detail?: Record<string, { fields: number; sample_hits: number }>
+  summary?: {
+    asset_type?: string
+    sensitive_field_count?: number
+    sample_hits?: number
+    units?: string
+    note?: string
+  }
 }

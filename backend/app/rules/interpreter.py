@@ -42,12 +42,17 @@ def load_rules(path: Path) -> list[Rule]:
 
 
 def _metrics(context: DetectionContext) -> dict[str, Any]:
+    from app.core.config import settings
+    from app.services.traffic_service import _busiest_port_window
+
     flows = context.flows or []
     packets = context.packets or []
+    window = int(context.data.get("port_scan_window_seconds") or settings.port_scan_window_seconds)
     by_src: dict[str, dict[str, Any]] = {}
     for flow in flows:
         src = flow.get("src_ip", "")
-        stats = by_src.setdefault(src, {"dst_ports": set(), "dst_ips": set(), "bytes": 0, "packets": 0})
+        stats = by_src.setdefault(src, {"flows": [], "dst_ports": set(), "dst_ips": set(), "bytes": 0, "packets": 0})
+        stats["flows"].append(flow)
         stats["dst_ports"].add(flow.get("dst_port", 0))
         stats["dst_ips"].add(flow.get("dst_ip", ""))
         stats["bytes"] += int(flow.get("bytes", 0))
@@ -60,15 +65,23 @@ def _metrics(context: DetectionContext) -> dict[str, Any]:
         "packet_count": len(packets),
         "packet_rate": len(packets) / max(duration, 0.001),
         "total_bytes": sum(int(flow.get("bytes", 0)) for flow in flows),
-        "port_count": len({flow.get("dst_port", 0) for flow in flows}),
+        # Whole-capture aggregate, available to reports that really mean it.
+        "capture_port_count": len({flow.get("dst_port", 0) for flow in flows}),
+        # The single-host question a scan rule asks: the most ports any one
+        # source touched within a real time window. Summing every host's ports
+        # together is what made 21 hosts x 1 port look like a port scan.
+        "port_count": 0,
         "dst_count": len({flow.get("dst_ip", "") for flow in flows}),
         "src_count": len({flow.get("src_ip", "") for flow in flows}),
     }
     for src, stats in by_src.items():
-        metrics[f"src:{src}:ports"] = len(stats["dst_ports"])
+        windowed, _, _ = _busiest_port_window(stats["flows"], window)
+        metrics[f"src:{src}:ports"] = len(windowed)
+        metrics[f"src:{src}:ports_total"] = len(stats["dst_ports"])
         metrics[f"src:{src}:dsts"] = len(stats["dst_ips"])
         metrics[f"src:{src}:bytes"] = stats["bytes"]
         metrics[f"src:{src}:packets"] = stats["packets"]
+        metrics["port_count"] = max(metrics["port_count"], len(windowed))
     return metrics
 
 

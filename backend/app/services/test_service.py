@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 
 from app.core.config import settings
-from app.models import Alert, AlertDelivery, AnalysisResult, Anomaly, Asset, DetectionFinding, FileRecord, Flow, Incident, PacketRecord, PcapRecord, Probe, Task
+from app.models import Alert, AlertDelivery, AlertHit, AnalysisResult, Anomaly, Asset, DetectionFinding, FileRecord, Flow, Incident, PacketRecord, PcapRecord, Probe, Task
 from app.workers.tasks import analyze_pcap_task, create_task, metadata_task
 
 # The manual testpack is mounted read-only into the backend container.
@@ -114,6 +114,8 @@ def clear_test_data(db) -> dict[str, Any]:
         # incidents + alerts referencing the test probe must go before the probe
         incident_ids = db.scalars(select(Incident.id).where(Incident.probe_id.in_(ids))).all()
         if incident_ids:
+            incident_alerts = select(Alert.id).where(Alert.incident_id.in_(incident_ids))
+            db.execute(delete(AlertHit).where(AlertHit.alert_id.in_(incident_alerts)))
             db.execute(delete(Alert).where(Alert.incident_id.in_(incident_ids)))
             db.execute(delete(Incident).where(Incident.id.in_(incident_ids)))
         task_ids = db.scalars(select(Task.id).where(Task.payload["probe_id"].as_integer().in_(ids))).all()
@@ -123,11 +125,14 @@ def clear_test_data(db) -> dict[str, Any]:
             if finding_ids:
                 alert_ids = db.scalars(select(Alert.id).where(Alert.finding_id.in_(finding_ids))).all()
                 if alert_ids:
+                    db.execute(delete(AlertHit).where(AlertHit.alert_id.in_(alert_ids)))
                     db.execute(delete(AlertDelivery).where(AlertDelivery.alert_id.in_(alert_ids)))
                     db.execute(delete(Alert).where(Alert.id.in_(alert_ids)))
                 removed_findings = db.execute(delete(DetectionFinding).where(DetectionFinding.id.in_(finding_ids))).rowcount or 0
             db.execute(delete(AnalysisResult).where(AnalysisResult.task_id.in_(task_ids)))
             db.execute(delete(Task).where(Task.id.in_(task_ids)))
+        probe_alerts = select(Alert.id).where(Alert.probe_id.in_(ids))
+        db.execute(delete(AlertHit).where(AlertHit.alert_id.in_(probe_alerts)))
         db.execute(delete(Alert).where(Alert.probe_id.in_(ids)))
         removed_files = db.execute(delete(FileRecord).where(FileRecord.probe_id.in_(ids))).rowcount or 0
         removed_assets = db.execute(delete(Asset).where(Asset.probe_id.in_(ids))).rowcount or 0

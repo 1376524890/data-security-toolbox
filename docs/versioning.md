@@ -32,3 +32,11 @@
 ## 提交信息
 
 使用 Conventional Commits：`feat:`、`fix:`、`docs:`、`test:`、`chore:`。
+
+## v2.12.0 发布例外（2026-09-19）
+
+本次发布业务逻辑与数据真实性整改，新增迁移 `0015_alert_hits`。遵守用户“不修改代码”的要求，
+仅以 Git 注释标签 `v2.12.0` 标识现有源码快照；平台自报仍为 2.11.0，探针源码声明仍为 3.5.0。
+本次不覆盖同名探针包、不重建镜像、不升级真实主机；后续发布若更新探针包，必须先分配新版本，
+同步 `probe/probe.py`、`backend/app/core/config.py`、`scripts/build_probe_packages.py` 的版本再打包。
+详见 [发布记录](releases/v2.12.0.md)。

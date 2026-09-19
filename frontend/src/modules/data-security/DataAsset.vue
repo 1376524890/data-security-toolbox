@@ -38,7 +38,19 @@ const filterFields = computed<FilterField[]>(() => [
   { key: 'probe_id', label: '探针', type: 'select', placeholder: '全部探针', options: probes.value.map((p) => ({ label: `${p.name} (${p.ip_address || '未知IP'})`, value: String(p.id) })), width: '200px' },
 ])
 
-const piiData = computed(() => Object.entries(detail.value?.pii_summary || {}).map(([name, value]) => ({ name, value })))
+// "1 field, 100 sample hits" and "1 field, 0 hits" are different findings, so
+// the two units are never collapsed into one number.
+const piiData = computed(() => {
+  const detailed = detail.value?.pii_summary_detail
+  if (detailed && Object.keys(detailed).length) {
+    return Object.entries(detailed).map(([name, value]) => ({
+      name, fields: value.fields, sample_hits: value.sample_hits,
+    }))
+  }
+  return Object.entries(detail.value?.pii_summary || {}).map(([name, value]) => ({
+    name, fields: value, sample_hits: 0,
+  }))
+})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -88,6 +100,22 @@ function openCollect(): void {
   collectStage.value = ''
 }
 
+// A finished run is not the same as a finished scope: name what was missed
+// instead of letting "100%" read as full coverage.
+function partialReason(result: { coverage?: Record<string, unknown>; not_observed?: number }): string {
+  const coverage = result.coverage || {}
+  const parts: string[] = []
+  if (coverage.termination_reason) parts.push(`终止原因：${String(coverage.termination_reason)}`)
+  const truncated = coverage.truncated_files
+  if (Array.isArray(truncated) && truncated.length) parts.push(`截断文件 ${truncated.length} 个`)
+  if (coverage.max_files != null) parts.push(`文件上限 ${String(coverage.max_files)}`)
+  if (coverage.files_analyzed != null && coverage.files_discovered != null) {
+    parts.push(`已分析 ${String(coverage.files_analyzed)}/${String(coverage.files_discovered)}`)
+  }
+  if (result.not_observed) parts.push(`${result.not_observed} 个实例未再观测`)
+  return parts.length ? parts.join('，') : '覆盖范围未完成，详见任务中心'
+}
+
 async function submitCollect(): Promise<void> {
   if (!collectForm.probe_id) { ElMessage.warning('请选择探针'); return }
   const paths = collectForm.pathsText.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean)
@@ -108,10 +136,23 @@ async function submitCollect(): Promise<void> {
       const current = await getTask(task.id)
       collectProgress.value = current.progress ?? collectProgress.value
       collectStage.value = current.current_stage || collectStage.value
-      if (['Success', 'Partial', 'Failed', 'Failure'].includes(current.status)) {
+      const status = String(current.status || '')
+      if (['Cancelled', 'Canceled'].includes(status)) {
+        collectStage.value = '已取消'
+        throw new Error('采集任务已取消')
+      }
+      if (['Success', 'Partial', 'Failed', 'Failure'].includes(status)) {
         collectProgress.value = 100
-        if (current.status === 'Failed' || current.status === 'Failure') throw new Error(current.error || '采集失败')
-        ElMessage.success(`数据资产采集完成：${(current.result as { assets?: number })?.assets ?? 0} 个资产`)
+        const result = (current.result || {}) as { assets?: number; coverage?: Record<string, unknown>; not_observed?: number }
+        if (status === 'Failed' || status === 'Failure') throw new Error(current.error || '采集失败')
+        if (status === 'Partial') {
+          collectStage.value = '部分完成'
+          ElMessage.warning(`采集部分完成：已上报 ${result.assets ?? 0} 个资产；${partialReason(result)}`)
+          collectDialog.value = false
+          load()
+          return
+        }
+        ElMessage.success(`数据资产采集完成：${result.assets ?? 0} 个资产`)
         collectDialog.value = false
         load()
         return
@@ -189,8 +230,13 @@ onMounted(() => { load(); loadProbes() })
         <div class="sec-title" style="margin-top: 14px">PII 汇总</div>
         <el-table :data="piiData" size="small">
           <el-table-column prop="name" label="类目" min-width="140" />
-          <el-table-column prop="value" label="数量" width="90" />
+          <el-table-column prop="fields" label="敏感字段数" width="110" />
+          <el-table-column prop="sample_hits" label="样本命中次数" width="120" />
         </el-table>
+        <div v-if="detail?.summary" class="pii-note">
+          共 {{ detail.summary.sensitive_field_count ?? 0 }} 个敏感字段、
+          {{ detail.summary.sample_hits ?? 0 }} 次样本命中；{{ detail.summary.note }}
+        </div>
 
         <div class="sec-title" style="margin-top: 14px">关联检测</div>
         <el-table :data="detail.findings" size="small">
@@ -233,6 +279,7 @@ onMounted(() => { load(); loadProbes() })
 
 <style scoped>
 .sec-title { font-size: 12px; font-weight: 700; color: var(--soc-primary); margin-bottom: 8px; }
+.pii-note { margin-top: 6px; font-size: 12px; color: var(--el-text-color-secondary); }
 .data-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 @media (max-width: 1200px) { .data-cards { grid-template-columns: repeat(2, 1fr); } }
 </style>

@@ -13,7 +13,8 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import (AssetInstance, DataAsset, DataObject, Detection, DetectionEvidence, Probe, Task)
+from app.models import (AssetInstance, DataAsset, DataObject, Detection, DetectionEvidence, Probe,
+                        SystemSetting, Task)
 from app.services import data_object_service as svc
 
 PARTIAL_VERSION = "1.0.0"
@@ -150,6 +151,12 @@ def test_partial_fingerprint_is_a_labelled_candidate_not_a_duplicate() -> None:
         assert phone["candidate_count"] == 1
         assert phone["confirmed_duplicate_count"] == 0
         assert phone["object_count"] == 1
+        # Two instances of the same partial fingerprint is a suspected copy; a
+        # lone one would stay "identity pending" instead.
+        assert phone["candidate_duplicate_count"] == 1
+        assert phone["identity_pending_count"] == 0
+        assert types["totals"]["candidate_duplicates"] == 1
+        assert types["totals"]["identity_pending"] == 0
 
         objects = client.get(f"/api/v1/data-objects?probe_id={probe_id}").json()
         assert objects["total"] == 1
@@ -157,6 +164,107 @@ def test_partial_fingerprint_is_a_labelled_candidate_not_a_duplicate() -> None:
         assert item["identity_kind"] == "candidate"
         assert item["hash_type"] == "partial_fingerprint"
         assert 0 < item["identity_confidence"] < 1
+
+
+def test_lone_partial_object_is_identity_pending_not_a_copy() -> None:
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "lone-partial-probe", ip="10.9.9.52")
+        fingerprint = {"algorithm": "block-sample-v1", "version": PARTIAL_VERSION,
+                       "value": _h("lone-partial")[:32], "is_full": False, "size": 99_000_000,
+                       "blocks": [[0, 65536]], "stable": True}
+        asset = _file("/srv/lone/big.csv", sha="", fingerprint=fingerprint)
+        assert _post(client, probe_id, token, _report("r-lone-partial", [asset])).status_code == 200
+        types = client.get(f"/api/v1/data-types?probe_id={probe_id}").json()
+        phone = next(item for item in types["items"] if item["category"] == "phone")
+        assert phone["candidate_count"] == 1
+        assert phone["candidate_duplicate_count"] == 0
+        assert phone["identity_pending_count"] == 1
+        assert types["totals"]["candidate_duplicates"] == 0
+        assert types["totals"]["identity_pending"] == 1
+
+
+def test_type_totals_deduplicate_objects_across_categories() -> None:
+    """A file holding two types is one object; the rows may not be summed."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "type-totals-probe", ip="10.9.9.51")
+        asset = _file("/srv/totals/both.csv", sha=_h("type-totals"),
+                      categories=("phone", "email"), counts={"phone": 2, "email": 3},
+                      hits=[_hit("phone"), _hit("email")])
+        assert _post(client, probe_id, token, _report("r-type-totals", [asset])).status_code == 200
+        body = client.get(f"/api/v1/data-types?probe_id={probe_id}").json()
+        rows = {row["category"]: row for row in body["items"]}
+        assert rows["phone"]["object_count"] == 1 and rows["email"]["object_count"] == 1
+        totals = body["totals"]
+        assert totals["objects"] == 1
+        assert totals["instances"] == 1
+        assert totals["types"] == 2
+        assert totals["confirmed_duplicates"] == 0
+        assert body["totals_scope"] == f"probe:{probe_id}"
+
+
+def test_probe_scope_does_not_borrow_another_hosts_copies() -> None:
+    """A full-hash object on two probes is one copy per probe, not one duplicate."""
+    with TestClient(app) as client:
+        probe_a, token_a = _register_probe(client, "scope-a-probe", ip="10.9.9.53")
+        probe_b, token_b = _register_probe(client, "scope-b-probe", ip="10.9.9.54")
+        sha = _h("scope-copies")
+        assert _post(client, probe_a, token_a,
+                     _report("r-scope-a", [_file("/srv/scope/a.csv", sha=sha)])).status_code == 200
+        assert _post(client, probe_b, token_b,
+                     _report("r-scope-b", [_file("/srv/scope/b.csv", sha=sha)])).status_code == 200
+        scoped = client.get(f"/api/v1/data-types?probe_id={probe_a}").json()
+        assert scoped["totals"]["instances"] == 1
+        assert scoped["totals"]["confirmed_duplicates"] == 0
+        phone = next(item for item in scoped["items"] if item["category"] == "phone")
+        assert phone["confirmed_duplicate_count"] == 0
+
+
+def test_sensitivity_override_applies_to_object_and_instance_views() -> None:
+    """An operator override must reach every current view, not just the type centre."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "override-probe", ip="10.9.9.55")
+        assert _post(client, probe_id, token,
+                     _report("r-override", [_file("/srv/override/a.csv", sha=_h("override"))])
+                     ).status_code == 200
+        with SessionLocal() as db:
+            db.add(SystemSetting(key="sensitivity_levels", value={"PHONE": "L4"}))
+            db.commit()
+        try:
+            objects = client.get(f"/api/v1/data-objects?probe_id={probe_id}").json()["items"]
+            assert objects and objects[0]["level"] == "L4"
+            assert objects[0]["level_source"] == "settings_override"
+            # The scan-time value is a different axis and is never overwritten.
+            assert objects[0]["sensitivity"] == "Medium"
+            instances = client.get(f"/api/v1/asset-instances?probe_id={probe_id}").json()["items"]
+            assert instances[0]["level"] == "L4"
+            detail = client.get(f"/api/v1/asset-instances/{instances[0]['id']}").json()
+            assert detail["level"] == "L4"
+            assert detail["level_source"] == "settings_override"
+            types = client.get(f"/api/v1/data-types?probe_id={probe_id}").json()
+            phone = next(item for item in types["items"] if item["category"] == "phone")
+            assert phone["level"] == "L4" and phone["source"] == "settings_override"
+        finally:
+            with SessionLocal() as db:
+                row = db.scalar(select(SystemSetting).where(SystemSetting.key == "sensitivity_levels"))
+                if row is not None:
+                    db.delete(row)
+                    db.commit()
+
+
+def test_sensitive_findings_list_object_model_detections_as_their_own_source() -> None:
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "sensitive-findings-probe", ip="10.9.9.56")
+        assert _post(client, probe_id, token,
+                     _report("r-sensitive-findings", [_file("/srv/findings/a.csv",
+                                                            sha=_h("sensitive-findings"))])
+                     ).status_code == 200
+        body = client.get("/api/v1/sensitive/findings").json()
+        sources = {item["source"]: item for item in body["sources"]}
+        assert sources["object_model"]["kind"] == "probe_detection"
+        assert sources["object_model"]["count"] >= 1
+        assert sources["data_engine"]["kind"] == "file_scan"
+        assert any(item["category"] == "phone" for item in body["entities"])
+        assert body["totals"]["objects"] >= 1
 
 
 # --- defects found by the stage 5/6 end-to-end run --------------------------
@@ -334,6 +442,85 @@ def test_one_detection_per_instance_and_type_with_deduplicated_evidence() -> Non
         assert again["count"] == evidence["count"]
 
 
+def test_directory_rollup_is_not_stored_as_an_independent_detection() -> None:
+    """A directory advertises its children's categories, not its own hits."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "directory-probe")
+        child = _file("/srv/data/pii.csv", sha=_h("dir-child"),
+                      categories=("phone",), counts={"phone": 3})
+        directory = _file("/srv/data", categories=("phone",), counts={}, hits=[], size=4096)
+        directory["asset_type"] = "directory"
+        directory["evidence"] = {"coverage": "complete", "termination_reason": "complete",
+                                 "file_count": 1, "aggregate": True}
+        assert _post(client, probe_id, token, _report("r-dir-1", [child, directory])).status_code == 200
+
+        instances = client.get(f"/api/v1/asset-instances?probe_id={probe_id}").json()
+        by_path = {item["path"]: item for item in instances["items"]}
+        # The roll-up label survives; the roll-up itself is not a finding.
+        assert by_path["/srv/data"]["categories"] == ["phone"]
+        with SessionLocal() as db:
+            directory_rows = db.scalars(select(Detection).where(
+                Detection.instance_id == by_path["/srv/data"]["id"])).all()
+            child_rows = db.scalars(select(Detection).where(
+                Detection.instance_id == by_path["/srv/data/pii.csv"]["id"])).all()
+        assert directory_rows == []
+        assert [row.category for row in child_rows] == ["phone"]
+        assert child_rows[0].hit_count == 3
+        # And the type centre counts only the file that really holds a hit.
+        types = client.get(f"/api/v1/data-types?probe_id={probe_id}").json()
+        phone = next(item for item in types["items"] if item["category"] == "phone")
+        assert phone["object_count"] == 1
+        assert phone["active_instance_count"] == 1
+
+
+def test_partial_report_never_labels_a_directory_rollup_complete() -> None:
+    """A roll-up has no parser coverage, so it must not borrow "complete"."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "directory-coverage-probe")
+        directory = _file("/srv/dir", categories=("phone",), counts={}, hits=[])
+        directory["asset_type"] = "directory"
+        directory["evidence"] = {"file_count": 3}
+        partial = _report("r-dir-cov-1", [directory], paths=("/srv/dir",),
+                          complete=False, completed_scope=False)
+        partial["coverage"] = {**partial["coverage"], "termination_reason": "row_budget"}
+        assert _post(client, probe_id, token, partial).status_code == 200
+        instance_id = client.get(
+            f"/api/v1/asset-instances?probe_id={probe_id}").json()["items"][0]["id"]
+        detail = client.get(f"/api/v1/asset-instances/{instance_id}").json()
+        assert detail["coverage"] == "partial"
+        assert detail["termination_reason"] == "row_budget"
+        # A later walk that really finished may say so.
+        assert _post(client, probe_id, token,
+                     _report("r-dir-cov-2", [directory], paths=("/srv/dir",),
+                             observed_at="2026-09-16T00:00:00+00:00")).status_code == 200
+        assert client.get(
+            f"/api/v1/asset-instances/{instance_id}").json()["coverage"] == "complete"
+
+
+def test_projection_sensitivity_is_never_weaker_than_the_platform_mapping() -> None:
+    """A probe whose local severity map lags must not downgrade a real category."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "severity-probe")
+        stale = _file("/srv/data/stale.csv", sha=_h("sev-stale"),
+                      categories=("se_organisationsnummer",),
+                      counts={"se_organisationsnummer": 1},
+                      hits=[_hit("se_organisationsnummer", count=1)])
+        stale["sensitivity"] = "Low"
+        hinted = _file("/srv/data/hinted.csv", sha=_h("sev-hinted"), categories=(),
+                       counts={}, hits=[])
+        hinted["sensitivity"] = "Unknown"
+        assert _post(client, probe_id, token,
+                     _report("r-sev-1", [stale, hinted])).status_code == 200
+        with SessionLocal() as db:
+            rows = {row.extra["path"]: row for row in db.scalars(
+                select(DataAsset).where(
+                    DataAsset.extra["probe_id"].as_integer() == probe_id)).all()}
+        # The uploaded detection says Medium, so the list row may not say Low.
+        assert rows["/srv/data/stale.csv"].sensitivity == "Medium"
+        # A candidate/port entry has no category to map, so its own word is kept.
+        assert rows["/srv/data/hinted.csv"].sensitivity == "Unknown"
+
+
 def test_detection_never_carries_a_matched_value() -> None:
     with TestClient(app) as client:
         probe_id, token = _register_probe(client, "detection-probe-2")
@@ -490,6 +677,169 @@ def test_late_report_cannot_roll_back_a_newer_scan() -> None:
             assert instance.object_id == current_object
             assert instance.last_seen_at == seen_at
             assert instance.extra["stale_reports_ignored"] == 1
+
+
+def test_completed_scan_revokes_the_old_sensitive_label() -> None:
+    """A file that becomes clean must stop being reported as sensitive."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "revoke-probe")
+        path = "/srv/data/becomes-clean.csv"
+        assert _post(client, probe_id, token,
+                     _report("r-revoke-1", [_file(path, sha=_h("revoke-v1"),
+                                                  counts={"phone": 3},
+                                                  hits=[_hit("phone", count=3)])])).status_code == 200
+        assert _post(client, probe_id, token,
+                     _report("r-revoke-2", [_file(path, sha=_h("revoke-v2"), categories=(),
+                                                  counts={}, hits=[])],
+                             observed_at="2026-09-16T00:00:00+00:00")).status_code == 200
+        instance_id = client.get(f"/api/v1/asset-instances?probe_id={probe_id}").json()["items"][0]["id"]
+        detail = client.get(f"/api/v1/asset-instances/{instance_id}").json()
+        assert detail["categories"] == []
+        assert detail["sensitivity"] == "Low"
+        # The old label stays explainable instead of disappearing silently.
+        assert "phone" in detail["extra"]["category_history"]
+        # The type centre no longer counts this probe's current content as phone.
+        assert client.get(f"/api/v1/data-types/phone?probe_id={probe_id}").status_code == 404
+
+
+def test_late_complete_report_cannot_retire_the_live_instance() -> None:
+    """Out-of-order delivery is normal; the newer observation stays authoritative."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "late-sweep-probe")
+        path = "/srv/data/late-sweep.csv"
+        assert _post(client, probe_id, token,
+                     _report("r-late-sweep-1", [_file(path, sha=_h("late-sweep-v1"))],
+                             observed_at="2026-09-15T00:00:00+00:00")).status_code == 200
+        # An older, complete report that observed nothing must not sweep it away.
+        late = _post(client, probe_id, token,
+                     _report("r-late-sweep-0", [],
+                             observed_at="2026-09-14T00:00:00+00:00")).json()
+        assert late["not_observed"] == 0
+        with SessionLocal() as db:
+            instance = db.scalar(select(AssetInstance).where(AssetInstance.probe_id == probe_id))
+            assert instance.status == "ACTIVE"
+
+
+def test_migrated_object_counters_are_recounted_immediately() -> None:
+    """A content change must drop the old object's live copy count at once."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "migrate-probe")
+        path = "/srv/data/migrate.csv"
+        assert _post(client, probe_id, token,
+                     _report("r-migrate-1", [_file(path, sha=_h("migrate-v1"))])).status_code == 200
+        with SessionLocal() as db:
+            old_object_id = db.scalar(select(AssetInstance.object_id).where(
+                AssetInstance.probe_id == probe_id))
+        assert _post(client, probe_id, token,
+                     _report("r-migrate-2", [_file(path, sha=_h("migrate-v2"),
+                                                   hits=[_hit("id_card", count=1)],
+                                                   categories=("id_card",),
+                                                   counts={"id_card": 1})],
+                             observed_at="2026-09-16T00:00:00+00:00")).status_code == 200
+        with SessionLocal() as db:
+            old = db.get(DataObject, old_object_id)
+            assert old is not None
+            assert old.instance_count == 0
+            assert old.active_instance_count == 0
+
+
+def test_categories_keep_their_own_confidence_and_sample_size() -> None:
+    """One file can hold a verified category and a keyword-only clue."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "confidence-probe")
+        path = "/srv/data/mixed.csv"
+        email = _hit("email", count=4)
+        email["confidence"] = 0.85
+        for item in email["evidence"]:
+            item["confidence"] = 0.85
+        credential = _hit("credential", count=1)
+        credential["confidence"] = 0.3
+        for item in credential["evidence"]:
+            item["confidence"] = 0.3
+        asset = _file(path, sha=_h("mixed-v1"), categories=("email", "credential"),
+                      counts={"email": 4, "credential": 1}, hits=[email, credential])
+        asset["evidence"]["rows_read"] = 2
+        asset["evidence"]["sample_rows"] = 50
+        assert _post(client, probe_id, token, _report("r-mixed-1", [asset])).status_code == 200
+        with SessionLocal() as db:
+            instance = db.scalar(select(AssetInstance).where(AssetInstance.probe_id == probe_id))
+            rows = {row.category: row for row in db.scalars(
+                select(Detection).where(Detection.instance_id == instance.id)).all()}
+        assert round(rows["email"].confidence, 3) == 0.85
+        assert round(rows["credential"].confidence, 3) == 0.3
+        # The actual sample (2 rows) and the configured ceiling (50) stay apart.
+        assert rows["email"].sample_size == 2 and rows["email"].sample_limit == 50
+        # A later, smaller observation is current; the larger one stays as history.
+        smaller = _file(path, sha=_h("mixed-v1"), categories=("email",),
+                        counts={"email": 2}, hits=[email])
+        assert _post(client, probe_id, token,
+                     _report("r-mixed-2", [smaller],
+                             observed_at="2026-09-16T00:00:00+00:00")).status_code == 200
+        with SessionLocal() as db:
+            current = db.scalar(select(Detection).where(
+                Detection.category == "email", Detection.probe_id == probe_id))
+            assert current.hit_count == 2
+            assert current.sample_hit_count == 2
+            assert current.extra["hit_count_history"] == 4
+
+
+def test_projection_rebuild_keeps_the_reported_column_structure() -> None:
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "rebuild-columns-probe")
+        path = "/srv/rebuild/columns.csv"
+        asset = _file(path, sha=_h("rebuild-columns"))
+        asset["columns"] = [{"name": "mobile", "detected_type": "phone",
+                             "sensitivity": "Medium", "confidence": 0.9,
+                             "categories": ["phone"], "count": 2}]
+        assert _post(client, probe_id, token, _report("r-rebuild-columns", [asset])).status_code == 200
+    scoped = select(DataAsset).where(DataAsset.asset_type == "table",
+                                     DataAsset.extra["probe_id"].as_integer() == probe_id,
+                                     DataAsset.extra["path"].as_string() == path)
+    with SessionLocal() as db:
+        row = db.scalar(scoped)
+        assert row is not None
+        row.extra = {**row.extra, "status": "not_observed"}
+        db.commit()
+        svc.rebuild_projection(db, probe_id)
+        db.commit()
+        restored = db.scalar(scoped)
+        assert [column["name"] for column in restored.columns] == ["mobile"]
+        # The sensitive category is not a field name and must never be used as one.
+        assert all(column["name"] != "phone" for column in restored.columns)
+        assert restored.extra["evidence"]["extension"] == ".csv"
+        assert restored.extra["detections"][0]["category"] == "phone"
+        assert restored.extra["rebuild"]["structure_restored"] is True
+
+
+def test_rebuild_labels_columns_that_were_faked_from_categories() -> None:
+    """A pre-fix rebuild wrote categories into ``columns``; say so, don't hide it."""
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "faked-columns-probe", ip="10.9.9.57")
+        path = "/srv/rebuild/faked.csv"
+        assert _post(client, probe_id, token,
+                     _report("r-faked-columns", [_file(path, sha=_h("faked-columns"))])
+                     ).status_code == 200
+    scoped = select(DataAsset).where(DataAsset.asset_type == "table",
+                                     DataAsset.extra["probe_id"].as_integer() == probe_id,
+                                     DataAsset.extra["path"].as_string() == path)
+    with SessionLocal() as db:
+        row = db.scalar(scoped)
+        assert row is not None
+        # Reproduce the historical damage: names are categories, real ones gone,
+        # and the instance snapshot is absent so nothing can restore them.
+        row.columns = [{"name": "phone"}, {"name": "id_card"}]
+        row.extra = {**row.extra, "columns": [], "evidence": {}}
+        instance = db.scalar(select(AssetInstance).where(
+            AssetInstance.probe_id == probe_id, AssetInstance.path == path))
+        instance.extra = {**(instance.extra or {}), "columns": [], "evidence": {}}
+        db.commit()
+        svc.rebuild_projection(db, probe_id)
+        db.commit()
+        restored = db.scalar(scoped)
+        assert restored.extra["rebuild"]["fabricated_columns"] is True
+        assert restored.extra["rebuild"]["structure_restored"] is False
+        # The row keeps its values - nothing is deleted or silently renamed.
+        assert [column["name"] for column in restored.columns] == ["phone", "id_card"]
 
 # --- legacy protocol compatibility ------------------------------------------
 def test_legacy_331_report_still_ingests_and_keeps_working() -> None:

@@ -77,6 +77,37 @@ def evidence_asset_keys(evidence: dict[str, Any]) -> list[str]:
     return sorted({key for key in keys if key})
 
 
+#: Evidence fields naming the observing side of an event, most specific first.
+ASSET_SOURCE_FIELDS = ("src_ip", "src", "ip", "asset", "host", "hostname", "agent_name")
+
+
+def evidence_primary_asset(evidence: dict[str, Any]) -> str:
+    """The one host a finding is filed under, resolved identically everywhere.
+
+    ``evidence_asset_keys`` returns every address for correlation, but an alert
+    fingerprint needs a single stable identity. The source side wins over the
+    destination, so a scan is filed under the scanning host and two different
+    scanners never collapse into one alert. Unresolvable evidence returns "".
+    """
+    for field_name in ASSET_SOURCE_FIELDS:
+        value = evidence.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    record = evidence.get("record")
+    if isinstance(record, dict):
+        for field_name in ASSET_SOURCE_FIELDS:
+            value = record.get(field_name)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+    metrics = evidence.get("metrics")
+    for name in metrics if isinstance(metrics, dict) else {}:
+        parts = str(name).split(":")
+        if len(parts) >= 3 and parts[0] == "src" and parts[1]:
+            return parts[1].lower()
+    keys = evidence_asset_keys(evidence)
+    return keys[0] if keys else ""
+
+
 def _asset_keys(finding: DetectionResult) -> list[str]:
     return evidence_asset_keys(finding.evidence)
 
@@ -112,19 +143,43 @@ def _probe_key(finding: DetectionResult) -> str:
     return ""
 
 
+# Attack stage is DECLARED by the rule, never inferred from evidence text. The
+# previous implementation searched the whole evidence dict for keywords, and
+# because every persisted finding carries ``probe_id`` the "probe" keyword
+# filed DLP transfers and C2 beacons as reconnaissance. Only the rule id takes
+# part now; anything unnamed stays "unknown".
+STAGE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("recon", ("scan", "recon", "fingerprint", "discover", "enumerat", "public", "exposure")),
+    ("exploit", ("exploit", "upload", "webshell", "inject", "traversal", "yara", "nuclei", "cve")),
+    ("credential", ("credential", "password", "secret", "token", "auth", "weak")),
+    ("c2", ("c2", "beacon", "tunnel", "ioc", "dga", "dns")),
+    ("exfil", ("exfil", "transfer", "pii", "leak", "large", "dlp")),
+    ("impact", ("ransom", "destroy", "impact", "wiper")),
+)
+
+# Rule ids whose stage the keyword scan cannot infer correctly on its own.
+STAGE_RULE_OVERRIDES: dict[str, str] = {
+    "PROTO_HTTP_UA_001": "recon",
+    "ZEK_HTTP_UA_001": "recon",
+    "ZEK_DNS_NXDOMAIN_001": "recon",
+    "ZEK_HTTP_ERROR_001": "exploit",
+    "ZEK_WEIRD_001": "exploit",
+    "ZEK_FILE_SUSPICIOUS_001": "exploit",
+    "ZEK_TLS_WEAK_001": "credential",
+    "ZEK_TLS_INVALID_001": "credential",
+    "DATA_YARA_001": "exploit",
+    "COMP_WEAK_PROTOCOL_001": "credential",
+}
+
+
 def _stage(finding: DetectionResult) -> str:
-    rule = finding.rule_id.lower()
-    text = f"{rule} {finding.engine} {finding.evidence}".lower()
-    stages = [
-        ("recon", ("scan", "port_scan", "probe", "fingerprint", "recon")),
-        ("exploit", ("exploit", "upload", "webshell", "sql", "rce", "exec", "shell")),
-        ("credential", ("credential", "password", "secret", "token", "key", "auth")),
-        ("c2", ("c2", "beacon", "tunnel", "dga", "ioc", "misp", "threat")),
-        ("exfil", ("exfil", "large", "dns_tunnel", "http_upload", "transfer")),
-        ("impact", ("critical", "ransom", "destroy", "impact", "high")),
-    ]
-    for name, tokens in stages:
-        if any(token in text for token in tokens):
+    rule_id = finding.rule_id
+    override = STAGE_RULE_OVERRIDES.get(rule_id)
+    if override:
+        return override
+    rule = rule_id.lower()
+    for name, tokens in STAGE_KEYWORDS:
+        if any(token in rule for token in tokens):
             return name
     return "unknown"
 

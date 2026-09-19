@@ -23,6 +23,9 @@ const currentGroup = computed(() => String(route.meta.group || ''))
 const healthyIntegrations = computed(() => system.integrations.filter((item: IntegrationStatus) => item.healthy).length)
 const unhandledAlerts = computed(() => system.alertSummary?.unhandled_critical_high || 0)
 const healthStatus = computed(() => system.health?.status || 'checking')
+// The test-data entry is a server capability: the delivery build ships without
+// it, so the menu must not render (or call) the import/clear endpoints.
+const testDataImportEnabled = computed(() => system.health?.features?.test_data_import === true)
 
 const menuVisible = computed(() => !route.meta.public)
 
@@ -80,10 +83,10 @@ onMounted(async () => {
     system.start()
     system.connect(onAlert)
     // 刷新页面后恢复原样：若上一会话导入了测试数据，则本次自动清除
-    if (consumeTestImported()) {
+    if (testDataImportEnabled.value && consumeTestImported()) {
       try { await clearTestData() } catch { /* ignore */ }
     }
-    loadTestStatus()
+    if (testDataImportEnabled.value) loadTestStatus()
   }
 })
 onBeforeUnmount(() => {
@@ -141,7 +144,7 @@ onBeforeUnmount(() => {
             <el-button size="small" text @click="openAlerts"><el-icon><Bell /></el-icon></el-button>
           </el-badge>
           <span class="header-clock mono">{{ now.toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
-          <el-dropdown trigger="click" @command="(cmd: string) => { if (cmd === 'import') onImportTest(); if (cmd === 'clear') onClearTest() }">
+          <el-dropdown v-if="testDataImportEnabled" trigger="click" @command="(cmd: string) => { if (cmd === 'import') onImportTest(); if (cmd === 'clear') onClearTest() }">
             <el-button size="small" text :loading="testBusy">
               <el-icon><MagicStick /></el-icon>
               <span v-if="testStatus?.present" class="test-badge">测试数据</span>

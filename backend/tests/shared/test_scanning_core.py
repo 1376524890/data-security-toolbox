@@ -308,14 +308,18 @@ def test_a_small_file_is_read_whole_and_reported_complete(tmp_path: Path) -> Non
     assert "13800138000" in sample.text
 
 
-def test_partial_last_line_is_dropped_rather_than_reported_as_a_record(tmp_path: Path) -> None:
+def test_final_line_without_a_newline_is_kept_and_flagged(tmp_path: Path) -> None:
     path = tmp_path / "cut.log"
     path.write_bytes(b"record one\nrecord two\nrecord thre")
     budget = ScanBudget()
     sample = sampler.sample_text(path, path.stat().st_size, budget=budget, block_size=1024,
                                  whole_file_limit=64)
-    assert "record thre" not in sample.text
+    # A value on the final, newline-less line (an email, say) is real data and
+    # used to disappear. It is kept; the unterminated flag marks it as possibly
+    # incomplete, so callers can report a coverage limit instead of dropping it.
+    assert "record thre" in sample.text
     assert "record one" in sample.text
+    assert sample.last_line_unterminated is True
 
 
 def test_sampling_stops_when_the_byte_budget_runs_out(tmp_path: Path) -> None:

@@ -6,9 +6,21 @@ from app.engine.core.base import DetectionEngine
 from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
 from app.rules.interpreter import interpret_rules
+from app.rules.library import rule_params
 from app.services.traffic_service import detect_anomalies
 from app.core.config import settings
 from app.services.traffic_state import rolling_traffic_state
+
+
+# A handful of packets 20 ms apart is not a heartbeat. A beacon must last long
+# enough and tick slowly enough to be a plausible C2 check-in; the values are
+# operator-tunable through the rule library.
+BEACON_DEFAULTS = {
+    "min_packets": 10,
+    "min_duration_seconds": 60.0,
+    "min_interval_seconds": 1.0,
+    "max_interval_cv": 0.2,
+}
 
 
 class TrafficEngine(DetectionEngine):
@@ -75,6 +87,11 @@ class TrafficEngine(DetectionEngine):
         return findings
 
     def _beacon_flows(self, context: DetectionContext) -> list[dict]:
+        rule = rule_params("traffic_engine", "NET_C2_BEACON_001", BEACON_DEFAULTS)
+        min_packets = int(rule.get("min_packets") or BEACON_DEFAULTS["min_packets"])
+        min_duration = float(rule.get("min_duration_seconds") or BEACON_DEFAULTS["min_duration_seconds"])
+        min_interval = float(rule.get("min_interval_seconds") or BEACON_DEFAULTS["min_interval_seconds"])
+        max_cv = float(rule.get("max_interval_cv") or BEACON_DEFAULTS["max_interval_cv"])
         groups: dict[tuple, list[float]] = defaultdict(list)
         for packet in context.packets:
             key = (packet.get("src_ip"), packet.get("src_port"), packet.get("dst_ip"), packet.get("dst_port"))
@@ -82,15 +99,26 @@ class TrafficEngine(DetectionEngine):
         findings = []
         for key, timestamps in groups.items():
             timestamps.sort()
-            if len(timestamps) < 10:
+            if len(timestamps) < min_packets:
+                continue
+            duration = timestamps[-1] - timestamps[0]
+            if duration < min_duration:
                 continue
             intervals = [b - a for a, b in zip(timestamps, timestamps[1:])]
             if not intervals:
                 continue
             mean = statistics.fmean(intervals)
-            if mean <= 0:
+            if mean < min_interval:
                 continue
             stdev = statistics.pstdev(intervals)
-            if stdev / mean < 0.2:
-                findings.append({"flow": key, "packets": len(timestamps), "interval_mean": round(mean, 4), "interval_stdev": round(stdev, 4), "duration": round(timestamps[-1] - timestamps[0], 4)})
+            if stdev / mean >= max_cv:
+                continue
+            src_ip, src_port, dst_ip, dst_port = key
+            findings.append({
+                "src_ip": src_ip, "src_port": src_port, "dst_ip": dst_ip, "dst_port": dst_port,
+                "packets": len(timestamps), "interval_mean": round(mean, 4),
+                "interval_stdev": round(stdev, 4), "duration": round(duration, 4),
+                "criteria": {"min_packets": min_packets, "min_duration_seconds": min_duration,
+                             "min_interval_seconds": min_interval, "max_interval_cv": max_cv},
+            })
         return findings

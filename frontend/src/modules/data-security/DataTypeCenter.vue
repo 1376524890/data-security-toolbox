@@ -20,16 +20,15 @@ const filtered = computed(() => {
     item.category.includes(needle) || item.entity.toLowerCase().includes(needle))
 })
 
-const totals = computed(() => {
-  const items = rows.value?.items || []
-  return {
-    types: items.length,
-    objects: items.reduce((sum, item) => sum + item.object_count, 0),
-    instances: items.reduce((sum, item) => sum + item.active_instance_count, 0),
-    duplicates: items.reduce((sum, item) => sum + item.confirmed_duplicate_count, 0),
-    candidates: items.reduce((sum, item) => sum + item.candidate_count, 0),
-  }
+// Totals come from the server's de-duplicated object/instance sets: summing the
+// per-type rows would count a file holding both email and credential twice.
+const totals = computed(() => rows.value?.totals ?? {
+  types: 0, objects: 0, instances: 0, hosts: 0,
+  confirmed_duplicates: 0, candidate_duplicates: 0, identity_pending: 0, truncated: false,
 })
+const scopeLabel = computed(() => (rows.value?.totals_scope === 'all_probes'
+  ? '全部探针'
+  : `探针 ${rows.value?.totals_scope?.replace('probe:', '') ?? ''}`))
 
 async function load(): Promise<void> {
   loading.value = true
@@ -60,6 +59,9 @@ onMounted(load)
         <el-tag v-if="rows" size="small" type="info">
           分级来源：{{ rows.mapping_source === 'settings_override' ? '平台覆盖配置' : '内置默认' }}
         </el-tag>
+        <el-tag v-if="rows" size="small" type="info" style="margin-left: 6px">
+          统计范围：{{ scopeLabel }}
+        </el-tag>
         <div class="toolbar-spacer" />
         <el-input v-model="search" placeholder="按类型或实体名过滤" clearable style="width: 220px" />
         <el-button @click="load">刷新</el-button>
@@ -67,16 +69,16 @@ onMounted(load)
 
       <div class="stat-grid cols-4">
         <StatCard label="敏感类型" :value="totals.types" sub="存在 ACTIVE 实例的类型" />
-        <StatCard label="数据对象" :value="totals.objects" sub="逻辑对象（同内容跨主机合并）" />
-        <StatCard label="活跃实例" :value="totals.instances" sub="探针上的物理副本" />
-        <StatCard label="确认副本" :value="totals.duplicates" tone="warning"
-                  :sub="`完整 Hash 相同的额外副本；疑似副本 ${totals.candidates} 个`" />
+        <StatCard label="数据对象" :value="totals.objects" sub="跨类型去重；同内容跨主机合并" />
+        <StatCard label="活跃实例" :value="totals.instances" sub="上述对象的活跃实例（去重）" />
+        <StatCard label="确认副本" :value="totals.confirmed_duplicates" tone="warning"
+                  :sub="`完整 Hash 相同的额外副本；疑似副本 ${totals.candidate_duplicates} 个（≥2 实例）· 待确认身份 ${totals.identity_pending}`" />
       </div>
 
       <div class="soc-card" style="margin-top: 12px">
         <div class="soc-card-title"><span class="dot" />类型明细</div>
         <el-alert type="info" :closable="false" show-icon style="margin-bottom: 10px"
-                  title="去重口径：确认副本按“完整 SHA256 相同”的对象计 max(活跃实例数 - 1, 0) 求和；部分指纹只形成疑似副本，单独统计，不并入确认副本。" />
+                  title="去重口径：顶部卡片为跨类型去重后的对象/实例数；表格中的“关联对象数/关联实例数”只描述该类型内部，不能相加。确认副本按“完整 SHA256 相同”的对象计 max(范围内实例数 - 1, 0)；部分指纹仅当至少存在 2 个实例时才计为疑似副本，单实例只显示“待确认身份”。" />
         <el-table :data="filtered" size="small" empty-text="尚无扫描结果" @row-click="openType">
           <el-table-column prop="category" label="类型" min-width="140">
             <template #default="{ row }">
@@ -95,11 +97,12 @@ onMounted(load)
           <el-table-column label="旧严重度" width="100">
             <template #default="{ row }"><span class="muted">{{ row.severity }}</span></template>
           </el-table-column>
-          <el-table-column prop="object_count" label="对象数" width="90" sortable />
-          <el-table-column prop="active_instance_count" label="活跃实例" width="100" sortable />
+          <el-table-column prop="object_count" label="关联对象数" width="110" sortable />
+          <el-table-column prop="active_instance_count" label="关联实例数" width="110" sortable />
           <el-table-column prop="host_count" label="主机数" width="90" />
           <el-table-column prop="confirmed_duplicate_count" label="确认副本" width="100" />
-          <el-table-column prop="candidate_count" label="疑似副本" width="100" />
+          <el-table-column prop="candidate_duplicate_count" label="疑似副本（≥2 实例）" width="150" />
+          <el-table-column prop="identity_pending_count" label="待确认身份" width="110" />
           <el-table-column label="判定来源" width="130">
             <template #default="{ row }">
               <span :class="row.source === 'settings_override' ? '' : 'muted'">

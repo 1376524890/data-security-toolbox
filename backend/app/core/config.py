@@ -6,6 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Data Security Toolbox"
     app_env: str = "development"
+    # Manual test-pack import (``POST /test/import``). Off unless an operator
+    # turns it on, because delivery and demo environments hold real data only.
+    test_data_import_enabled: bool = False
     secret_key: str = ""
     admin_username: str = "admin"
     admin_password: str = ""
@@ -97,6 +100,8 @@ class Settings(BaseSettings):
     def validate_production(self) -> None:
         if self.app_env != "production":
             return
+        if self.test_data_import_enabled:
+            raise RuntimeError("production must not enable TEST_DATA_IMPORT_ENABLED")
         weak_values = {"", "changeit", "changeme", "changeme123!", "security", "password", "secret", "admin", "test"}
         checks = {
             "SECRET_KEY": self.secret_key,

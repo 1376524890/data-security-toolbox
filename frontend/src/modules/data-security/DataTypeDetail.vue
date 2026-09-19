@@ -19,7 +19,14 @@ const total = ref(0)
 
 function identityTag(row: DataObjectRow): { text: string; type: 'success' | 'warning' | 'info' } {
   if (row.identity_kind === 'confirmed') return { text: `内容一致 ${row.identity_confidence}`, type: 'success' }
-  if (row.identity_kind === 'candidate') return { text: `疑似副本 ${row.identity_confidence}`, type: 'warning' }
+  // A partial fingerprint on a lone instance is an unresolved identity; only
+  // two or more instances make it a suspected copy.
+  if (row.identity_kind === 'candidate') {
+    return {
+      text: row.active_instance_count >= 2 ? `疑似副本 ${row.identity_confidence}` : `待确认身份 ${row.identity_confidence}`,
+      type: 'warning',
+    }
+  }
   return { text: '作用域内标识', type: 'info' }
 }
 
@@ -62,11 +69,12 @@ onMounted(load)
       </div>
 
       <div class="stat-grid cols-4">
-        <StatCard label="数据对象" :value="row?.object_count ?? 0" sub="存在活跃实例的对象" />
-        <StatCard label="活跃实例" :value="row?.active_instance_count ?? 0" />
+        <StatCard label="关联对象数" :value="row?.object_count ?? 0" sub="该类型内部计数，不跨类型去重" />
+        <StatCard label="关联实例数" :value="row?.active_instance_count ?? 0" />
         <StatCard label="主机数" :value="row?.host_count ?? 0" sub="按探针去重" />
-        <StatCard label="确认 / 疑似副本" :value="`${row?.confirmed_duplicate_count ?? 0} / ${row?.candidate_count ?? 0}`"
-                  tone="warning" :sub="row?.truncated ? '结果已按上限截断' : '确认按完整 Hash，疑似按部分指纹'" />
+        <StatCard label="确认 / 疑似副本" :value="`${row?.confirmed_duplicate_count ?? 0} / ${row?.candidate_duplicate_count ?? 0}`"
+                  tone="warning"
+                  :sub="row?.truncated ? '结果已按上限截断' : `疑似需 ≥2 实例；待确认身份 ${row?.identity_pending_count ?? 0} 个`" />
       </div>
 
       <div class="soc-card" style="margin-top: 12px">

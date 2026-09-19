@@ -6,10 +6,12 @@
   severity: High
   confidence: 0.8
   enabled: true
-  condition: entropy(dns.qry.name) >= 3.5 or len(dns.qry.name) >= 40
+  condition: 同一源主机+注册域在时间窗口内 编码左标签数 >= 3 且查询数 >= 20（孤立高熵/长域名仅记候选）
   params:
     min_name_entropy: 3.5
     min_name_length: 40
+    min_queries: 20
+    min_encoded_labels: 3
     max_evidence: 20
   recommendation: 排查是否存在 DNS 隧道、DGA 域名或异常编码域名。
 
@@ -40,7 +42,7 @@
   severity: High
   confidence: 0.85
   enabled: true
-  condition: http.request.method in {POST,PUT,PATCH} 且 uri 含 .php/.jsp/.asp
+  condition: http.request.method in {POST,PUT,PATCH} 且 Content-Type 为 multipart/octet-stream 且 URI/正文含 .php/.jsp/.asp
   params:
     methods: [POST, PUT, PATCH]
     extensions: [.php, .jsp, .asp]

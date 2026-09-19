@@ -17,7 +17,7 @@
   severity: High
   confidence: 0.7
   enabled: true
-  condition: 资产服务/版本关键字命中本地漏洞库 local_cves（无本地记录时回退 NVD 在线查询）
+  condition: 资产服务/版本关键字命中本地漏洞库 local_cves（结果先记为候选 CVE_CANDIDATE_001；仅当版本落在库中声明的受影响范围内才生成 CVE_<id> 确认发现）
   params:
     results_per_page: 10
     local_limit: 10

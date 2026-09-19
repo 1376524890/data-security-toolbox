@@ -52,7 +52,7 @@ def _sorted(query: Any, order_by: Any, sortable: dict[str, Any], default: Any) -
     return query.order_by(column.desc() if str(order_by).startswith('-') else column.asc())
 
 
-def _object_row(obj: DataObject) -> dict[str, Any]:
+def _object_row(obj: DataObject, mapping: dict[str, str] | None = None) -> dict[str, Any]:
     return {
         'id': obj.id, 'object_key': obj.object_key, 'object_type': obj.object_type,
         'content_hash': obj.content_hash, 'hash_type': obj.hash_type,
@@ -63,7 +63,8 @@ def _object_row(obj: DataObject) -> dict[str, Any]:
         'partial_version': obj.partial_version,
         'size': obj.size, 'categories': list(obj.categories or []),
         'sensitivity': obj.sensitivity,
-        'level': sensitivity_map.worst_level(obj.categories),
+        'level': sensitivity_map.worst_level(obj.categories, mapping=mapping),
+        'level_source': 'settings_override' if mapping else 'builtin_default',
         'instance_count': obj.instance_count,
         'active_instance_count': obj.active_instance_count,
         'first_seen_at': obj.first_seen_at.isoformat() if obj.first_seen_at else '',
@@ -71,7 +72,8 @@ def _object_row(obj: DataObject) -> dict[str, Any]:
     }
 
 
-def _instance_row(instance: AssetInstance, probe: Probe | None = None) -> dict[str, Any]:
+def _instance_row(instance: AssetInstance, probe: Probe | None = None,
+                  mapping: dict[str, str] | None = None) -> dict[str, Any]:
     return {
         'id': instance.id, 'object_id': instance.object_id, 'probe_id': instance.probe_id,
         'probe_name': probe.name if probe else '',
@@ -81,7 +83,8 @@ def _instance_row(instance: AssetInstance, probe: Probe | None = None) -> dict[s
         'hash_type': instance.hash_type, 'status': instance.status,
         'owner': instance.owner, 'group': instance.group, 'permission': instance.permission,
         'sensitivity': instance.sensitivity,
-        'level': sensitivity_map.worst_level(instance.categories),
+        'level': sensitivity_map.worst_level(instance.categories, mapping=mapping),
+        'level_source': 'settings_override' if mapping else 'builtin_default',
         'categories': list(instance.categories or []),
         'coverage': instance.coverage, 'termination_reason': instance.termination_reason,
         'ruleset_version': instance.ruleset_version, 'engine_version': instance.engine_version,
@@ -100,7 +103,8 @@ def _detection_row(detection: Detection) -> dict[str, Any]:
         'subcategory': detection.subcategory,
         'sensitivity_level': detection.sensitivity_level, 'severity': detection.severity,
         'confidence': round(float(detection.confidence or 0), 3),
-        'sample_size': detection.sample_size, 'sample_hit_count': detection.sample_hit_count,
+        'sample_size': detection.sample_size, 'sample_limit': detection.sample_limit,
+        'sample_hit_count': detection.sample_hit_count,
         'hit_count': detection.hit_count,
         'engine_version': detection.engine_version, 'ruleset_version': detection.ruleset_version,
         'first_seen_at': detection.first_seen_at.isoformat() if detection.first_seen_at else '',
@@ -117,10 +121,21 @@ def list_data_types(probe_id: int | None = Query(default=None),
     return {
         'items': rows,
         'count': len(rows),
+        # Cross-type totals over de-duplicated object/instance sets. The per-row
+        # ``object_count``/``active_instance_count`` are type relations and may
+        # count the same object twice, so a page must read these instead of
+        # summing the table.
+        'totals': data_object_service.data_type_summary(db, probe_id=probe_id),
+        'totals_scope': 'all_probes' if not probe_id else f'probe:{probe_id}',
         'dedup_rules': {
-            'confirmed_duplicate_count': '对每个完整 Hash 对象求和 max(active_instance_count - 1, 0)',
-            'candidate_count': '部分指纹候选对象数，单独统计，不计入确认副本',
-            'object_count': '存在 ACTIVE 实例的对象数',
+            'totals.objects': '存在 ACTIVE 实例的敏感对象数，跨类型去重',
+            'totals.instances': '上述对象在当前范围内的活跃实例数',
+            'totals.confirmed_duplicates': '对每个完整 Hash 对象计数 max(范围内实例数 - 1, 0)',
+            'totals.candidate_duplicates': '部分指纹对象中至少存在 2 个实例的疑似副本数',
+            'totals.identity_pending': '仅 1 个实例的部分指纹对象，身份待确认，不称副本',
+            'object_count': '该类型的关联对象数（不跨类型去重，仅供类型内查看）',
+            'active_instance_count': '该类型的关联活跃实例数（不跨类型去重）',
+            'candidate_count': '该类型的部分指纹对象数，单独统计，不计入确认副本',
         },
         'levels': sensitivity_map.LEVEL_META,
         'mapping_source': 'settings_override' if mapping else 'builtin_default',
@@ -139,18 +154,21 @@ def data_type_detail(category: str, probe_id: int | None = Query(default=None),
     row = rows.get(key)
     if row is None:
         raise HTTPException(404, 'data type not found')
-    active = select(AssetInstance.id).where(
-        AssetInstance.status == data_object_service.INSTANCE_ACTIVE)
+    # Only the object a detection was produced for counts; an instance that has
+    # since moved to new content must not drag its history into this type.
+    object_query = (select(Detection.object_id)
+                    .join(AssetInstance, AssetInstance.id == Detection.instance_id)
+                    .where(Detection.category == key,
+                           AssetInstance.status == data_object_service.INSTANCE_ACTIVE,
+                           Detection.object_id == AssetInstance.object_id))
     if probe_id:
-        active = active.where(AssetInstance.probe_id == probe_id)
-    object_ids = db.scalars(select(Detection.object_id).where(
-        Detection.category == key,
-        Detection.instance_id.in_(active)).distinct()).all()
+        object_query = object_query.where(AssetInstance.probe_id == probe_id)
+    object_ids = db.scalars(object_query.distinct()).all()
     query = select(DataObject).where(DataObject.id.in_(list(object_ids)))
     result = paginate(db, query.order_by(DataObject.active_instance_count.desc(), DataObject.id),
                       page, page_size)
     return {**row,
-            'objects': page_response([_object_row(item) for item in result['items']],
+            'objects': page_response([_object_row(item, mapping) for item in result['items']],
                                      page, page_size, result['total'])}
 
 
@@ -178,7 +196,8 @@ def list_data_objects(category: str | None = None, hash_type: str | None = None,
         query = query.where(DataObject.object_key.ilike(f'%{search}%'))
     query = _sorted(query, order_by, OBJECT_SORTABLE, DataObject.id.desc())
     result = paginate(db, query, page, page_size)
-    return page_response([_object_row(item) for item in result['items']],
+    mapping = sensitivity_map.overrides(db)
+    return page_response([_object_row(item, mapping) for item in result['items']],
                          page, page_size, result['total'])
 
 
@@ -193,7 +212,9 @@ def data_object_detail(object_id: int, db: Session = Depends(get_db)) -> dict[st
         Probe.id.in_(list(probe_ids)))).all()} if probe_ids else {}
     instances = db.scalars(select(AssetInstance).where(
         AssetInstance.object_id == object_id).order_by(AssetInstance.id)).all()
-    payload['instances'] = [_instance_row(item, probes.get(item.probe_id)) for item in instances]
+    mapping = sensitivity_map.overrides(db)
+    payload['instances'] = [_instance_row(item, probes.get(item.probe_id), mapping)
+                            for item in instances]
     payload['host_count'] = len({item.probe_id for item in instances})
     payload['ruleset_versions'] = sorted({item.ruleset_version for item in instances if item.ruleset_version})
     return payload
@@ -234,7 +255,9 @@ def list_asset_instances(probe_id: int | None = None, object_id: int | None = No
     query = _sorted(query, order_by, INSTANCE_SORTABLE, AssetInstance.id.desc())
     result = paginate(db, query, page, page_size)
     probes = {item.id: item for item in db.scalars(select(Probe)).all()}
-    return page_response([_instance_row(item, probes.get(item.probe_id)) for item in result['items']],
+    mapping = sensitivity_map.overrides(db)
+    return page_response([_instance_row(item, probes.get(item.probe_id), mapping)
+                          for item in result['items']],
                          page, page_size, result['total'])
 
 

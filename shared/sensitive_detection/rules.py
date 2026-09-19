@@ -49,7 +49,7 @@ BUILTIN_RULES: list[dict[str, Any]] = [
         "pattern": r"(?<!\d)1[3-9]\d{9}(?!\d)",
         "confidence": 0.7,
         "validator": "cn_mobile",
-        "field_hints": ["phone", "mobile", "cellphone", "tel", "手机", "联系电话", "联系方式"],
+        "field_hints": ["phone", "mobile", "cellphone", "telephone", "tel", "手机", "联系电话", "联系方式"],
         "keywords": ["手机号", "手机号码"],
         "description": "11 位大陆手机号；格式正确即成立，字段名可加强上下文。",
     },
@@ -90,7 +90,10 @@ BUILTIN_RULES: list[dict[str, Any]] = [
         "rule_id": "SD_API_KEY_001",
         "name": "API Key / Secret",
         "entity": API_KEY,
-        "pattern": r"\b(?:AKIA|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,})\b",
+        # A bare four-character prefix is not a key: AWS key ids are
+        # ``AKIA``/``ASIA`` plus exactly 16 upper-case alphanumerics. Requiring
+        # the full shape keeps the word "AKIA" in a document from alerting.
+        "pattern": r"(?:\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bsk-[A-Za-z0-9]{20,}\b|\bghp_[A-Za-z0-9]{20,}\b|\bAIza[0-9A-Za-z_\-]{20,}\b)",
         "confidence": 0.95,
         "validator": "",
         "field_hints": ["api_key", "apikey", "secret", "密钥", "access_key"],

@@ -66,6 +66,18 @@ class DetectionHit:
         return not is_structural(self.entity)
 
     @property
+    def confirmed(self) -> bool:
+        """Value-level evidence exists (a regex/validator span, not only a hint).
+
+        A header name, a keyword or a context word is a *candidate*: it says the
+        column is worth checking, not that personal data was found. Callers that
+        raise an alert or label a file must use this, so an empty CSV whose only
+        signal is a ``phone`` header is not reported as discovered PII.
+        """
+        return (self.sensitive and self.count > 0 and not self.context_evidence
+                and self.confidence >= confidence_module.CONFIRMED_CONFIDENCE)
+
+    @property
     def field_only(self) -> bool:
         """True when P0 has no value-level evidence for this type (no NER)."""
         return is_field_only(self.entity)

@@ -89,7 +89,7 @@ source/
 ## 数据库规范
 
 - 表结构以 `app/models.py` 为准；任何结构变更必须新增 Alembic 迁移（`backend/alembic/versions/`）。
-  已发布的迁移文件不可回改。当前最新为 `0014_probe_removal`。
+  已发布的迁移文件不可回改。当前最新为 `0015_alert_hits`（v2.12.0 发布基线；已在本机应用）。
 - 严重度/风险等级统一用英文首字母大写：`Critical` / `High` / `Medium` / `Low`。
 - 派生表（如 `incidents`）可以在根因修复后用维护端点按原始数据重算，但**绝不允许凭空造数据**。
 - 维护端点参考：`POST /api/v1/admin/data-assets/backfill`、`POST /api/v1/admin/data-assets/rebuild-projection`

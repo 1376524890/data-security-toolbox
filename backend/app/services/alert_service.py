@@ -10,7 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import Alert, AlertDelivery, DetectionFinding, Incident
+from app.incident_engine.engine import evidence_primary_asset
+from app.models import Alert, AlertDelivery, AlertHit, DetectionFinding, Incident
 
 ALERTS_CHANNEL = "security.alerts"
 
@@ -32,22 +33,37 @@ def _redis_client() -> redis.Redis | None:
         return None
 
 
-def alert_fingerprint(rule_id: str, source: str, asset: str, ioc: str) -> str:
-    payload = f"{rule_id}|{source}|{asset}|{ioc}".encode()
+def alert_fingerprint(rule_id: str, source: str, asset: str, ioc: str, probe: str = "") -> str:
+    """Suppression identity: rule + engine + probe + subject.
+
+    The probe is part of the identity because the same rule firing on two probes
+    is two observations, not one. It is appended only when known so fingerprints
+    written before probes were tracked keep suppressing correctly.
+    """
+    parts = [rule_id, source, asset, ioc]
+    if probe:
+        parts.append(f"probe:{probe}")
+    payload = "|".join(parts).encode()
     return hashlib.sha256(payload).hexdigest()
 
 
 def _asset_from_finding(finding: DetectionFinding) -> str:
+    """The host the alert is filed under, via the shared asset resolver.
+
+    The local key scan ignored ``src`` and the rule engine's ``metrics``, so two
+    different scan sources both resolved to "" and were suppressed into one
+    alert. The incident engine resolves assets once; alerts reuse it.
+    """
+    return evidence_primary_asset(finding.evidence or {})
+
+
+def _probe_from_finding(finding: DetectionFinding) -> str:
     evidence = finding.evidence or {}
-    for key in ("asset", "src_ip", "dst_ip", "dest_ip", "ip", "host", "hostname"):
-        value = evidence.get(key)
-        if value:
-            return str(value)
+    if evidence.get("probe_id"):
+        return str(evidence["probe_id"]).lower()
     record = evidence.get("record")
-    if isinstance(record, dict):
-        for key in ("src_ip", "dst_ip", "dest_ip", "host", "hostname"):
-            if record.get(key):
-                return str(record[key])
+    if isinstance(record, dict) and record.get("probe_id"):
+        return str(record["probe_id"]).lower()
     return ""
 
 
@@ -104,6 +120,92 @@ def _next_instance(db: Session, fingerprint: str) -> int:
     return int(latest or 0) + 1
 
 
+def _epoch(value: datetime | None) -> float:
+    """Naive/aware-safe sort key for hit timestamps.
+
+    SQLite hands back naive datetimes while a value just written is timezone
+    aware; comparing them directly raises ``TypeError``.
+    """
+    if not value:
+        return 0.0
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC).timestamp()
+    return value.timestamp()
+
+
+def _observed_at(finding: DetectionFinding) -> datetime:
+    raw = str(finding.timestamp or "").strip()
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        except ValueError:
+            pass
+    return datetime.now(UTC)
+
+
+def _refresh_hit_flags(db: Session, alert_id: int) -> None:
+    """Re-point which hit row is the first, the latest and the highest risk."""
+    rows = db.scalars(select(AlertHit).where(AlertHit.alert_id == alert_id)).all()
+    if not rows:
+        return
+    first = min(rows, key=lambda hit: (_epoch(hit.observed_at), hit.id or 0))
+    latest = max(rows, key=lambda hit: (_epoch(hit.observed_at), hit.id or 0))
+    highest = sorted(rows, key=lambda hit: (-float(hit.risk_score or 0.0), _epoch(hit.observed_at)))[0]
+    for hit in rows:
+        hit.is_first = hit.id == first.id
+        hit.is_latest = hit.id == latest.id
+        hit.is_highest_risk = hit.id == highest.id
+
+
+def _record_hit(db: Session, alert: Alert, finding: DetectionFinding, probe: str, asset: str, ioc: str) -> None:
+    """Keep this observation behind the alert so suppression hides nothing."""
+    hit = db.scalar(select(AlertHit).where(AlertHit.alert_id == alert.id, AlertHit.finding_id == finding.id))
+    if hit is None:
+        hit = AlertHit(alert_id=alert.id, finding_id=finding.id)
+        db.add(hit)
+    hit.probe_id = int(probe) if probe.isdigit() else None
+    hit.source = finding.engine
+    hit.asset = asset
+    hit.ioc = ioc
+    hit.severity = finding.severity
+    hit.risk_score = finding.risk_score
+    hit.observed_at = _observed_at(finding)
+    db.flush()
+    _refresh_hit_flags(db, alert.id)
+
+
+def list_alert_hits(db: Session, alert_id: int) -> list[dict[str, Any]]:
+    """Every observation behind one alert, oldest first.
+
+    Rows whose finding no longer exists are skipped: a hit without its finding
+    has no evidence left to show, and SQLite reuses row ids after a delete, so a
+    leftover row could otherwise be attributed to an unrelated new alert.
+    """
+    rows = db.scalars(
+        select(AlertHit)
+        .where(AlertHit.alert_id == alert_id, AlertHit.finding_id.in_(select(DetectionFinding.id)))
+        .order_by(AlertHit.observed_at, AlertHit.id)
+    ).all()
+    return [
+        {
+            "id": hit.id,
+            "finding_id": hit.finding_id,
+            "probe_id": hit.probe_id,
+            "source": hit.source,
+            "asset": hit.asset,
+            "ioc": hit.ioc,
+            "severity": hit.severity,
+            "risk_score": hit.risk_score,
+            "observed_at": hit.observed_at,
+            "is_first": hit.is_first,
+            "is_latest": hit.is_latest,
+            "is_highest_risk": hit.is_highest_risk,
+        }
+        for hit in rows
+    ]
+
+
 def create_finding_alert(db: Session, finding: DetectionFinding, probe_id: int | None = None) -> tuple[Alert | None, bool]:
     """Create or suppress-update an Alert for a finding.
 
@@ -112,9 +214,10 @@ def create_finding_alert(db: Session, finding: DetectionFinding, probe_id: int |
     """
     if not _policy_allows(finding.severity, finding.risk_score):
         return None, False
+    probe = str(probe_id) if probe_id is not None else _probe_from_finding(finding)
     asset = _asset_from_finding(finding)
     ioc = _ioc_from_finding(finding)
-    fp = alert_fingerprint(finding.rule_id, finding.engine, asset, ioc)
+    fp = alert_fingerprint(finding.rule_id, finding.engine, asset, ioc, probe)
     now = datetime.now(UTC)
     window = int(settings.alert_suppress_window_seconds)
     existing = _suppressible(db, fp, now, window)
@@ -124,6 +227,7 @@ def create_finding_alert(db: Session, finding: DetectionFinding, probe_id: int |
         existing.risk_score = max(existing.risk_score, finding.risk_score)
         existing.severity = finding.severity if existing.severity != "Critical" else "Critical"
         existing.finding_id = existing.finding_id or finding.id
+        _record_hit(db, existing, finding, probe, asset, ioc)
         return existing, False
     title = finding.rule_id
     if asset:
@@ -146,6 +250,7 @@ def create_finding_alert(db: Session, finding: DetectionFinding, probe_id: int |
     )
     db.add(alert)
     db.flush()
+    _record_hit(db, alert, finding, probe, asset, ioc)
     return alert, True
 
 
@@ -162,7 +267,7 @@ def create_incident_alert(db: Session, incident: Incident) -> tuple[Alert | None
     evidence = incident.evidence or {}
     asset = str(evidence.get("asset") or "")
     ioc = str(evidence.get("ioc") or "")
-    fp = alert_fingerprint("INCIDENT", incident.source, asset, ioc)
+    fp = alert_fingerprint("INCIDENT", incident.source, asset, ioc, str(incident.probe_id or ""))
     now = datetime.now(UTC)
     window = int(settings.alert_suppress_window_seconds)
     existing = _suppressible(db, fp, now, window)

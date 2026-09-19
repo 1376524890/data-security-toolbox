@@ -269,6 +269,7 @@ def _hit_summary(hits, *, field_name: str = '', sheet_name: str = '',
             'category': legacy_name(hit.entity) or hit.entity.lower(),
             'count': hit.count,
             'confidence': hit.confidence,
+            'confirmed': hit.confirmed,
             'level': hit.level,
             'severity': hit.severity,
             'field_only': hit.field_only,
@@ -288,15 +289,18 @@ def _hit_summary(hits, *, field_name: str = '', sheet_name: str = '',
 
 def _column_categories(name: str, sample: str, *, sheet_name: str = '',
                        column_index: int | None = None
-                       ) -> tuple[list[str], dict[str, int], float, list[dict]]:
+                       ) -> tuple[list[str], list[str], dict[str, int], float, list[dict]]:
     """Categories for one column, from its header name and its sampled cells.
 
     Returns the evidence summary as well, so the caller can report *why* a column
     was classified without ever carrying a cell value out of this function.
+    ``confirmed`` is value-level evidence and drives the sensitivity; ``candidates``
+    are header/context clues such as an empty template's ``phone`` column.
     """
-    categories: list[str] = []
+    confirmed: list[str] = []
+    candidates: list[str] = []
     counts: dict[str, int] = {}
-    confidence = 0.3
+    confidence = 0.0
     hits = engine().scan(SensitiveDetectionContext(
         text=sample or '', field_name=str(name), sheet_name=sheet_name or '',
         source_type='file'))
@@ -304,14 +308,18 @@ def _column_categories(name: str, sample: str, *, sheet_name: str = '',
         if not hit.sensitive:
             continue
         category = legacy_name(hit.entity) or hit.entity.lower()
-        if category not in categories:
-            categories.append(category)
-        if hit.count:
+        if not category:
+            continue
+        if hit.confirmed:
+            if category not in confirmed:
+                confirmed.append(category)
             counts[category] = counts.get(category, 0) + hit.count
-        confidence = max(confidence, hit.confidence)
+            confidence = max(confidence, hit.confidence)
+        elif category not in confirmed and category not in candidates:
+            candidates.append(category)
     summary = _hit_summary(hits, field_name=str(name), sheet_name=sheet_name,
                            column_index=column_index)
-    return categories, counts, round(confidence, 3), summary
+    return confirmed, candidates, counts, round(confidence, 3), summary
 
 
 def _columns_from_result(result, file_name: str) -> tuple[list[dict], list[dict], list[str]]:
@@ -325,11 +333,13 @@ def _columns_from_result(result, file_name: str) -> tuple[list[dict], list[dict]
     categories: list[str] = []
     for sheet in result.sheets:
         for column in sheet.columns:
-            column_categories, counts, confidence, column_hits = _column_categories(
+            confirmed, candidates, counts, confidence, column_hits = _column_categories(
                 column.name, column.sample_text(), sheet_name=sheet.name,
                 column_index=column.index)
             hits.extend(column_hits)
-            for category in column_categories:
+            # Only value-level categories mark the *file*; header-only clues stay
+            # on the column as candidates.
+            for category in confirmed:
                 if category not in categories:
                     categories.append(category)
             columns.append({
@@ -337,11 +347,13 @@ def _columns_from_result(result, file_name: str) -> tuple[list[dict], list[dict]
                 'header_name': column.name,
                 'sheet_name': sheet.name,
                 'column_index': column.index,
-                'detected_type': column_categories[0] if column_categories else 'text',
+                'detected_type': (confirmed or candidates or ['text'])[0],
                 'inferred_type': column.inferred_type,
-                'sensitivity': _severity(column_categories) if column_categories else 'Unknown',
+                'sensitivity': _severity(confirmed) if confirmed else 'Unknown',
                 'confidence': confidence,
-                'categories': column_categories,
+                'categories': confirmed + [item for item in candidates if item not in confirmed],
+                'confirmed_categories': confirmed,
+                'candidate_categories': [item for item in candidates if item not in confirmed],
                 'count': sum(counts.values()),
                 'sample_size': len(column.values),
                 'sample_hit_count': sum(counts.values()),
@@ -361,9 +373,9 @@ def _records_from_result(result, file_name: str) -> tuple[dict[str, int], list[s
             continue
         category = legacy_name(hit.entity) or hit.entity.lower()
         counts[category] = counts.get(category, 0) + hit.count
-        # Context-only signals below the confidence floor stay in the evidence
-        # instead of marking the whole file as sensitive data.
-        if hit.confidence >= CATEGORY_MIN_CONFIDENCE and category not in categories:
+        # Only value-level, sufficiently confident hits mark the whole file as
+        # sensitive data; weaker shapes stay in the evidence as candidates.
+        if hit.confirmed and category not in categories:
             categories.append(category)
     return counts, categories, _hit_summary(hits)
 
@@ -446,6 +458,7 @@ def _analyse_file(path: Path, stat, size: int, suffix: str, budget: ScanBudget, 
         read_error = type(exc).__name__
 
     categories: list[str] = []
+    candidate_categories: list[str] = []
     counts: dict[str, int] = {}
     columns: list[dict] = []
     hits: list[dict] = []
@@ -467,6 +480,10 @@ def _analyse_file(path: Path, stat, size: int, suffix: str, budget: ScanBudget, 
         for category in list(whole_categories) + list(column_categories):
             if category not in categories:
                 categories.append(category)
+        for hit in list(whole_hits) + list(column_hits):
+            category = hit.get('category')
+            if category and not hit.get('confirmed') and category not in candidate_categories:
+                candidate_categories.append(category)
         coverage = result.coverage
         termination = result.termination_reason
         parser_name = result.parser
@@ -482,7 +499,10 @@ def _analyse_file(path: Path, stat, size: int, suffix: str, budget: ScanBudget, 
         asset_type, sensitivity = 'table', _severity(categories)
     else:
         asset_type, sensitivity = 'file', _severity(categories)
-    if not categories and not (result and result.text):
+    if not categories and candidate_categories:
+        # Header/keyword clues only: review-worthy, not a discovered finding.
+        sensitivity = 'Unknown'
+    elif not categories and not (result and result.text):
         sensitivity = 'Low'
 
     if coverage != 'complete':
@@ -499,6 +519,7 @@ def _analyse_file(path: Path, stat, size: int, suffix: str, budget: ScanBudget, 
         'sha256': fingerprint.value if fingerprint.is_full else '',
         'modified_at': datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
         'categories': categories[:16],
+        'candidate_categories': candidate_categories[:16],
         'counts': counts,
         'columns': columns[:256],
         'evidence': {
@@ -530,6 +551,13 @@ def _analyse_file(path: Path, stat, size: int, suffix: str, budget: ScanBudget, 
 
 
 def _directory_asset(path: Path, file_count: int, total_size: int, categories: list[str]) -> dict:
+    """A directory node: a roll-up of the files below it, never a finding itself.
+
+    ``categories`` is the union of the children's categories and exists only to
+    label the node; ``counts`` stays empty because the directory itself holds no
+    hits. ``aggregate`` says that out loud so no consumer turns the roll-up into an
+    independent sensitive file.
+    """
     return {
         'name': str(path.name or path)[:512],
         'asset_type': 'directory',
@@ -541,11 +569,19 @@ def _directory_asset(path: Path, file_count: int, total_size: int, categories: l
         'categories': categories[:16],
         'counts': {},
         'columns': [],
-        'evidence': {'file_count': file_count},
+        'evidence': {'file_count': file_count, 'aggregate': True},
     }
 
 
 def detect_local_databases(ports: dict[int, str], timeout: float = 0.4) -> list[dict]:
+    """Ports that accept a TCP connection, reported as *suspected* DB services.
+
+    A successful ``connect`` only proves something listens on that port - not
+    that it speaks the engine's protocol, and certainly not that any table or
+    sensitive content was found. The entry is therefore a candidate: no
+    sensitive category, no severity claim, and the inference method travels in
+    the evidence so a page can say "port-inferred, content not scanned".
+    """
     found: list[dict] = []
     for port, engine_name in sorted(ports.items()):
         try:
@@ -556,15 +592,22 @@ def detect_local_databases(ports: dict[int, str], timeout: float = 0.4) -> list[
         found.append({
             'name': f'{engine_name}@127.0.0.1:{port}',
             'asset_type': 'database',
-            'sensitivity': 'Medium',
+            # Nothing was read: the port is an unverified service hint, so the
+            # asset must not be counted as a sensitive-data discovery.
+            'sensitivity': 'Unknown',
             'path': f'127.0.0.1:{port}',
             'size': 0,
             'sha256': '',
             'modified_at': '',
-            'categories': ['database', engine_name],
+            'categories': [],
+            'candidate_categories': ['database', engine_name],
             'counts': {},
             'columns': [],
-            'evidence': {'engine': engine_name, 'port': port, 'listening': True},
+            'evidence': {'engine': engine_name, 'port': port, 'listening': True,
+                         'discovery_method': 'port_probe',
+                         'protocol_verified': False,
+                         'content_scanned': False,
+                         'note': '仅端口连通性推断的疑似数据库服务，未验证协议，未扫描库表内容'},
         })
     return found
 

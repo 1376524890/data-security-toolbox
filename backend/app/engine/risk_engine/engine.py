@@ -37,6 +37,7 @@ class RiskEngine:
             finding.evidence["risk_model"] = {
                 "asset_weight": self.weight(finding.severity),
                 "exposure_factor": exposure,
+                "exposure_basis": context.data.get("exposure_basis", "unspecified"),
                 "data_sensitivity": sensitivity,
                 "threat_factor": threat,
                 "confidence": finding.confidence,

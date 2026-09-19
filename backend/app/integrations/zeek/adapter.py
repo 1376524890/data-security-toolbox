@@ -19,6 +19,12 @@ def entropy(text: str) -> float:
     return -sum((count / length) * math.log2(count / length) for count in counter.values())
 
 
+def registered_domain(name: str) -> str:
+    """Last two labels of a DNS name, so queries group by operator domain."""
+    labels = [label for label in name.rstrip(".").lower().split(".") if label]
+    return ".".join(labels[-2:]) if len(labels) > 2 else ".".join(labels)
+
+
 WEAK_CIPHERS = {
     "TLS_RSA_WITH_AES_128_CBC_SHA",
     "TLS_RSA_WITH_AES_256_CBC_SHA",
@@ -73,10 +79,11 @@ class ZeekAdapter(IntegrationAdapter):
         else:
             records = self.parse(payload)
         findings = []
+        dns_records: list[dict[str, Any]] = []
         for record in records:
             event_type = str(record.get("event_type", "")).lower()
             if event_type == "dns":
-                findings.extend(self._dns(record))
+                dns_records.append(record)
             elif event_type in {"ssl", "tls"}:
                 findings.extend(self._tls(record))
             elif event_type == "http":
@@ -93,19 +100,47 @@ class ZeekAdapter(IntegrationAdapter):
                     'Medium', 0.8, {'record': record, 'condition': record.get('msg', '')},
                     '结合原始流量核查异常查询、明文凭据或扫描行为。',
                 ))
+        findings.extend(self._dns_findings(dns_records))
         return AdapterResult(self.name, records, findings, {"events": len(records), "findings": len(findings)})
 
-    def _dns(self, record: dict[str, Any]) -> list[Any]:
-        query = str(record.get("query") or record.get("qname") or record.get("rrname") or "")
-        rcode = str(record.get("rcode") or record.get("rcode_name") or "")
-        if not query:
-            return []
-        evidence = {"record": record, "query": query}
-        if entropy(query) >= 3.5 or len(query) >= 40:
-            return [finding(self.name, "ZEK_DNS_TUNNEL_001", "High", 0.85, evidence, "排查 DNS 隧道、DGA 或异常编码域名。", str(record.get("ts", "")))]
-        if rcode.lower() in {"nxdomain", "nx"}:
-            return [finding(self.name, "ZEK_DNS_NXDOMAIN_001", "Low", 0.65, evidence, "确认 DNS 解析失败是否由恶意域名、配置错误或 DNS 投毒引起。", str(record.get("ts", "")))]
-        return []
+    def _dns_findings(self, records: list[dict[str, Any]]) -> list[Any]:
+        """One DNS record is a clue; a tunnel is many encoded labels for one domain.
+
+        A full-name entropy/length test flagged ordinary NTP/CDN names such as
+        ``3.debian.pool.ntp.org``. The left-most label is the tunnel's payload, so
+        only it is scored, and a finding needs a host asking the same registered
+        domain many encoded questions.
+        """
+        findings: list[Any] = []
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for record in records:
+            query = str(record.get("query") or record.get("qname") or record.get("rrname") or "")
+            rcode = str(record.get("rcode") or record.get("rcode_name") or "")
+            timestamp = str(record.get("ts", ""))
+            if not query:
+                continue
+            src = str(record.get("id.orig_h") or record.get("src_ip") or "")
+            evidence = {"record": record, "query": query, "src_ip": src, "attribution": "source" if src else "unknown"}
+            if rcode.lower() in {"nxdomain", "nx"}:
+                findings.append(finding(self.name, "ZEK_DNS_NXDOMAIN_001", "Low", 0.65, evidence,
+                                        "确认 DNS 解析失败是否由恶意域名、配置错误或 DNS 投毒引起。", timestamp))
+            labels = [label for label in query.rstrip(".").split(".") if label]
+            label = labels[0] if labels else ""
+            group = groups.setdefault((src, registered_domain(query)),
+                                      {"count": 0, "encoded": 0, "timestamp": timestamp})
+            group["count"] += 1
+            if label and (entropy(label) >= 3.5 or len(label) >= 40):
+                group["encoded"] += 1
+                group["timestamp"] = timestamp
+        for (src, domain), group in groups.items():
+            if group["encoded"] >= 3 and group["count"] >= 20:
+                findings.append(finding(
+                    self.name, "ZEK_DNS_TUNNEL_001", "High", 0.8,
+                    {"src_ip": src, "registered_domain": domain,
+                     "query_count": group["count"], "encoded_labels": group["encoded"],
+                     "attribution": "source" if src else "unknown"},
+                    "排查 DNS 隧道、DGA 或异常编码域名。", group["timestamp"]))
+        return findings
 
     def _tls(self, record: dict[str, Any]) -> list[Any]:
         validation = str(record.get("validation_status") or record.get("validation") or "")
@@ -123,10 +158,15 @@ class ZeekAdapter(IntegrationAdapter):
         uri = str(record.get("uri") or record.get("host") or "")
         ua = str(record.get("user_agent") or "")
         status = str(record.get("status_code") or record.get("status") or "")
-        evidence = {"record": record, "method": method, "uri": uri, "user_agent": ua, "status": status}
+        filename = str(record.get("filename") or "")
+        mime = str(record.get("mime_type") or record.get("mime") or "")
+        evidence = {"record": record, "method": method, "uri": uri, "user_agent": ua,
+                    "status": status, "filename": filename, "mime_type": mime}
         if any(token in ua.lower() for token in SUSPICIOUS_USER_AGENTS):
             return [finding(self.name, "ZEK_HTTP_UA_001", "Medium", 0.8, evidence, "识别自动化工具或扫描器，结合访问序列确认攻击行为。", str(record.get("ts", "")))]
-        if method in {"POST", "PUT", "PATCH"} and any(uri.lower().endswith(ext) for ext in (".php", ".jsp", ".asp", ".aspx")):
+        # A POST to a script URI is routine; an upload carries a file, so it is
+        # only an upload finding when the record names a dynamic script file.
+        if method in {"POST", "PUT", "PATCH"} and filename.lower().endswith((".php", ".jsp", ".asp", ".aspx", ".phtml")):
             return [finding(self.name, "ZEK_HTTP_UPLOAD_001", "High", 0.85, evidence, "审计动态脚本上传，判断是否存在 WebShell 或恶意文件上传。", str(record.get("ts", "")))]
         if status in {"500", "502", "503", "504"}:
             return [finding(self.name, "ZEK_HTTP_ERROR_001", "Low", 0.55, evidence, "排查服务端错误与异常请求，确认是否存在探测或可用性影响。", str(record.get("ts", "")))]

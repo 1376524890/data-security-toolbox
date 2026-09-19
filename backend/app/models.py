@@ -253,6 +253,34 @@ class Alert(TimestampMixin, Base):
     source: Mapped[str] = mapped_column(String(128), default="pipeline", index=True)
 
 
+class AlertHit(Base):
+    """One finding that contributed to an Alert.
+
+    Suppression keeps a single live Alert per subject, so the individual
+    observations would otherwise be lost: ``alerts.finding_id`` only points at
+    the first one. Every hit records its own finding, the subject it resolved to
+    and its own risk, and the flags say which row is the first, latest and
+    highest-risk observation.
+    """
+
+    __tablename__ = "alert_hits"
+    __table_args__ = (UniqueConstraint("alert_id", "finding_id", name="uq_alert_hit_finding"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Deleting an alert or a finding must not leave its hit log behind.
+    alert_id: Mapped[int] = mapped_column(ForeignKey("alerts.id", ondelete="CASCADE"), index=True)
+    finding_id: Mapped[int] = mapped_column(ForeignKey("detection_findings.id", ondelete="CASCADE"), index=True)
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(128), default="")
+    asset: Mapped[str] = mapped_column(String(255), default="", index=True)
+    ioc: Mapped[str] = mapped_column(String(512), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="")
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    is_first: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_latest: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_highest_risk: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class AlertDelivery(Base):
     __tablename__ = "alert_deliveries"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -513,6 +541,9 @@ class Detection(TimestampMixin, Base):
     severity: Mapped[str] = mapped_column(String(16), default="Low", index=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    #: The configured ceiling that produced ``sample_size``; the two are shown
+    #: together so a 2-row file never reads as a 50-row sample.
+    sample_limit: Mapped[int] = mapped_column(Integer, default=0)
     sample_hit_count: Mapped[int] = mapped_column(Integer, default=0)
     hit_count: Mapped[int] = mapped_column(Integer, default=0)
     engine_version: Mapped[str] = mapped_column(String(64), default="")

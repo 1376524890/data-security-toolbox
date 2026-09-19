@@ -6,11 +6,12 @@ from sqlalchemy import delete, select
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.models import Alert, AlertDelivery, DetectionFinding
+from app.models import Alert, AlertDelivery, AlertHit, DetectionFinding
 from app.services.alert_service import (
     alert_fingerprint,
     create_finding_alert,
     event_type_for_status,
+    list_alert_hits,
     publish_alert,
     queue_deliveries,
 )
@@ -36,8 +37,11 @@ def _make_finding(asset: str = "10.0.0.25", severity: str = "High", risk_score: 
 
 def _cleanup() -> None:
     with SessionLocal() as db:
+        stale_ids = select(Alert.id).where(Alert.title.like("%TEST_ALERT%"))
+        db.execute(delete(AlertHit).where(AlertHit.alert_id.in_(stale_ids)))
         db.execute(delete(AlertDelivery).where(AlertDelivery.alert_id.in_(select(Alert.id).where(Alert.title.like("%TEST_ALERT%")))))
         db.execute(delete(Alert).where(Alert.fingerprint == alert_fingerprint(RULE, "test", "10.0.0.25", "")))
+        db.execute(delete(AlertHit).where(AlertHit.finding_id.in_(select(DetectionFinding.id).where(DetectionFinding.rule_id == RULE))))
         db.execute(delete(DetectionFinding).where(DetectionFinding.rule_id == RULE))
         db.commit()
 
@@ -241,3 +245,85 @@ def test_alert_detail_reports_no_rule_file_for_code_built_engines() -> None:
         assert body["finding"]["rule_id"] == RULE
     finally:
         _cleanup()
+
+
+def _cleanup_rule(rule_id: str) -> None:
+    """Drop alerts, hits and findings a targeted test created."""
+    with SessionLocal() as db:
+        finding_ids = select(DetectionFinding.id).where(DetectionFinding.rule_id == rule_id)
+        alert_ids = select(AlertHit.alert_id).where(AlertHit.finding_id.in_(finding_ids))
+        db.execute(delete(AlertHit).where(AlertHit.finding_id.in_(finding_ids)))
+        db.execute(delete(AlertDelivery).where(AlertDelivery.alert_id.in_(alert_ids)))
+        db.execute(delete(Alert).where(Alert.id.in_(alert_ids)))
+        db.execute(delete(DetectionFinding).where(DetectionFinding.rule_id == rule_id))
+        db.commit()
+
+
+def _rule_finding(rule_id: str, evidence: dict, risk_score: float = 70, timestamp: str = "2026-01-01T00:00:00Z") -> DetectionFinding:
+    return DetectionFinding(
+        target_type="pcap",
+        target_id="1",
+        engine="traffic_engine",
+        rule_id=rule_id,
+        severity="High",
+        confidence=0.9,
+        evidence=evidence,
+        recommendation="test",
+        risk_score=risk_score,
+        risk_level="High",
+        timestamp=timestamp,
+    )
+
+
+def test_two_scan_sources_are_not_suppressed_together() -> None:
+    """Different sources must produce independent alerts.
+
+    The old subject resolver ignored ``src`` and the rule engine's ``metrics``,
+    so every scan finding resolved to "" and the second source was silently
+    folded into the first alert.
+    """
+    rule_id = "TEST_ALERT_SRC_001"
+    _cleanup_rule(rule_id)
+    with SessionLocal() as db:
+        left = _rule_finding(rule_id, {"metrics": {"src:10.0.0.7:ports_total": 30}})
+        right = _rule_finding(rule_id, {"metrics": {"src:10.0.0.9:ports_total": 30}})
+        db.add_all([left, right])
+        db.commit()
+        first, created_first = create_finding_alert(db, left, 1)
+        second, created_second = create_finding_alert(db, right, 2)
+        db.commit()
+        assert created_first is True and created_second is True
+        assert first is not None and second is not None
+        assert first.id != second.id
+        assert first.fingerprint != second.fingerprint
+        assert list_alert_hits(db, first.id)[0]["asset"] == "10.0.0.7"
+        assert list_alert_hits(db, first.id)[0]["probe_id"] == 1
+        assert list_alert_hits(db, second.id)[0]["asset"] == "10.0.0.9"
+    _cleanup_rule(rule_id)
+
+
+def test_repeat_hits_keep_first_latest_and_highest_risk_evidence() -> None:
+    rule_id = "TEST_ALERT_HITS_001"
+    _cleanup_rule(rule_id)
+    with SessionLocal() as db:
+        first = _rule_finding(rule_id, {"src_ip": "10.0.0.30"}, risk_score=70, timestamp="2026-01-01T00:00:00Z")
+        db.add(first)
+        db.commit()
+        db.refresh(first)
+        alert, created = create_finding_alert(db, first, 5)
+        db.commit()
+        assert created is True and alert is not None
+        latest = _rule_finding(rule_id, {"src_ip": "10.0.0.30"}, risk_score=95, timestamp="2026-01-01T00:05:00Z")
+        db.add(latest)
+        db.commit()
+        db.refresh(latest)
+        same, created_again = create_finding_alert(db, latest, 5)
+        db.commit()
+        assert created_again is False
+        assert same is not None and same.id == alert.id
+        assert same.occurrence_count == 2
+        hits = list_alert_hits(db, alert.id)
+        assert [hit["finding_id"] for hit in hits] == [first.id, latest.id]
+        assert hits[0]["is_first"] is True and hits[0]["is_latest"] is False
+        assert hits[1]["is_latest"] is True and hits[1]["is_highest_risk"] is True
+    _cleanup_rule(rule_id)

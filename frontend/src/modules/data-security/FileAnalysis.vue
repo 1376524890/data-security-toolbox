@@ -37,6 +37,18 @@ const filterFields: FilterField[] = [
   { key: 'file_type', label: '类型', type: 'select', options: ['pdf', 'docx', 'jpg', 'png', 'txt', 'zip', 'unknown'].map((v) => ({ label: v, value: v })), width: '120px' },
 ]
 
+// A file that was never analysed is not "Low"; a document whose parse failed or
+// is unsupported is not clean. The backend records the outcome under
+// metadata_json.risk, so the list can say so instead of defaulting to Low.
+function scanOutcome(row: FileRecord): { kind: 'pending' | 'incomplete' | 'risk'; label: string } {
+  const meta = (row.metadata_json || {}) as Record<string, unknown>
+  if (!meta || Object.keys(meta).length === 0) return { kind: 'pending', label: '待分析' }
+  const status = (meta.risk as { scan_status?: string } | undefined)?.scan_status
+  if (status === 'failed') return { kind: 'incomplete', label: '分析失败' }
+  if (status === 'unsupported') return { kind: 'incomplete', label: '未支持' }
+  return { kind: 'risk', label: row.risk_level }
+}
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
@@ -114,7 +126,7 @@ onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
         <el-table-column prop="file_type" label="类型" width="100" />
         <el-table-column label="大小" width="90"><template #default="{ row }">{{ formatBytes(row.size) }}</template></el-table-column>
         <el-table-column prop="sha256" label="SHA256" min-width="220" show-overflow-tooltip />
-        <el-table-column label="风险" width="90"><template #default="{ row }"><RiskBadge :level="row.risk_level" /></template></el-table-column>
+        <el-table-column label="风险" width="90"><template #default="{ row }"><el-tag v-if="scanOutcome(row).kind !== 'risk'" type="info" size="small">{{ scanOutcome(row).label }}</el-tag><RiskBadge v-else :level="row.risk_level" /></template></el-table-column>
         <el-table-column label="时间" width="150"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
         <el-table-column label="操作" width="130"><template #default="{ row }"><el-button size="small" @click.stop="reanalyze(row)">分析</el-button><el-button size="small" type="primary" @click.stop="open(row)">详情</el-button></template></el-table-column>
       </el-table>

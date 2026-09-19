@@ -13,6 +13,15 @@ def test_port_scan_rule() -> None:
     assert any(item.rule_id == "NET_SCAN_001" for item in findings)
 
 
+def test_port_scan_rule_counts_one_source_not_the_whole_capture() -> None:
+    flows = [{"src_ip": f"10.0.0.{index}", "dst_ip": "10.0.0.2", "dst_port": index,
+              "src_port": 12345, "protocol": "tcp", "packets": 1, "bytes": 60}
+             for index in range(1, 22)]
+    context = DetectionContext(target_type="pcap", flows=flows, packets=[])
+    findings = TrafficEngine().analyze(context)
+    assert not any(item.rule_id == "NET_SCAN_001" for item in findings)
+
+
 def test_rule_findings_name_the_engine_that_ran_them() -> None:
     """Rule-driven findings must carry the calling engine's own name.
 

@@ -352,29 +352,42 @@ def _merge_detection(db: Session, *, instance: AssetInstance, obj: DataObject, p
                      scan_id: str, category: str, counts: dict[str, Any],
                      evidence_rows: list[dict[str, Any]], engine_version: str,
                      ruleset_version: str, observed_at: datetime,
-                     sample_size: int, confidence: float, severity: str, level: str) -> Detection:
+                     sample_size: int, sample_limit: int, confidence: float,
+                     severity: str, level: str) -> Detection:
+    current_count = _int(counts.get(category))
     detection, created = _get_or_create(
         db, Detection,
         {"instance_id": instance.id, "category": category, "object_id": obj.id},
         {"probe_id": probe_id, "scan_id": scan_id, "sensitivity_level": level,
          "severity": severity, "confidence": confidence, "sample_size": sample_size,
-         "sample_hit_count": _int(counts.get(category)), "hit_count": _int(counts.get(category)),
+         "sample_limit": sample_limit,
+         "sample_hit_count": current_count, "hit_count": current_count,
          "engine_version": engine_version, "ruleset_version": ruleset_version,
          "first_seen_at": observed_at, "last_seen_at": observed_at})
     if not created:
-        detection.confidence = max(_float(detection.confidence), confidence)
+        # One scan is one result: the count, confidence, evidence and version all
+        # come from this observation. Anything larger seen earlier is preserved in
+        # ``extra`` as history instead of being presented as the current value,
+        # which is what made ``hit_count`` claim 10 hits while ``scan_id`` pointed
+        # at the scan that found 2.
+        history = dict(detection.extra or {})
+        confidence_history = max(_float(history.get("confidence_history")),
+                                 _float(detection.confidence), confidence)
+        hit_history = max(_int(history.get("hit_count_history")),
+                          _int(detection.hit_count), current_count)
+        detection.confidence = confidence
         detection.sensitivity_level = level
         detection.severity = severity
-        detection.sample_size = max(_int(detection.sample_size), sample_size)
-        # One effective scan result per (instance, category, object): the newest
-        # observation replaces the count rather than accumulating it, so several
-        # recognisers agreeing on one fragment cannot inflate the number.
+        detection.sample_size = sample_size
+        detection.sample_limit = sample_limit
         detection.scan_id = scan_id
         detection.engine_version = engine_version
         detection.ruleset_version = ruleset_version
-        detection.hit_count = max(_int(detection.hit_count), _int(counts.get(category)))
-        detection.sample_hit_count = _int(counts.get(category))
+        detection.hit_count = current_count
+        detection.sample_hit_count = current_count
         detection.last_seen_at = _newest(detection.last_seen_at, observed_at) or observed_at
+        detection.extra = {**history, "confidence_history": round(confidence_history, 3),
+                           "hit_count_history": hit_history}
     for row in evidence_rows:
         if row["category"] != category:
             continue
@@ -417,11 +430,31 @@ def forget_probe(db: Session, probe_id: int) -> dict[str, int]:
 
 
 def recount_object(db: Session, obj: DataObject) -> DataObject:
-    """Recompute the counters instead of trusting incremental arithmetic."""
-    obj.instance_count = _int(db.scalar(select(func.count()).select_from(AssetInstance).where(
-        AssetInstance.object_id == obj.id)))
-    obj.active_instance_count = _int(db.scalar(select(func.count()).select_from(AssetInstance).where(
-        AssetInstance.object_id == obj.id, AssetInstance.status == INSTANCE_ACTIVE)))
+    """Recompute the counters - and the current categories - from live instances.
+
+    Trusting incremental arithmetic left the copy counts stale after a migration
+    or a sweep, and keeping the categories as a permanent union meant a file that
+    had become clean still advertised its old sensitive type. The current set is
+    therefore derived from the ACTIVE instances that still carry the object; when
+    none remain, the stored value is left as history instead of being erased.
+    """
+    rows = db.execute(select(AssetInstance.status, AssetInstance.categories).where(
+        AssetInstance.object_id == obj.id)).all()
+    obj.instance_count = len(rows)
+    obj.active_instance_count = sum(1 for status, _ in rows if status == INSTANCE_ACTIVE)
+    live: list[str] = []
+    for status, categories in rows:
+        if status != INSTANCE_ACTIVE:
+            continue
+        for category in categories or []:
+            if category not in live:
+                live.append(category)
+    if obj.active_instance_count:
+        # A live copy speaks for the object - even when it has nothing sensitive
+        # left, which is how a rule revision or a cleaned file revokes its old
+        # label. With no live copy at all the stored value is history and stays.
+        obj.categories = live[:24]
+    obj.sensitivity = sensitivity_map.worst_severity(obj.categories or [])
     return obj
 
 
@@ -451,7 +484,9 @@ def ingest_report(db: Session, probe: Probe, payload: dict[str, Any],
     stored = 0
     late_skipped = 0
     seen_paths: set[tuple[str, str]] = set()
-    touched_objects: dict[int, DataObject] = {}
+    # Every object whose counters may have moved: the ones this report observed,
+    # the ones an instance migrated away from, and the ones the sweep retired.
+    affected_objects: set[int] = set()
     for entry, from_databases in entries:
         instance_type = instance_type_for(entry, from_databases=from_databases)
         path = normalise_path(entry.get("path") or entry.get("name"))
@@ -497,6 +532,16 @@ def ingest_report(db: Session, probe: Probe, payload: dict[str, Any],
              "profile_version": profile_version, "sensitivity": severity,
              "categories": categories, "extra": {}})
         evidence_block = entry.get("evidence") if isinstance(entry.get("evidence"), dict) else {}
+        # Only a parser reports its own per-entry coverage. A directory roll-up (or a
+        # port-inferred database service) carries none, so it must not fall back to
+        # "complete": this report may itself have stopped at the file or row budget,
+        # and a truncated walk must not be presented as a finished one.
+        coverage_block = payload.get("coverage")
+        report_coverage = coverage_block if isinstance(coverage_block, dict) else {}
+        default_coverage = "complete" if covered else "partial"
+        default_termination = (_text(report_coverage.get("termination_reason"), 64)
+                               or default_coverage)
+        scan_coverage = _text(evidence_block.get("coverage"), 16) or default_coverage
         if _is_late(instance, observed_at):
             # A report older than the one already applied must not roll back
             # last_seen, the current object (content), or the current Detection.
@@ -505,8 +550,14 @@ def ingest_report(db: Session, probe: Probe, payload: dict[str, Any],
             instance.extra = {**(instance.extra or {}),
                               "stale_reports_ignored": _int((instance.extra or {}).get(
                                   "stale_reports_ignored")) + 1}
+            # The path was still observed by this report, so the sweep must not
+            # read "not in seen_paths" as "it is gone" and retire the live row.
+            seen_paths.add((path, instance_type))
             continue
+        if instance.object_id and instance.object_id != obj.id:
+            affected_objects.add(int(instance.object_id))
         instance.object_id = obj.id
+        affected_objects.add(int(obj.id))
         instance.status = INSTANCE_ACTIVE
         instance.last_seen_at = _newest(instance.last_seen_at, observed_at) or observed_at
         instance.name = _text(entry.get("name"), 512) or instance.name
@@ -519,41 +570,85 @@ def ingest_report(db: Session, probe: Probe, payload: dict[str, Any],
         instance.owner = _text(evidence_block.get("owner"), 64)
         instance.group = _text(evidence_block.get("group"), 64)
         instance.permission = _text(evidence_block.get("permission"), 16)
-        instance.coverage = _text(evidence_block.get("coverage"), 16) or "complete"
-        instance.termination_reason = _text(evidence_block.get("termination_reason"), 64) or "complete"
+        instance.coverage = scan_coverage
+        instance.termination_reason = (_text(evidence_block.get("termination_reason"), 64)
+                                       or default_termination)
         instance.last_scan_at = observed_at
         instance.last_scan_id = scan_id
         instance.scope_key = scope_key
         instance.ruleset_version = ruleset_version
         instance.engine_version = engine_version
         instance.profile_version = profile_version
-        instance.sensitivity = sensitivity_map.worst_severity(
-            list(dict.fromkeys([*(instance.categories or []), *categories]))[:24])
-        instance.categories = list(dict.fromkeys([*(instance.categories or []), *categories]))[:24]
+        # A completed scan of this path speaks for the instance's *current*
+        # content: it replaces the category set, so a file that became clean stops
+        # advertising the old label. A partial or failed scan may only add, since
+        # "we did not finish looking" is not "it is no longer there". Everything
+        # ever seen stays in ``category_history`` for the history view.
+        category_history = list(dict.fromkeys([
+            *((instance.extra or {}).get("category_history") or []),
+            *(instance.categories or []), *categories]))[:48]
+        if scan_coverage == "complete":
+            instance.categories = list(dict.fromkeys(categories))[:24]
+        else:
+            instance.categories = list(dict.fromkeys(
+                [*(instance.categories or []), *categories]))[:24]
+        instance.sensitivity = sensitivity_map.worst_severity(instance.categories)
         instance.extra = {**(instance.extra or {}), "scanner": _text(payload.get("scanner"), 64),
                           # The reported asset_type is what the legacy projection is keyed
                           # on, so it has to survive a rebuild verbatim.
                           "asset_type": _text(entry.get("asset_type"), 64) or "file",
                           "modified_at": _text(entry.get("modified_at"), 64),
                           "counts": dict(entry.get("counts") or {}),
-                          "last_observed_at": _iso(observed_at)}
+                          "last_observed_at": _iso(observed_at),
+                          "category_history": category_history,
+                          # The immutable slice a projection rebuild needs: the real
+                          # columns and evidence. Without it a rebuild can only
+                          # invent field names out of detection categories.
+                          "columns": [column for column in (entry.get("columns") or [])
+                                      if isinstance(column, dict)][:256],
+                          "evidence": dict(entry.get("evidence") or {})}
         db.flush()
 
         evidence_rows = _evidence_rows(entry)
-        confidence = max([_float(item.get("confidence")) for item in
-                          (evidence_block.get("hits") or []) if isinstance(item, dict)] + [0.0])
-        for category in categories:
+        # Confidence is a per-category value: one file can hold a verified email
+        # (0.85) next to a keyword-only credential clue (0.3), and copying the
+        # file's maximum onto both made the weak category look as strong as the
+        # proven one.
+        category_confidence: dict[str, float] = {}
+        for hit in evidence_block.get("hits") or []:
+            if not isinstance(hit, dict):
+                continue
+            name = category_name(hit.get("category") or hit.get("entity"))
+            category_confidence[name] = max(category_confidence.get(name, 0.0),
+                                            _float(hit.get("confidence")))
+        for row in evidence_rows:
+            category_confidence[row["category"]] = max(
+                category_confidence.get(row["category"], 0.0), _float(row["confidence"]))
+        fallback_confidence = max(category_confidence.values(), default=0.0)
+        # ``rows_read`` is what the probe actually examined; ``sample_rows`` is the
+        # configured ceiling. Keeping them apart stops a 2-row file from claiming a
+        # 50-row sample, and both stay visible.
+        sample_size = _int(evidence_block.get("rows_read")) or _int(evidence_block.get("sample_size"))
+        sample_limit = _int(evidence_block.get("sample_rows")) or _int(evidence_block.get("max_sample_rows"))
+        # A category only becomes a Detection when the probe reported a hit count
+        # for it. A directory entry advertises the union of its children's
+        # categories as a roll-up label while ``counts`` stays empty; without this
+        # guard the roll-up was stored as an independent finding with
+        # ``hit_count=0``, which is not evidence of anything and inflated both the
+        # object's type count and the type centre.
+        reportable = [category for category in categories if category in counts]
+        for category in reportable:
             _merge_detection(db, instance=instance, obj=obj, probe_id=probe_id, scan_id=scan_id,
                              category=category, counts=counts, evidence_rows=evidence_rows,
                              engine_version=engine_version, ruleset_version=ruleset_version,
                              observed_at=observed_at,
-                             sample_size=_int(evidence_block.get("sample_rows")),
-                             confidence=confidence, severity=sensitivity_map.severity_for(category),
+                             sample_size=sample_size, sample_limit=sample_limit,
+                             confidence=category_confidence.get(category, fallback_confidence),
+                             severity=sensitivity_map.severity_for(category),
                              level=sensitivity_map.level_for(category))
         project_asset(db, probe, entry, scan_id=scan_id,
                       modified_at=entry.get("modified_at") or "",
                       scanner=_text(payload.get("scanner"), 64), observed_at=observed_at)
-        touched_objects[obj.id] = obj
         seen_paths.add((path, instance_type))
         stored += 1
 
@@ -568,11 +663,18 @@ def ingest_report(db: Session, probe: Probe, payload: dict[str, Any],
     # a later report.
     if swept:
         db.flush()
-    # Counters are recomputed after the sweep: an instance belonging to a touched
-    # object may itself have just become NOT_OBSERVED.
-    for obj in db.scalars(select(DataObject).where(
-            DataObject.id.in_(list(touched_objects)))).all() if touched_objects else []:
-        recount_object(db, obj)
+        # An instance the sweep retired moves its object's counters too, and the
+        # object it used to belong to may not be the object of any stored entry.
+        affected_objects.update(int(item) for item in db.scalars(
+            select(AssetInstance.object_id).where(
+                AssetInstance.probe_id == probe_id,
+                AssetInstance.path.in_(swept))).all())
+    # Counters are recomputed after the sweep: an instance belonging to an
+    # affected object may itself have just become NOT_OBSERVED.
+    for object_id in sorted(affected_objects):
+        obj = db.get(DataObject, object_id)
+        if obj is not None:
+            recount_object(db, obj)
     db.flush()
     return {"scan_id": scan_id, "scope_key": scope_key, "schema_version": schema_version,
             "stored": stored, "complete_scope": covered, "not_observed": len(swept),
@@ -610,11 +712,43 @@ def sweep_scope(db: Session, *, probe_id: int, scope_key: str, roots: list[str],
             continue
         if not in_scope(instance.path, roots, max_depth, instance.instance_type):
             continue
+        last_scan = _aware(instance.last_scan_at)
+        if last_scan is not None and last_scan > observed_at:
+            # A newer report has already re-observed this instance, so this older
+            # "complete" run has no authority to declare it gone.
+            continue
         instance.status = INSTANCE_NOT_OBSERVED
         instance.extra = {**(instance.extra or {}), "not_observed_at": _iso(observed_at),
                           "not_observed_scan_id": scan_id, "not_observed_scope": scope_key}
         swept.append(instance.path)
     return swept
+
+
+# The legacy four-step severity, ordered so a stricter claim can win. ``Unknown``
+# is deliberately absent: it is not a severity, it is the absence of one.
+_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+def _reported_sensitivity(entry: dict[str, Any]) -> str:
+    """The legacy ``sensitivity`` the projection may write for one entry.
+
+    The platform owns the category-to-severity mapping, and a probe's local map
+    can lag the ruleset it just downloaded: a 3.4.1 probe reported
+    ``se_organisationsnummer`` as ``Low`` while the detection it uploaded for the
+    same file says ``Medium``. The projection must never be *less* severe than the
+    platform's own mapping of the categories it was given, so the stricter of the
+    two wins. Anything that is not a legacy severity (``Unknown`` for candidate or
+    port-inferred entries) is kept exactly as reported.
+    """
+    reported = _text(entry.get("sensitivity"), 16) or "Unknown"
+    categories = [category_name(item) for item in (entry.get("categories") or [])]
+    if not categories:
+        return reported
+    rank = _SEVERITY_RANK.get(reported.lower(), 0)
+    if not rank:
+        return reported
+    mapped = sensitivity_map.worst_severity(categories)
+    return mapped if _SEVERITY_RANK.get(mapped.lower(), 0) > rank else reported
 
 
 def project_asset(db: Session, probe: Probe, entry: dict[str, Any], *,
@@ -628,17 +762,18 @@ def project_asset(db: Session, probe: Probe, entry: dict[str, Any], *,
     path = _text(entry.get("path"), 1024)
     asset_type = _text(entry.get("asset_type"), 64) or "file"
     name = _text(entry.get("name"), 512) or path
+    sensitivity = _reported_sensitivity(entry)
     row = db.scalar(select(DataAsset).where(
         DataAsset.asset_type == asset_type,
         DataAsset.extra["probe_id"].as_integer() == probe.id,
         DataAsset.extra["path"].as_string() == path))
     if row is None:
         row = DataAsset(name=name, asset_type=asset_type,
-                        sensitivity=_text(entry.get("sensitivity"), 16) or "Unknown",
+                        sensitivity=sensitivity,
                         source=f"probe:{probe.name}", columns=[], extra={})
         db.add(row)
     row.name = name
-    row.sensitivity = _text(entry.get("sensitivity"), 16) or "Unknown"
+    row.sensitivity = sensitivity
     row.source = f"probe:{probe.name}"
     row.columns = [column for column in (entry.get("columns") or []) if isinstance(column, dict)][:256]
     row.extra = {
@@ -647,6 +782,9 @@ def project_asset(db: Session, probe: Probe, entry: dict[str, Any], *,
         "size": _int(entry.get("size")), "sha256": _text(entry.get("sha256"), 64),
         "modified_at": _text(modified_at, 64),
         "categories": list(entry.get("categories") or []),
+        # Header/port hints stay separate from confirmed categories so a page can
+        # show "candidate" without counting it as discovered sensitive data.
+        "candidate_categories": list(entry.get("candidate_categories") or []),
         "counts": dict(entry.get("counts") or {}),
         "evidence": dict(entry.get("evidence") or {}),
         "status": "observed", "scanner": scanner,
@@ -688,19 +826,35 @@ def rebuild_projection(db: Session, probe_id: int | None = None) -> dict[str, in
         probe = db.get(Probe, instance.probe_id)
         if probe is None:
             continue
+        stored = instance.extra or {}
+        asset_type = _text(stored.get("asset_type"), 64) or _asset_type_for(instance.instance_type)
+        # Restore from the scan snapshot taken at ingest. When the snapshot is
+        # absent (a pre-snapshot instance) the previous projection row keeps its
+        # columns and evidence: writing detection categories in the "columns"
+        # field would fabricate field names that were never observed.
+        existing = db.scalar(select(DataAsset).where(
+            DataAsset.asset_type == asset_type,
+            DataAsset.extra["probe_id"].as_integer() == instance.probe_id,
+            DataAsset.extra["path"].as_string() == instance.path))
+        columns = [column for column in (stored.get("columns") or []) if isinstance(column, dict)]
+        evidence = stored.get("evidence") if isinstance(stored.get("evidence"), dict) else {}
+        structure_restored = bool(columns) or bool(evidence)
+        if not columns and existing is not None:
+            columns = [column for column in (existing.columns or []) if isinstance(column, dict)]
+        if not evidence and existing is not None:
+            evidence = dict((existing.extra or {}).get("evidence") or {})
         entry = {
             "name": instance.name,
-            "asset_type": _text((instance.extra or {}).get("asset_type"), 64)
-            or _asset_type_for(instance.instance_type),
+            "asset_type": asset_type,
             "sensitivity": instance.sensitivity, "path": instance.path, "size": instance.size,
             "sha256": instance.content_hash if instance.hash_type == HASH_FULL else "",
             "categories": list(instance.categories or []),
-            "columns": [], "evidence": {},
-            "counts": dict((instance.extra or {}).get("counts") or {}),
+            "columns": columns[:256], "evidence": evidence,
+            "counts": dict(stored.get("counts") or {}),
         }
         row = project_asset(db, probe, entry, scan_id=instance.last_scan_id,
-                            modified_at=_text((instance.extra or {}).get("modified_at"), 64),
-                            scanner=_text((instance.extra or {}).get("scanner"), 64),
+                            modified_at=_text(stored.get("modified_at"), 64),
+                            scanner=_text(stored.get("scanner"), 64),
                             observed_at=instance.last_seen_at or datetime.now(UTC))
         if row is None:
             continue
@@ -710,14 +864,41 @@ def rebuild_projection(db: Session, probe_id: int | None = None) -> dict[str, in
         detections = db.scalars(select(Detection).where(
             Detection.instance_id == instance.id,
             Detection.object_id == instance.object_id)).all()
-        row.columns = [{"name": detection.category, "detected_type": detection.category,
-                        "sensitivity": detection.severity,
-                        "confidence": _float(detection.confidence),
-                        "categories": [detection.category],
-                        "count": _int(detection.hit_count)}
-                       for detection in detections]
+        row.columns = columns[:256]
+        row.extra = {**(row.extra or {}), "detections": [
+            {"category": detection.category, "severity": detection.severity,
+             "confidence": _float(detection.confidence),
+             "hit_count": _int(detection.hit_count),
+             "sensitivity_level": detection.sensitivity_level,
+             "scan_id": detection.scan_id}
+            for detection in detections]}
+        rebuild_meta: dict[str, Any] = {"structure_restored": structure_restored}
+        notes: list[str] = []
+        if not structure_restored:
+            notes.append("扫描快照缺失，已保留原投影的字段与证据")
+        if columns and all(_looks_like_category(column.get("name")) for column in columns):
+            # A pre-fix rebuild wrote detection categories into ``columns`` and
+            # overwrote the real names, which were never stored anywhere else.
+            # They cannot be recovered, so the row keeps its values but is
+            # labelled: a page must not present fabricated field names as
+            # observed structure.
+            rebuild_meta["fabricated_columns"] = True
+            notes.append("列名疑似由敏感类别写成，真实字段名未保存、无法还原")
+        if notes:
+            rebuild_meta["note"] = "；".join(notes)
+        row.extra = {**row.extra, "rebuild": rebuild_meta}
         rebuilt += 1
     return {"instances": len(instances), "rebuilt": rebuilt}
+
+
+def _looks_like_category(name: Any) -> bool:
+    """True when a column name is exactly a known sensitive category.
+
+    ``legacy_name`` returns "" for anything that is not one of the shipped
+    entities, so a real field such as ``mobile`` is never mistaken for a
+    fabricated one while ``phone``/``id_card`` are recognised.
+    """
+    return bool(sensitivity_map.engine.legacy_name(str(name or "").strip()))
 
 
 def _asset_type_for(instance_type: str) -> str:
@@ -792,58 +973,145 @@ def data_type_rows(db: Session, *, mapping: dict[str, str] | None = None,
     """One row per sensitive type, with the documented de-duplication rules.
 
     Confirmed duplicates are counted **per object** as
-    ``max(active_instance_count - 1, 0)`` and summed, so a category observed on
-    several instances of one object is still one duplicate - not one per row.
-    Candidates from a partial fingerprint are counted separately and can never
-    inflate the confirmed number.
+    ``max(instance_count - 1, 0)`` over that object's instances *in the requested
+    scope* and summed, so a category observed on several instances of one object
+    is still one duplicate - not one per row, and a probe filter never borrows
+    another host's copies. ``object_count``/``active_instance_count`` here are
+    per-type relations: one object holding two types appears in both rows, which
+    is exactly why they must never be summed into a total.
     """
-    joined = (select(Detection.category, Detection.object_id, DataObject.hash_type,
-                     DataObject.active_instance_count, Detection.instance_id,
-                     AssetInstance.probe_id)
-              .join(DataObject, DataObject.id == Detection.object_id)
-              .join(AssetInstance, AssetInstance.id == Detection.instance_id)
-              .where(AssetInstance.status == INSTANCE_ACTIVE)
-              .limit(MAX_SUMMARY_ROWS))
-    if probe_id:
-        joined = joined.where(AssetInstance.probe_id == probe_id)
-    objects: dict[str, set[int]] = {}
-    instances: dict[str, set[int]] = {}
-    hosts: dict[str, set[int]] = {}
-    confirmed: dict[str, dict[int, int]] = {}
-    candidates: dict[str, set[int]] = {}
-    truncated = False
-    count = 0
-    for row in db.execute(joined).all():
-        count += 1
-        category = str(row[0])
-        objects.setdefault(category, set()).add(int(row[1]))
-        instances.setdefault(category, set()).add(int(row[4]))
-        hosts.setdefault(category, set()).add(int(row[5]))
-        if row[2] == HASH_FULL:
-            confirmed.setdefault(category, {})[int(row[1])] = max(_int(row[3]) - 1, 0)
-        elif row[2] == HASH_PARTIAL:
-            candidates.setdefault(category, set()).add(int(row[1]))
-    if count >= MAX_SUMMARY_ROWS:
-        truncated = True
+    scope = _type_scope(db, probe_id)
+    objects = scope["objects"]
+    instances = scope["instances"]
+    hosts = scope["hosts"]
+    full = scope["full"]
+    partial = scope["partial"]
+    instance_counts = scope["scope_instance_counts"]
+    candidate_duplicates = scope["candidate_duplicates"]
+    identity_pending = scope["identity_pending"]
     rows: list[dict[str, Any]] = []
-    for category in sorted(set(objects) | set(candidates)):
+    for category in sorted(set(objects) | set(partial)):
         explanation = sensitivity_map.explain(category, mapping=mapping)
         rows.append({
             **explanation,
             "object_count": len(objects.get(category, ())),
             "active_instance_count": len(instances.get(category, ())),
             "host_count": len(hosts.get(category, ())),
-            "confirmed_duplicate_count": sum(confirmed.get(category, {}).values()),
-            "candidate_count": len(candidates.get(category, ())),
-            "truncated": truncated,
+            "confirmed_duplicate_count": sum(max(instance_counts.get(obj_id, 0) - 1, 0)
+                                             for obj_id in full.get(category, ())),
+            # A partial fingerprint only becomes a *suspected copy* once the same
+            # content is seen on two instances; a lone one is an unresolved
+            # identity, not a duplicate.
+            "candidate_duplicate_count": len(partial.get(category, set()) & candidate_duplicates),
+            "identity_pending_count": len(partial.get(category, set()) & identity_pending),
+            "candidate_count": len(partial.get(category, ())),
+            "truncated": scope["truncated"],
         })
     return rows
+
+
+def _type_scope(db: Session, probe_id: int | None) -> dict[str, Any]:
+    """The join shared by the type rows and the de-duplicated totals."""
+    joined = (select(Detection.category, Detection.object_id, DataObject.hash_type,
+                     DataObject.active_instance_count, Detection.instance_id,
+                     AssetInstance.probe_id)
+              .join(DataObject, DataObject.id == Detection.object_id)
+              .join(AssetInstance, AssetInstance.id == Detection.instance_id)
+              # A detection belongs to the object that was current when it was
+              # produced. Without this predicate a renamed or changed file counted
+              # its *historical* detection for the live instance and the type
+              # centre kept reporting a category the current content no longer has.
+              .where(AssetInstance.status == INSTANCE_ACTIVE,
+                     Detection.object_id == AssetInstance.object_id)
+              .limit(MAX_SUMMARY_ROWS))
+    if probe_id:
+        joined = joined.where(AssetInstance.probe_id == probe_id)
+    objects: dict[str, set[int]] = {}
+    instances: dict[str, set[int]] = {}
+    hosts: dict[str, set[int]] = {}
+    full: dict[str, set[int]] = {}
+    partial: dict[str, set[int]] = {}
+    object_ids: set[int] = set()
+    hash_by_object: dict[int, str] = {}
+    truncated = False
+    count = 0
+    for row in db.execute(joined).all():
+        count += 1
+        category = str(row[0])
+        obj_id = int(row[1])
+        objects.setdefault(category, set()).add(obj_id)
+        instances.setdefault(category, set()).add(int(row[4]))
+        hosts.setdefault(category, set()).add(int(row[5]))
+        object_ids.add(obj_id)
+        hash_by_object[obj_id] = str(row[2])
+        if row[2] == HASH_FULL:
+            full.setdefault(category, set()).add(obj_id)
+        elif row[2] == HASH_PARTIAL:
+            partial.setdefault(category, set()).add(obj_id)
+    if count >= MAX_SUMMARY_ROWS:
+        truncated = True
+    # How many active instances each of those objects has *inside the requested
+    # scope*: the copy count is a property of the object, never of a category and
+    # never of another probe's view.
+    scope_instances = (select(AssetInstance.object_id, AssetInstance.id)
+                       .where(AssetInstance.status == INSTANCE_ACTIVE))
+    if probe_id:
+        scope_instances = scope_instances.where(AssetInstance.probe_id == probe_id)
+    scope_instance_counts: dict[int, int] = {}
+    for object_id, _instance_id in db.execute(scope_instances).all():
+        object_id = int(object_id)
+        if object_id in object_ids:
+            scope_instance_counts[object_id] = scope_instance_counts.get(object_id, 0) + 1
+    candidate_duplicates: set[int] = set()
+    identity_pending: set[int] = set()
+    for obj_id in object_ids:
+        if hash_by_object.get(obj_id) != HASH_PARTIAL:
+            continue
+        if scope_instance_counts.get(obj_id, 0) >= 2:
+            candidate_duplicates.add(obj_id)
+        else:
+            identity_pending.add(obj_id)
+    return {"objects": objects, "instances": instances, "hosts": hosts, "full": full,
+            "partial": partial, "object_ids": object_ids, "truncated": truncated,
+            "hash_by_object": hash_by_object,
+            "scope_instance_counts": scope_instance_counts,
+            "candidate_duplicates": candidate_duplicates,
+            "identity_pending": identity_pending}
+
+
+def data_type_summary(db: Session, *, probe_id: int | None = None) -> dict[str, Any]:
+    """Cross-type totals over de-duplicated object/instance sets.
+
+    Adding the per-type rows up counted a file that holds both an email address
+    and a credential twice; these numbers are computed over sets instead, so
+    ``objects`` is a real object count and ``confirmed_duplicates`` counts each
+    duplicated object once regardless of how many types it carries.
+    """
+    scope = _type_scope(db, probe_id)
+    object_ids = scope["object_ids"]
+    instance_counts = scope["scope_instance_counts"]
+    confirmed = [max(instance_counts.get(obj_id, 0) - 1, 0)
+                 for obj_id in object_ids if scope["hash_by_object"][obj_id] == HASH_FULL]
+    all_hosts: set[int] = set()
+    for host_ids in scope["hosts"].values():
+        all_hosts |= host_ids
+    return {
+        "types": len(set(scope["objects"]) | set(scope["partial"])),
+        "objects": len(object_ids),
+        "instances": sum(instance_counts.get(obj_id, 0) for obj_id in object_ids),
+        "hosts": len(all_hosts),
+        "confirmed_duplicates": sum(confirmed),
+        "candidate_duplicates": len(scope["candidate_duplicates"]),
+        "identity_pending": len(scope["identity_pending"]),
+        "truncated": scope["truncated"],
+    }
 
 
 def object_detail(db: Session, object_id: int) -> dict[str, Any] | None:
     obj = db.get(DataObject, object_id)
     if obj is None:
         return None
+    mapping = sensitivity_map.overrides(db)
     return {
         "id": obj.id, "object_key": obj.object_key, "object_type": obj.object_type,
         "content_hash": obj.content_hash, "hash_type": obj.hash_type,
@@ -853,7 +1121,8 @@ def object_detail(db: Session, object_id: int) -> dict[str, Any] | None:
         "partial_version": obj.partial_version, "partial_layout": dict(obj.partial_layout or {}),
         "size": obj.size, "categories": list(obj.categories or []),
         "sensitivity": obj.sensitivity,
-        "level": sensitivity_map.worst_level(obj.categories),
+        "level": sensitivity_map.worst_level(obj.categories, mapping=mapping),
+        "level_source": "settings_override" if mapping else "builtin_default",
         "instance_count": obj.instance_count, "active_instance_count": obj.active_instance_count,
         "first_seen_at": _iso(obj.first_seen_at),
         "last_seen_at": _iso(obj.last_seen_at),
@@ -867,6 +1136,7 @@ def instance_detail(db: Session, instance_id: int) -> dict[str, Any] | None:
         return None
     probe = db.get(Probe, instance.probe_id)
     obj = db.get(DataObject, instance.object_id)
+    mapping = sensitivity_map.overrides(db)
     return {
         "id": instance.id, "probe_id": instance.probe_id,
         "probe_name": probe.name if probe else "",
@@ -881,7 +1151,8 @@ def instance_detail(db: Session, instance_id: int) -> dict[str, Any] | None:
         "identity_kind": ("confirmed" if obj and obj.hash_type == HASH_FULL
                           else "candidate" if obj and obj.hash_type == HASH_PARTIAL else "scoped"),
         "sensitivity": instance.sensitivity,
-        "level": sensitivity_map.worst_level(instance.categories),
+        "level": sensitivity_map.worst_level(instance.categories, mapping=mapping),
+        "level_source": "settings_override" if mapping else "builtin_default",
         "categories": list(instance.categories or []),
         "coverage": instance.coverage, "termination_reason": instance.termination_reason,
         "ruleset_version": instance.ruleset_version, "engine_version": instance.engine_version,

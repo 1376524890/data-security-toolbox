@@ -26,7 +26,10 @@ def test_real_pcap_upload_to_alert_chain(tmp_path: Path) -> None:
     segment_id = f"e2e-{int(Path('/tmp').stat().st_ino)}-{int(time.time())}"
     _cleanup(segment_id)
     rolling_traffic_state.reset()
-    pcap = write_scan_pcap(tmp_path / "scan.pcap", ports=30)
+    # The scan talks to a public destination on purpose: the exposure factor
+    # (and therefore the alert threshold) is derived from the capture's own
+    # destinations, and an internal-only capture must not reach High.
+    pcap = write_scan_pcap(tmp_path / "scan.pcap", dst="8.8.8.8", ports=30)
     with TestClient(app) as client:
         response = client.post("/api/v1/pcaps/upload", files={"file": ("scan.pcap", pcap.read_bytes(), "application/octet-stream")}, data={"metadata_json": '{"segment_id":"%s","sequence":1,"interface":"lo","capture_started_at":"2026-01-01T00:00:00Z","capture_finished_at":"2026-01-01T00:00:15Z"}' % segment_id})
         assert response.status_code == 200
@@ -46,6 +49,10 @@ def test_real_pcap_upload_to_alert_chain(tmp_path: Path) -> None:
         assert record.analysis_status == "analyzed"
         findings = db.scalars(select(DetectionFinding).where(DetectionFinding.target_type == "pcap", DetectionFinding.target_id == str(pcap_id))).all()
         assert any(item.rule_id == "NETWORK_PORT_SCAN" for item in findings)
+        assert any(
+            (item.evidence or {}).get("risk_model", {}).get("exposure_basis") == "external_destination"
+            for item in findings
+        )
         incidents = db.scalars(select(Incident).where(Incident.evidence["pcap_id"].as_string() == str(pcap_id))).all()
         assert incidents
         alerts = db.scalars(select(Alert).where(Alert.finding_id.in_([item.id for item in findings]))).all()

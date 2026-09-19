@@ -12,6 +12,7 @@ evidence is.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -28,6 +29,35 @@ SCHEMA_VERSION = "1.0"
 
 # Field evidence is only a hint, so it never exceeds the evidence ceiling.
 FIELD_EVIDENCE_CEILING = confidence_module.FIELD_EVIDENCE_CEILING
+
+# A column called ``hotel`` contains the substring ``tel`` and ``filename``
+# contains ``name``; substring field matching therefore invents phone/NAME
+# columns out of ordinary names. Field hints are matched on token boundaries
+# instead: split camelCase and non-alphanumerics, then compare whole tokens
+# (CJK hints keep substring matching because they have no word separators).
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_FIELD_SEPARATOR = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+
+
+def _field_tokens(field_name: str) -> set[str]:
+    return {token for token in _FIELD_SEPARATOR.split(_CAMEL_BOUNDARY.sub(" ", field_name).casefold()) if token}
+
+
+def _field_hint_match(field_name: str, hints: Iterable[str]) -> bool:
+    """Whether a column name is evidence for a rule, without substring noise."""
+    if not field_name:
+        return False
+    tokens = _field_tokens(field_name)
+    collapsed = _FIELD_SEPARATOR.sub("", field_name.casefold())
+    for hint in hints:
+        if not hint:
+            continue
+        if hint.isascii():
+            if hint in tokens or hint.replace("_", "").replace("-", "") == collapsed:
+                return True
+        elif hint in field_name:
+            return True
+    return False
 
 
 @dataclass(slots=True)
@@ -129,7 +159,9 @@ class SensitiveDetectionEngine:
         if len(text) > self.max_text_chars:
             text = text[: self.max_text_chars]
             text_truncated = True
-        field_name = (context.field_name or "").strip().lower()
+        # Keep the original casing: camelCase is a token boundary, and lower-casing
+        # here would merge ``contactTelephone`` into one unrecognizable token.
+        field_name = (context.field_name or "").strip()
         lowered = text.casefold()
         intervals: dict[str, list[tuple[int, int]]] = {}
         evidence: dict[str, list[Evidence]] = {}
@@ -153,7 +185,7 @@ class SensitiveDetectionEngine:
             source = str(rule.get("rule_source") or "builtin")
             recognizer = str(rule.get("recognizer") or "")
             rule_confidence = confidence_module.clamp(rule.get("confidence") or 0.5)
-            field_hit = bool(field_name) and any(hint in field_name for hint in rule["field_hints"])
+            field_hit = _field_hint_match(field_name, rule["field_hints"])
             keyword_hit = bool(text) and any(keyword in lowered for keyword in rule["keywords"])
             if rule["pattern"]:
                 try:

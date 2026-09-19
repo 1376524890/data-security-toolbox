@@ -158,6 +158,25 @@ def secret_count(hits: Iterable[Any]) -> int:
     return sum(hit.count for hit in hits if hit.entity in families)
 
 
+def confirmed_hits(hits: Iterable[Any]) -> list[Any]:
+    """Hits with value-level evidence: what an alert or a risk label may use."""
+    return [hit for hit in hits if hit.sensitive and hit.confirmed]
+
+
+def candidate_hits(hits: Iterable[Any]) -> list[Any]:
+    """Field/keyword/context-only clues. Visible as evidence, never an alert."""
+    return [hit for hit in hits if hit.sensitive and not hit.confirmed]
+
+
+def max_confidence(hits: Iterable[Any]) -> float:
+    return round(max((float(hit.confidence) for hit in hits), default=0.0), 4)
+
+
+def text_truncated() -> bool:
+    """Whether the last scan had to cut the text before the end."""
+    return bool(get_engine().last_report.text_truncated)
+
+
 __all__ = [
     "SensitiveDetectionContext",
     "SensitiveDetectionEngine",
@@ -168,6 +187,10 @@ __all__ = [
     "count_by_legacy_name",
     "pii_count",
     "secret_count",
+    "confirmed_hits",
+    "candidate_hits",
+    "max_confidence",
+    "text_truncated",
     "legacy_name",
     "level_of",
     "severity_of",

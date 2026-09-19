@@ -20,6 +20,10 @@ FIELD_EVIDENCE_CEILING = 0.5
 FIELD_ONLY_CONFIDENCE = 0.35
 # Context words ("身份证" next to a number) are weaker than a validator.
 CONTEXT_BOOST = 0.1
+#: A value-level hit at or above this confidence is *confirmed*; below it, the
+#: shape is only a candidate clue (a hash that looks like a token, a card number
+#: that fails Luhn). Mirrors the platform alert threshold.
+CONFIRMED_CONFIDENCE = 0.6
 
 
 def clamp(value: float) -> float:

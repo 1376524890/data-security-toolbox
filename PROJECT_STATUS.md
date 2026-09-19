@@ -1,7 +1,48 @@
 # Project Status
 
+## 2026-09-19 最新发布状态：v2.12.0 源码发布与解耦指南
+
+本段优先于下方历史快照。发布现有整改，以 `v2.12.0` Git 注释标签标识；遵守“不修改代码”，
+平台自报仍为 2.11.0、探针源码声明仍为 3.5.0，本轮不重建镜像或探针包、不操作真实探针。
+本机数据库只读核验为 `0015_alert_hits (head)`；健康检查 ok、测试导入关闭。
+前端 typecheck 与 34 项单测通过；本轮隔离后端 579 passed / 17 failed，具体限制见
+[发布记录](docs/releases/v2.12.0.md)。历史“未提交”“仅 6 项失败”保留为当时快照，不代表本轮核验口径。
+解耦作为后续文档任务，本轮不移动函数、拆分模块或更改判定逻辑。
+
+
 > 项目整体状态快照。长期稳定信息见 `AGENTS.md`，当前任务见 `TASK.md`，架构见 `docs/architecture.md`。
 > 数据均为实测，采集时间：2026-09-17。
+
+## 2026-09-19 业务逻辑与数据真实性整改（未提交）
+
+按工作区 `业务逻辑与数据真实性整改清单.md` 的 29 项整改完成代码修改并重建镜像部署，未做历史数据重算，未提交。
+
+- 判定口径：DNS 隧道/CVE/端口扫描/脚本上传/C2 心跳/数据引擎/文件类型共 8 处的误报与漏检判定收紧（详见 `TASK.md` 顶部）。
+- 状态与关联：事件阶段只按规则 id 归类；`alert_hits` 记录被抑制的每次命中；扫描覆盖决定类别替换与实例退役；
+  计数按受影响对象重算；数据资产与文件改用 `file_id` 关联；重新分析标记并清理上一轮派生结果；投影重建按快照恢复。
+- 展示真实性：测试数据导入默认关闭（生产禁用并返回 403，`/health.features.test_data_import` 暴露状态）；
+  敏感发现页与数据类型中心的总数改为服务端全表聚合/跨类型去重，未观测资产单独统计；
+  分级覆盖 `sensitivity_levels` 统一作用于类型、对象、实例视图并给出 `level_source`。
+- 数据库：新增迁移 `0015_alert_hits`（`alert_hits` 表 + `detections.sample_limit`），head 变为 `0015_alert_hits`；迁移幂等。
+- 验证：后端全量仅剩 6 项既有环境失败；前端 typecheck 与 34 项单测通过。
+- 部署：按 `AGENTS.md` 用 legacy builder 重建 backend/worker/beat/deployment-worker/frontend 镜像并重建容器，
+  backend 启动时自动执行 `0014_probe_removal -> 0015_alert_hits`；`/health` 全绿（tshark/zeek/suricata 可用，
+  `features.test_data_import=false`，探针在线）。
+- 历史数据 dry-run（只读）：`scripts/remediation_dry_run.py`，报告 `整改dry-run报告-2026-09-19.txt`。
+  与清单快照一致的问题：对象 #6 缓存计数与实际不符、14 个对象类别无当前检测支撑、旧投影 3 条列名被写成敏感类别。
+  待执行的修复动作与规模已列出，尚未落库。
+- 真实探针验证：探针 #2 `test123`（kali / 192.168.191.130，agent 3.4.1）在线，下发 3 次受限真实采集（`/etc`，row 预算）。
+  文件检测按类别各自保留置信度、`hit_count == sample_hit_count`、`sample_limit` 已落库、证据不含原值；
+  类型中心 3 类 / 12 对象 / 12 实例只来自真正命中的文件。
+- 探针验证暴露并修复 3 处：(a) 目录条目只上报子项类目并集且 `counts={}`，服务端却为每个类目建了 `hit_count=0` 的伪检测，
+  污染对象类型数与类型中心——现在只对上报了计数的类目建检测，探针侧目录证据新增 `aggregate: true`；
+  (b) 目录/端口推断条目没有解析覆盖度，原先默认 `coverage="complete"`，Partial 采集里的目录也显示“已完整扫描”——
+  现在回退到本次报告的覆盖率与终止原因（实测目录节点显示 `partial / row_budget`）；
+  (c) 探针本地严重度映射滞后一步，`se_organisationsnummer` 上报 `Low` 而检测为 `Medium`，旧投影照抄上报值——
+  现在投影取平台映射与上报值中更严格者（`Unknown` 保持原样），与重建路径一致（实测列表/详情同为 Medium）。
+- 真实库数据修复：删除 5 条伪造零命中目录检测（无证据行）；按已记录的 Partial 报告 `e4099b01…`（`file_budget`）
+  把 5 个目录实例的 `coverage` 由 `complete` 修正为 `partial`；把 1 行弱于对象模型的投影 `sensitivity` 修正为 `Medium`。
+  文件类检测与证据未改动。
 
 ## 2026-09-18 v2.11.0 发布
 
@@ -48,9 +89,9 @@
 | --- | --- | --- |
 | 平台 | 2.11.0 | `backend/app/main.py`（FastAPI version）、`frontend/package.json` |
 | 探针 | 3.5.0 | `probe/probe.py:AGENT_VERSION`、`backend/app/core/config.py:probe_agent_version` |
-| 数据库迁移 | `0014_probe_removal (head)` | `alembic current` |
+| 数据库迁移 | `0014_probe_removal (head)`；工作区新增未提交的 `0015_alert_hits`（整改清单第 07/18 项） | `alembic current` |
 | 分支 / 最新提交 | `develop` / `f85a024`（发布提交 + lint 清零，tag `v2.11.0`） | `git log --oneline` |
-| 工作区 | 干净（发布提交后） | `git status` |
+| 工作区 | 有未提交改动（业务逻辑与数据真实性整改，见上方 2026-09-19 段） | `git status` |
 | 未推送提交 | 无：`develop` 与标签 `v2.11.0` 均已推送（`e815a54..f85a024`） | `git log origin/develop..HEAD --oneline` |
 | 远端 | `origin` = `https://github.com/1376524890/data-security-toolbox.git` | `git remote -v` |
 

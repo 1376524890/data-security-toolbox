@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -23,6 +23,7 @@ from app.models import (
     IOC,
     Alert,
     AlertDelivery,
+    AlertHit,
     AnalysisResult,
     Anomaly,
     Asset,
@@ -57,6 +58,32 @@ pipeline = DetectionPipeline(registry, RiskEngine())
 incident_engine = IncidentEngine()
 
 
+def _capture_exposure(flows: list[dict[str, Any]]) -> tuple[float, str]:
+    """Exposure factor derived from the capture's own destination evidence.
+
+    Importing a PCAP used to set ``exposure_factor = 3`` for every capture, which
+    pushed High/0.8 findings across the notification threshold with no evidence.
+    The neutral default is 2.0 (RiskEngine divides by two), raised only when the
+    capture actually talks to a public destination. The basis travels with the
+    score so an operator can see why it moved.
+    """
+    import ipaddress
+
+    destinations = {str(flow.get("dst_ip") or "") for flow in flows}
+    destinations.discard("")
+    if not destinations:
+        return 2.0, "unknown"
+    for value in destinations:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return 3.0, "external_destination"
+        if not (address.is_private or address.is_loopback or address.is_link_local
+                or address.is_multicast or address.is_reserved):
+            return 3.0, "external_destination"
+    return 2.0, "internal_only"
+
+
 @celery_app.task(name='security_toolbox.sync_intelligence')
 def sync_intelligence_task(task_id: int):
     from app.services.intelligence_service import sync_provider
@@ -84,6 +111,8 @@ def _recent_findings(db, probe_id: int | None, window_seconds: int = 3600, exclu
     if exclude_task_id is not None:
         query = query.where(DetectionFinding.task_id != exclude_task_id)
     rows = db.scalars(query.order_by(DetectionFinding.timestamp).limit(10000)).all()
+    # A superseded run is history: it must not keep re-announcing a live incident.
+    rows = [item for item in rows if not (item.evidence or {}).get("superseded")]
     if probe_id is not None:
         rows = [item for item in rows if int((item.evidence or {}).get("probe_id") or 0) == int(probe_id)]
     return [
@@ -118,6 +147,40 @@ def _merge_findings(existing: list[dict[str, Any]], incoming: list[dict[str, Any
         if isinstance(item, dict):
             merged.setdefault(_finding_signature(item), item)
     return list(merged.values())
+
+
+def _supersede_file_derivations(db, file_id: int, task_id: int, file_name: str) -> int:
+    """Retire the previous analysis run's derived rows for one file.
+
+    A file can be re-analysed at will. Keeping every run's findings as *current*
+    made three runs look like three times the exposure, so the previous run is
+    marked superseded: the rows stay queryable as history, while the file detail
+    and the correlation window only see the latest run. The legacy per-file
+    ``DataAsset`` projection and the graph relation it produced are derived and
+    rebuildable, so the stale copies are removed instead of stacking up.
+    """
+    retired = 0
+    findings = db.scalars(select(DetectionFinding).where(
+        DetectionFinding.target_type == "file",
+        DetectionFinding.target_id == str(file_id),
+        DetectionFinding.task_id != task_id)).all()
+    for row in findings:
+        evidence = dict(row.evidence or {})
+        if evidence.get("superseded"):
+            continue
+        evidence.update({"superseded": True,
+                         "superseded_at": datetime.now(UTC).isoformat(),
+                         "superseded_by_task": task_id})
+        row.evidence = evidence
+        retired += 1
+    if file_name:
+        for row in db.scalars(select(DataAsset).where(
+                DataAsset.asset_type == "file", DataAsset.source == file_name)).all():
+            db.delete(row)
+        db.execute(delete(GraphRelation).where(
+            GraphRelation.source_type == "data_asset",
+            GraphRelation.source_node == file_name))
+    return retired
 
 
 def _upsert_incident(db, incident: Incident, probe_id: int | None) -> Incident:
@@ -500,10 +563,38 @@ def metadata_task(file_id: int, task_id: int) -> None:
         record.sha256 = result["sha256"]
         record.md5 = result.get("md5", "")
         record.file_type = result["file_type"]
-        record.risk_level = "Medium" if result["hidden_info"]["hidden"] else "Low"
         context = DetectionContext(target_type="file", target_id=str(file_id), path=path, metadata=result, data={"file_type": result["file_type"], "metadata": result["metadata"], "probe_id": record.probe_id})
+        # Re-analysis is not a new incident: retire the previous run first.
+        _supersede_file_derivations(db, file_id, task_id, record.name)
         alerts = run_pipeline(context, task_id, db)
-        db.add(AnalysisResult(task_id=task_id, module="metadata", content=result, risk_level=record.risk_level))
+        # The file's risk must summarise the detections that just ran, not only
+        # the metadata/hidden-info hint: a Low-looking file carrying keys or PII
+        # used to stay Low in the list while its detail page showed High.
+        severity_rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+        metadata_risk = "Medium" if result["hidden_info"]["hidden"] else "Low"
+        task_findings = db.scalars(
+            select(DetectionFinding).where(DetectionFinding.task_id == task_id)).all()
+        data_risk = max(
+            (item.severity for item in task_findings if item.engine == "data_engine"),
+            key=lambda severity: severity_rank.get(severity, 0), default="")
+        if severity_rank.get(data_risk, 0) > severity_rank.get(metadata_risk, 0):
+            risk_level = data_risk
+        else:
+            risk_level = metadata_risk
+        result["risk"] = {
+            "level": risk_level,
+            "metadata_hint": metadata_risk,
+            "data_engine": data_risk,
+            # Unsupported/failed document reads are surfaced here instead of
+            # letting an empty scan imply the file is clean.
+            "scan_status": next((item.get("scan_status") for item in context.data.get("data_assets", [])
+                                 if item.get("scan_status")), ""),
+            "findings": [{"rule_id": item.rule_id, "severity": item.severity}
+                         for item in task_findings][:50],
+        }
+        record.risk_level = risk_level
+        record.metadata_json = result
+        db.add(AnalysisResult(task_id=task_id, module="metadata", content=result, risk_level=risk_level))
         db.commit()
         for alert_id, created in alerts:
             publish_alert(alert_id, event_type=EVENT_CREATED if created else EVENT_UPDATED)
@@ -537,6 +628,7 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
         db.execute(delete(PacketRecord).where(PacketRecord.pcap_id == pcap_id))
         old_findings = db.scalars(select(DetectionFinding.id).where(DetectionFinding.target_type == "pcap", DetectionFinding.target_id == str(pcap_id))).all()
         if old_findings:
+            db.execute(delete(AlertHit).where(AlertHit.finding_id.in_(old_findings)))
             db.execute(delete(AlertDelivery).where(AlertDelivery.alert_id.in_(select(Alert.id).where(Alert.finding_id.in_(old_findings)))))
             db.execute(delete(Alert).where(Alert.finding_id.in_(old_findings)))
             db.execute(delete(DetectionFinding).where(DetectionFinding.id.in_(old_findings)))
@@ -571,12 +663,14 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
         update_task(task_id, progress=70, current_stage="流量与异常分析")
         anomalies = detect_anomalies(parsed["flows"], parsed["packets"])
         db.add_all([Anomaly(pcap_id=pcap_id, **item) for item in anomalies])
+        exposure_factor, exposure_basis = _capture_exposure(parsed["flows"])
         context = DetectionContext(target_type="pcap", target_id=str(pcap_id), path=path, flows=parsed["flows"], packets=parsed["packets"], data={
             "protocol_summary": parsed["protocol_summary"],
             "anomalies": anomalies,
             "probe_id": record.probe_id,
             "pcap_id": pcap_id,
-            "exposure_factor": 3,
+            "exposure_factor": exposure_factor,
+            "exposure_basis": exposure_basis,
             "port_scan_window_seconds": settings.port_scan_window_seconds,
             "port_scan_ports_threshold": settings.port_scan_ports_threshold,
         })

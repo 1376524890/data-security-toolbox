@@ -33,6 +33,10 @@ class Sample:
     coverage: str = "partial"
     termination_reason: str = "complete"
     warning: str = ""
+    line_truncated: bool = False
+    #: The file ended without a newline; the final line is kept (it is real data)
+    #: but may be an incomplete record, so it is flagged rather than dropped.
+    last_line_unterminated: bool = False
 
     def defused(self) -> str:
         return self.text
@@ -47,22 +51,47 @@ def decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _align_to_line(raw: bytes, *, keep_leading_partial: bool) -> bytes:
-    """Trim a sample to whole lines unless it already starts at the file head."""
+def _align_to_line(raw: bytes, *, keep_leading_partial: bool, at_eof: bool) -> bytes:
+    """Trim a sample to whole lines unless it already starts at the file head.
+
+    A region that ends at EOF keeps its final line even without a trailing
+    newline: that line is complete data, and dropping it is how the last record
+    of a file used to disappear from the sample.
+    """
     if not keep_leading_partial:
         index = raw.find(b"\n")
         if index != -1:
             raw = raw[index + 1:]
     # Drop the trailing partial line so a half-written record is never presented
-    # as a complete one.
-    index = raw.rfind(b"\n")
-    if index != -1:
-        raw = raw[: index + 1]
+    # as a complete one - unless this read actually reached the end of the file.
+    if not at_eof:
+        index = raw.rfind(b"\n")
+        if index != -1:
+            raw = raw[: index + 1]
     return raw
 
 
-def _bounded_lines(text: str) -> str:
-    return "\n".join(line[:MAX_LINE_CHARS] for line in text.splitlines())
+def _bounded_lines(text: str) -> tuple[str, bool]:
+    clipped = False
+    lines = []
+    for line in text.splitlines():
+        if len(line) > MAX_LINE_CHARS:
+            clipped = True
+            line = line[:MAX_LINE_CHARS]
+        lines.append(line)
+    return "\n".join(lines), clipped
+
+
+def _merged_ranges(positions: list[int], limit: int, size: int) -> list[tuple[int, int]]:
+    """Merge overlapping/adjacent windows so no byte is read (and counted) twice."""
+    ranges: list[tuple[int, int]] = []
+    for offset in positions:
+        start, end = offset, min(offset + limit, size)
+        if ranges and start <= ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+    return ranges
 
 
 def sample_text(path: Path, size: int, *, budget, block_size: int = CHUNK,
@@ -80,13 +109,15 @@ def sample_text(path: Path, size: int, *, budget, block_size: int = CHUNK,
         if size - limit not in positions:
             positions.append(size - limit)
         positions = sorted(set(positions))
+    ranges = _merged_ranges(positions, limit, size)
     chunks: list[str] = []
+    covered = 0
     try:
         with path.open("rb") as handle:
-            for offset in positions:
+            for start, end in ranges:
                 # Clamped to what is left of the byte budget: one "read the head"
                 # call must not be able to overshoot the limit it was given.
-                allowed = budget.clamp_read(min(limit, size - offset))
+                allowed = budget.clamp_read(end - start)
                 if allowed <= 0:
                     budget.check()
                     result.termination_reason = "byte_budget"
@@ -94,14 +125,21 @@ def sample_text(path: Path, size: int, *, budget, block_size: int = CHUNK,
                     result.warning = f"字节预算 {budget.max_bytes} 已用尽"
                     break
                 budget.check()
-                handle.seek(offset)
+                handle.seek(start)
                 raw = handle.read(allowed)
                 budget.spend_bytes(len(raw))
                 result.bytes_read += len(raw)
-                result.positions.append(offset)
-                aligned = _align_to_line(raw, keep_leading_partial=offset == 0)
+                covered += len(raw)
+                result.positions.append(start)
+                if raw and start + len(raw) >= size and not raw.endswith(b"\n"):
+                    result.last_line_unterminated = True
+                aligned = _align_to_line(raw, keep_leading_partial=start == 0,
+                                         at_eof=start + len(raw) >= size)
                 if aligned:
-                    chunks.append(_bounded_lines(decode(aligned)))
+                    bounded, clipped = _bounded_lines(decode(aligned))
+                    if clipped:
+                        result.line_truncated = True
+                    chunks.append(bounded)
     except BudgetExceeded as exc:
         result.termination_reason = exc.reason
         result.coverage = "partial"
@@ -110,8 +148,15 @@ def sample_text(path: Path, size: int, *, budget, block_size: int = CHUNK,
         result.termination_reason = "unreadable"
         result.warning = type(exc).__name__
     result.text = "\n".join(chunks)
-    if result.termination_reason == "complete":
-        result.coverage = "complete" if result.bytes_read >= size else "partial"
+    if result.line_truncated:
+        result.coverage = "partial"
+        result.termination_reason = "line_truncated"
+        result.warning = result.warning or f"单行超过 {MAX_LINE_CHARS} 字符被截断"
+    elif result.termination_reason == "complete":
+        # Coverage is the union of the byte ranges actually read, not the sum of
+        # every read: overlapping windows used to inflate bytes_read past the
+        # file size and claim a completeness that was never achieved.
+        result.coverage = "complete" if covered >= size else "partial"
         if result.coverage == "partial":
             result.termination_reason = "sampled"
     return result

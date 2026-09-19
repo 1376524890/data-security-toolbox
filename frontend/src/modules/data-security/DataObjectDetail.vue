@@ -28,7 +28,11 @@ const evidence = ref<{ detection: DetectionRow; items: EvidenceRow[]; note: stri
 const identityText = computed(() => {
   const kind = detail.value?.identity_kind
   if (kind === 'confirmed') return '内容一致（完整 SHA256 相同）'
-  if (kind === 'candidate') return '疑似副本（部分指纹相同，需人工确认）'
+  if (kind === 'candidate') {
+    return (detail.value?.active_instance_count ?? 0) >= 2
+      ? '疑似副本（部分指纹相同且存在多个实例，需人工确认）'
+      : '待确认身份（部分指纹相同，但仅观察到 1 个实例，不称副本）'
+  }
   return '作用域内标识（无可靠 Hash，仅在同一探针内可比）'
 })
 

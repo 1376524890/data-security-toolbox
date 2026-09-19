@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,39 @@ CVE_RULE_DEFAULTS = {
     "local_limit": 10, "results_per_page": 10, "severity": "High", "confidence": 0.7,
     "nvd_url": "https://services.nvd.nist.gov/rest/json/cves/2.0",
 }
+
+
+def _version_tuple(text: object) -> tuple[int, ...]:
+    return tuple(int(token) for token in re.findall(r"\d+", str(text))[:4])
+
+
+def _version_in_range(version: str, spec: str) -> bool:
+    """Evaluate a comma-separated constraint list such as ``>=1.2,<1.4.3``."""
+    current = _version_tuple(version)
+    if not current:
+        return False
+    for constraint in str(spec).split(","):
+        match = re.match(r"^(>=|<=|>|<|==|!=)?\s*v?([\d][\d.]*)$", constraint.strip())
+        if not match:
+            continue
+        operator = match.group(1) or "=="
+        target = _version_tuple(match.group(2))
+        width = max(len(current), len(target))
+        left = current + (0,) * (width - len(current))
+        right = target + (0,) * (width - len(target))
+        if operator == ">=" and not left >= right:
+            return False
+        if operator == "<=" and not left <= right:
+            return False
+        if operator == ">" and not left > right:
+            return False
+        if operator == "<" and not left < right:
+            return False
+        if operator == "==" and not left == right:
+            return False
+        if operator == "!=" and left == right:
+            return False
+    return True
 
 
 class ThreatIntelEngine(DetectionEngine):
@@ -83,6 +117,32 @@ class ThreatIntelEngine(DetectionEngine):
                     return matches
         return matches
 
+    def _version_affected(self, version: str, cve: dict[str, Any]) -> tuple[bool, str]:
+        """Whether the asset version is inside a range the record declares.
+
+        A keyword search is a *candidate*, not a confirmed vulnerability. The
+        local library usually carries no affected-version range; when it does,
+        an explicit range is honoured and a version known to be outside it is
+        dropped instead of reported. Product/version membership is never guessed
+        from the free-text description.
+        """
+        ranges = cve.get("affected_versions") or cve.get("version_ranges") or []
+        if not version:
+            return False, "no_structured_version"
+        if not ranges:
+            return False, "no_version_range_data"
+        if any(_version_in_range(version, str(spec)) for spec in ranges):
+            return True, "matched_declared_range"
+        return False, "outside_declared_range"
+
+    @staticmethod
+    def _cve_confidence(cve: dict[str, Any]) -> float:
+        try:
+            score = float(cve.get("cvss_score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        return round(min(0.95, max(0.5, score / 10)), 2) if score else 0.7
+
     def analyze(self, context: DetectionContext) -> list[DetectionResult]:
         findings: list[DetectionResult] = []
         raw_iocs = context.data.get("iocs", [])
@@ -136,17 +196,44 @@ class ThreatIntelEngine(DetectionEngine):
                 recommendation="对命中 IOC 的通信进行隔离和取证，核实业务授权。",
             ).normalize())
         if context.data.get("cve_lookup_enabled"):
+            candidates: list[dict[str, Any]] = []
+            confirmed: list[tuple[dict[str, Any], dict[str, Any], str]] = []
             for service in context.assets:
                 keyword = f"{service.get('service', '')} {service.get('version', '')}".strip()
                 if not keyword:
                     continue
+                version = str(service.get("version") or "")
                 for cve in self.cve_lookup(keyword, context.data.get("nvd_api_key", "")):
-                    findings.append(DetectionResult(
-                        engine=self.name,
-                        rule_id=f"CVE_{cve['cve_id']}",
-                        severity="High",
-                        confidence=0.7,
-                        evidence={"cve": cve, "asset": service},
-                        recommendation=f"根据 {cve['cve_id']} 评估并修复受影响资产。",
-                    ).normalize())
+                    affected, reason = self._version_affected(version, cve)
+                    if affected:
+                        confirmed.append((cve, service, reason))
+                    elif reason == "outside_declared_range":
+                        # Known not to be affected: emitting anything would be a
+                        # false positive.
+                        continue
+                    else:
+                        candidates.append({"cve": cve, "asset": service, "match_reason": reason})
+            for cve, service, reason in confirmed:
+                findings.append(DetectionResult(
+                    engine=self.name,
+                    rule_id=f"CVE_{cve['cve_id']}",
+                    severity=str(cve.get("severity") or "High"),
+                    confidence=self._cve_confidence(cve),
+                    evidence={"cve": cve, "asset": service, "confirmed": True,
+                              "match_reason": reason, "library_source": cve.get("source", "")},
+                    recommendation=f"根据 {cve['cve_id']} 评估并修复受影响资产。",
+                ).normalize())
+            if candidates:
+                # A keyword hit is a lead to verify, not an asset vulnerability.
+                # Keeping it under its own rule id means it is never counted as a
+                # confirmed finding.
+                findings.append(DetectionResult(
+                    engine=self.name,
+                    rule_id="CVE_CANDIDATE_001",
+                    severity="Medium",
+                    confidence=0.4,
+                    evidence={"candidates": candidates[:100], "count": len(candidates),
+                              "note": "服务/版本关键字命中，未经受影响版本确认，不计入已确认漏洞。"},
+                    recommendation="核对产品、受影响版本范围与发行版补丁状态，确认后再按漏洞处置。",
+                ).normalize())
         return findings

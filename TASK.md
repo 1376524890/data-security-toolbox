@@ -1,7 +1,83 @@
 # Current Task
 
+## 2026-09-19 当前任务：v2.12.0 源码发布与解耦指南
+
+本段优先于下方历史快照。发布现有整改，以 `v2.12.0` Git 注释标签标识；遵守“不修改代码”，
+平台自报仍为 2.11.0、探针源码声明仍为 3.5.0，本轮不重建镜像或探针包、不操作真实探针。
+本机数据库只读核验为 `0015_alert_hits (head)`；健康检查 ok、测试导入关闭。
+前端 typecheck 与 34 项单测通过；本轮隔离后端 579 passed / 17 failed，具体限制见
+[发布记录](docs/releases/v2.12.0.md)。历史“未提交”“仅 6 项失败”保留为当时快照，不代表本轮核验口径。
+解耦作为后续文档任务，本轮不移动函数、拆分模块或更改判定逻辑。
+
+
 > 本文件只记录**当前正在做的任务**。历史任务见文末 `## Task History`。
 > 长期稳定信息见 `AGENTS.md`，项目整体状态见 `PROJECT_STATUS.md`。
+
+## 业务逻辑与数据真实性整改（2026-09-19，代码完成，未提交）
+
+目标：按工作区 `业务逻辑与数据真实性整改清单.md` 的 29 项 P1/P2 修正判定逻辑与展示口径，全程只允许真实数据。
+
+- 判定与漏检（01—05、10—14、18、21）：DNS 隧道要“同一源+注册域下 ≥3 个编码左标签且 ≥20 次查询”才算发现；
+  CVE 先记候选 `CVE_CANDIDATE_001`，只有版本落在受影响范围才生成 `CVE_<id>`；端口扫描按最忙窗口统计不同目的端口；
+  脚本上传要求 `multipart/octet-stream` + 脚本扩展名（Zeek 同样要求脚本文件名）；C2 心跳默认 10 包 / 60s / 间隔 ≥1s / 间隔 CV<0.2 且必须有明确 src+dst；
+  数据引擎只产出确认类发现；API Key 只按 `AKIA`/`ASIA` 精确 16 位判定；字段名先 token 化再做值级确认；
+  文档解析区分 SCAN_COMPLETE / PARTIAL / UNSUPPORTED / FAILED；采样合并区间、末行无换行、覆盖率取并集。
+- 状态与关联（06—08、15—17、23、25、28）：事件阶段只按规则 id 归类，未知即 `unknown`（不再用证据文本猜）；
+  告警抑制改用 `fingerprint(rule, source, asset, ioc, probe)`，新增 `alert_hits` 记录被抑制的每次命中（first/latest/highest-risk）；
+  PCAP 暴露面按内网 2.0 / 外网 3.0 并在 `risk_model.exposure_basis` 说明依据；完成扫描替换实例类别、部分扫描只叠加；
+  迟到报告不得让在位实例退役；对象/实例计数改为按“受影响对象集合”重算；数据资产与文件改用 `extra.file_id` 关联；
+  重新分析先把上一轮文件派生结果标 `superseded` 并删除旧的按文件 DataAsset；投影重建从扫描快照恢复字段与证据，不用类别伪造字段名。
+- 展示与交付真实性（09、19、20、22、24、26—27、29）：`POST /api/v1/test/import` 由 `TEST_DATA_IMPORT_ENABLED` 控制，
+  生产环境启用即启动失败，非授权环境返回 403；`/health.features.test_data_import` 暴露状态，前端据此隐藏入口与自动清理；
+  敏感发现页总数改由 `GET /sensitive/findings` 全表聚合给出（列表分页、来源分列、在位与历史未观测分开）；
+  数据类型中心顶部卡片改用服务端跨类型去重的 `totals`，单个 partial 对象显示“待确认身份”而不是“疑似副本”；
+  文件类型筛选兼容扩展名/MIME；数据资产详情返回字段级 PII 汇总；Partial/取消扫描给出明确原因；
+  数据库端口发现标为“疑似数据库服务（端口推断）”，不再默认 Medium 或算作已识别内容；
+  分级覆盖 `sensitivity_levels` 现在同时作用于类型中心、对象与实例的列表/详情，并返回 `level_source`，扫描时等级仍留在 `sensitivity` 与版本字段。
+- 数据库：新增迁移 `0015_alert_hits`（`alert_hits` 表 + `detections.sample_limit`），head 由 `0014_probe_removal` 变为 `0015_alert_hits`；
+  迁移为加列/建表且幂等，对 `create_all` 建出的库可安全重跑（已在本机 SQLite 上验证 upgrade→downgrade→upgrade）。
+- 验证：后端全量仅剩 6 项既有环境失败（缺 tshark/`sample.pcap`、探针身份、health、PCAP 工作台、协议 watchdog 与索引上限）；
+  前端 `npx vue-tsc --noEmit` 与 `npx vitest run`（34 passed）通过。新增回归集中在 `backend/tests/test_data_objects.py`、
+  `test_gap_fixes.py`、`test_alerts.py`、`tests/shared/test_detection_truthfulness.py`、`tests/shared/test_scanning_coverage.py`、
+  `tests/engine/test_threat_intel_cve.py`、`tests/e2e/test_continuous_detection.py`。
+- 镜像与部署（2026-09-19）：按 `AGENTS.md` 用 legacy builder 重建 `source-backend`（api）、`source-worker`（analysis-worker，另打
+  `source-beat` / `source-deployment-worker` 标签）、`source-frontend`，并 `--force-recreate` 重建 backend/worker/beat/deployment-worker/frontend；
+  backend 启动时自动执行 `alembic upgrade 0014_probe_removal -> 0015_alert_hits`，迁移成功。`/health` 显示 database/redis/celery 正常、
+  容器内 tshark 4.4.18 / zeek 9.0.0 / suricata 7.0.10（52,270 条签名）可用、`features.test_data_import=false`、探针在线。
+- 真实数据 dry-run（2026-09-19，只读）：新增 `scripts/remediation_dry_run.py`，输出见工作区
+  `整改dry-run报告-2026-09-19.txt`。关键结论：对象 #6 缓存计数 1/1 与实际 0/0 不符（与清单快照一致）；
+  14 个对象的类别已无当前检测支撑；5 条历史 detection 无采样上限（不补造）；旧投影 456 条中 447 条可从快照恢复结构、
+  3 条列名被写成敏感类别（重建时会标 `fabricated_columns`）、9 条无快照（保留原值并标 `structure_restored=false`）；
+  433 条告警中 325 条可按 `finding_id` 回填 `alert_hits`、107 条事件类告警无 finding 需人工，另有约 14,700 次被抑制的历史命中旧表未保存、无法还原；
+  类型中心旧口径按行相加 5/5，去重后真实为 4 个对象 / 4 个实例；敏感发现页旧口径 200（实际 456 条资产，在位 452 / 历史未观测 4）。
+- dry-run 复跑（2026-09-19 探针验证后，报告已刷新为当前真实数据）：检测 16 条（迁移前写入、无 `sample_limit` 的历史记录 3 条，不补造）；
+  旧投影 917 条（可从快照恢复字段与证据 643 条、列名被写成敏感类别 3 条）；告警 447 条（可按 `finding_id` 回填 325 条，
+  110 条事件类告警无 finding 需人工）；对象 #6 缓存计数仍待重算。“类别无当前检测支撑”排除目录/数据库服务的汇总标签后由 19 降为 8 条
+  （脚本已区分两者，避免把目录汇总当成漂移）。
+- 真实探针验证（2026-09-19）：探针 #2 `test123`（kali / 192.168.191.130，agent 3.4.1，ruleset `builtin-1.rollback2`）在线，
+  下发 3 次受限真实采集（`paths=["/etc"]`，max_files 200、row 预算）核对整改口径。判定类数据符合新规则：文件检测按类别各自
+  保留置信度（email 0.85 / credential 0.85 / se_organisationsnummer 0.6）、`hit_count == sample_hit_count`、`sample_limit=25`
+  已落库、`scan_id` 与实例 `last_scan_id` 一致、证据只含规则/字段不含原值；类型中心只统计真正命中的文件
+  （credential 4 / email 7 / se_organisationsnummer 1，12 个对象 / 12 个实例），`/sensitive/findings` 的 `object_model`
+  来源计数（12）与 detections 一致，页面对在位与历史未观测资产分别统计。
+- 探针验证暴露并修复的 3 个真实问题：(a) 目录条目只上报子项类目并集且 `counts={}`，服务端却按每个类目建了一条
+  `hit_count=0` 的“检测”——这是凭空出现的发现，还污染了类型中心；现在 `ingest_report` 只对上报了计数的类目
+  （`category in counts`）建检测，`probe/data_assets.py::_directory_asset` 在证据中显式标注 `aggregate: true`。
+  (b) 目录与端口推断条目没有解析覆盖度，原先默认 `coverage="complete"`，于是 Partial 采集里的目录节点也显示“已完整扫描”；
+  现在回退到本次报告自身的覆盖率与终止原因，Partial 采集的目录节点显示 `partial / row_budget`。
+  (c) 探针（agent 3.4.1）本地的严重度映射滞后于它刚下载的规则集：`se_organisationsnummer` 在上报的 `sensitivity` 里是 `Low`，
+  而同一文件的检测结果是 `Medium`；旧投影 `data_assets.sensitivity` 原样照抄上报值，于是列表 Low、详情 Medium。
+  现在 `project_asset` 取“平台映射与上报值中更严格者”（`Unknown` 等非严重度值保持原样），与 `rebuild_projection` 路径一致。
+  实测 `/etc/X11/app-defaults/XFontSel` 真实重扫后列表与详情同为 Medium；`/etc/sudo_logsrvd.conf` 未被该次扫描覆盖，
+  按同一谓词修正该投影行。探针侧 `category_severity` 仍使用冻结的旧映射，服务端不再依赖它。
+- 数据修复（2026-09-19，真实库）：删除 5 条由 (a) 产生的伪造零命中目录检测（`/boot/grub/i386-pc` 2 条、`/etc` 3 条，
+  均 `hit_count=0` / `sample_size=0` / `confidence=0` 且没有证据行）；按已记录的 Partial 报告 `e4099b01…`（终止原因
+  `file_budget`）把 5 个目录实例的 `coverage` 从 `complete` 修正为 `partial`。未改动任何文件类检测与证据。
+- 样本口径确认：`sample_size`（探针 `rows_read`）是“实际读取并扫描的行数”，`sample_limit`（探针 `sample_rows`）是
+  “单条命中保留的样本值上限”，两者单位不同（如 `/etc/libccid_Info.plist` 样本行 10149 / 上限 25）。前端“样本行”列展示前者，
+  没有把上限伪装成行数，因此不修改历史值。
+- 未做：未执行历史数据重算/修复（dry-run 已出，需先备份再按清单第四节执行）、未导入测试数据、未提交。
+  探针侧改动（`aggregate` 标记）要等探针包重建/升级后才在主机生效，服务端不依赖该标记。
 
 ## v2.11.0 发布（2026-09-18）
 
