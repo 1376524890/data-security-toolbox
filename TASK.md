@@ -652,12 +652,48 @@
   本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-data-type-catalog-state-20260920`。
 
+## 第十八批：前端数据目录对象/实例详情页状态解耦（2026-09-20）
+
+基线 `1a1d53c`，同一分支。目标：按指南 §F 把数据对象详情与实例详情的状态抽到 composable，
+模板与交互不变。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/data-security/composables/useDataObjectDetail.ts`（104 行）与
+  `useAssetInstanceDetail.ts`（72 行）；`DataObjectDetail.vue` 219 → 159 行、
+  `AssetInstanceDetail.vue` 193 → 153 行，两个页面只保留模板、行跳转与时间格式化。
+  迁入的 61 行与 40 行脚本逐行比对未改。
+- 两处声明过的改动：路由 id 以 `ComputedRef` 参数传入（composable 不再自己 `useRoute`），
+  对象页新增 `setDetectionPage()`；模板分页由
+  `@current-change="(value) => { detectionPage = value; loadDetections() }"` 改为
+  `@current-change="setDetectionPage"`——composable 返回的 ref 不能在模板里直接赋值
+  （同 PCAP 批的 `closeFileDialog`）。
+- 证据抽屉的打开/加载/失败状态随域进 composable；实例页的 `formatTime`/`formatMtime` 是纯展示，
+  留在视图；`includeHistory` 与重查一起进 composable。翻分页只重查检测，不重查对象本身。
+- 新增 `frontend/src/__tests__/data-object-instance-state.test.ts`（8 项）：按路由 id 加载对象与
+  第一页检测、翻页只重查检测、身份文案四态、证据抽屉成功与失败都不关闭、加载失败进页面状态；
+  实例按 `include_history` 加载、历史开关翻转后重查、证据抽屉、失败进页面状态。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 14 个文件 70 项通过（原 62 项 + 本批 8 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与两个详情页 chunk 均 200，chunk 名与本地构建一致、
+  线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/health`、`/test/status`（`present=false`）、`/auth/me`、`/data-objects`、
+  `/data-objects/{id}`、`/data-objects/{id}/detections`、`/asset-instances`、`/asset-instances/{id}`
+  （含 `include_history=true`）、`/detections/{id}/evidence`、`/data-types`、`/data-types/address`、
+  `/data/assets`、`/tasks?kind=data_asset_scan`、`/probes`、`/scan-profiles` 均 200；
+  本批未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-data-object-instance-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端对象详情、实例详情页按实际需求逐批拆分（同一模式：先抽状态，再抽视图；
-   PCAP 工作台、采集任务页与类型页的状态已完成）。
+1. 前端其余页面（敏感发现、扫描配置、规则版本、文件分析等）按实际改动需求再拆
+   （同一模式：先抽状态，再抽视图；数据目录四个页面与采集任务页已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。

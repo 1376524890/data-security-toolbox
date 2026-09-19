@@ -344,6 +344,16 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 模板里直接赋值只会改掉 setup 局部名字（同 PCAP 批的 `closeFileDialog`）。一次失败的刷新保留上一次
 成功的数据，不把范围清空成假象。回归：`frontend/src/__tests__/data-type-catalog-state.test.ts`（7 项）。
 
+## 数据目录对象与实例页状态边界
+
+数据对象详情与实例详情（`DataObjectDetail.vue`、`AssetInstanceDetail.vue`）的状态分别在
+`modules/data-security/composables/useDataObjectDetail.ts`（104 行）与
+`useAssetInstanceDetail.ts`（72 行），页面只保留模板、行跳转与时间格式化（219 → 159、193 → 153 行）。
+路由 id 以 `ComputedRef` 参数传入（composable 不自己 `useRoute`）；检测分页走 `setDetectionPage()`
+——`detectionPage` 是 composable 返回的 ref，模板里直接赋值只会改掉 setup 局部名字
+（同 PCAP 批的 `closeFileDialog`）。证据抽屉的加载/失败状态属于同一个 composable，不要在页面里
+再写一份。回归：`frontend/src/__tests__/data-object-instance-state.test.ts`（8 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

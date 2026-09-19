@@ -15,6 +15,9 @@
 `DataTypeCenter.vue -> useDataTypeCenter -> api/dataCatalog`：类型页只渲染，类型行、分级目录与
 服务端去重 totals 都在 composable 里；`DataTypeDetail.vue -> useDataTypeDetail`（路由 category + 分页）
 同理，翻页走 `setPage()`。
+`DataObjectDetail.vue -> useDataObjectDetail -> api/dataCatalog`（对象 + 检测分页 + 证据抽屉）与
+`AssetInstanceDetail.vue -> useAssetInstanceDetail`（实例 + 历史开关 + 证据抽屉）同样只渲染，
+路由 id 与分页都经 composable 的参数与 `setDetectionPage()`；时间格式化留在视图。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

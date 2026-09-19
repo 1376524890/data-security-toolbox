@@ -1,84 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  getDataObject, getDetectionEvidence, listObjectDetections,
-  type AssetInstanceRow, type DetectionRow, type EvidenceRow, type ObjectDetail,
-} from '../../api/dataCatalog'
+import type { AssetInstanceRow } from '../../api/dataCatalog'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
+import { useDataObjectDetail } from './composables/useDataObjectDetail'
 
+// The object, its detection page and the evidence drawer live in the composable;
+// this view only binds them into the template below.
 const route = useRoute()
 const router = useRouter()
 const objectId = computed(() => Number(route.params.id))
-
-const loading = ref(true)
-const error = ref('')
-const detail = ref<ObjectDetail | null>(null)
-const detections = ref<DetectionRow[]>([])
-const detectionPage = ref(1)
-const detectionTotal = ref(0)
-const pageSize = 10
-
-const evidenceOpen = ref(false)
-const evidenceLoading = ref(false)
-const evidenceError = ref('')
-const evidence = ref<{ detection: DetectionRow; items: EvidenceRow[]; note: string } | null>(null)
-
-const identityText = computed(() => {
-  const kind = detail.value?.identity_kind
-  if (kind === 'confirmed') return '内容一致（完整 SHA256 相同）'
-  if (kind === 'candidate') {
-    return (detail.value?.active_instance_count ?? 0) >= 2
-      ? '疑似副本（部分指纹相同且存在多个实例，需人工确认）'
-      : '待确认身份（部分指纹相同，但仅观察到 1 个实例，不称副本）'
-  }
-  return '作用域内标识（无可靠 Hash，仅在同一探针内可比）'
-})
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const [object, detectionResult] = await Promise.all([
-      getDataObject(objectId.value),
-      listObjectDetections(objectId.value, { page: detectionPage.value, page_size: pageSize }),
-    ])
-    detail.value = object
-    detections.value = detectionResult.items
-    detectionTotal.value = detectionResult.total
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadDetections(): Promise<void> {
-  const result = await listObjectDetections(objectId.value, { page: detectionPage.value, page_size: pageSize })
-  detections.value = result.items
-  detectionTotal.value = result.total
-}
-
-async function openEvidence(row: DetectionRow): Promise<void> {
-  evidenceOpen.value = true
-  evidenceLoading.value = true
-  evidenceError.value = ''
-  evidence.value = null
-  try {
-    evidence.value = await getDetectionEvidence(row.id)
-  } catch (err) {
-    evidenceError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    evidenceLoading.value = false
-  }
-}
+const {
+  loading, error, detail, detections, detectionPage, detectionTotal, pageSize, evidenceOpen,
+  evidenceLoading, evidenceError, evidence, identityText, load, openEvidence, setDetectionPage,
+} = useDataObjectDetail(objectId)
 
 function openInstance(row: AssetInstanceRow): void {
   router.push({ path: `/asset-instances/${row.id}` })
 }
-
-onMounted(load)
 </script>
 
 <template>
@@ -172,7 +112,7 @@ onMounted(load)
         </el-table>
         <el-pagination class="pagination" layout="total, prev, pager, next" :total="detectionTotal"
                        :current-page="detectionPage" :page-size="pageSize"
-                       @current-change="(value: number) => { detectionPage = value; loadDetections() }" />
+                       @current-change="setDetectionPage" />
       </div>
 
       <div class="soc-card" style="margin-top: 12px">

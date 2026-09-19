@@ -10,12 +10,25 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 290dbc1 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 1a1d53c / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第十七批：前端数据目录类型页状态解耦（类型中心与类型详情进 composable）；前十六批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态）见下方记录 |
+| 本批范围 | 第十八批：前端数据目录对象/实例详情页状态解耦；前十七批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态）见下方记录 |
 
 ## 本批已落地结构
 
+- 数据对象详情与实例详情的状态收拢到
+  `frontend/src/modules/data-security/composables/useDataObjectDetail.ts`（104 行）与
+  `useAssetInstanceDetail.ts`（72 行），两个页面只保留模板、行跳转与时间格式化
+  （`DataObjectDetail.vue` 219 → 159、`AssetInstanceDetail.vue` 193 → 153 行）；被移动的 61 行与
+  40 行脚本逐行未改，只有两处声明过的改动：路由 id 以 `ComputedRef` 参数传入（composable 不再自己
+  `useRoute`），以及对象页新增 `setDetectionPage()`——模板原来的
+  `@current-change="(value) => { detectionPage = value; loadDetections() }"` 改为
+  `@current-change="setDetectionPage"`，composable 返回的 ref 不能在模板里直接赋值
+  （同 PCAP 批的 `closeFileDialog`）。
+- 证据抽屉的打开、加载与失败状态随域进 composable，页面不再各自维护一份；实例页的
+  `formatTime`/`formatMtime` 属于纯展示，留在视图，`includeHistory` 与重查逻辑进 composable。
+- 数据目录四个页面（类型中心、类型详情、对象详情、实例详情）与采集任务页已完成状态解耦；
+  前端其余页面按实际改动需求再拆。
 - 数据类型中心与类型详情的状态收拢到
   `frontend/src/modules/data-security/composables/useDataTypeCenter.ts`（64 行）与
   `useDataTypeDetail.ts`（68 行），两个页面只保留模板（`DataTypeCenter.vue` 154 → 117、
@@ -120,6 +133,10 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
+| frontend/src/modules/data-security/DataObjectDetail.vue | 219 | 159 |
+| frontend/src/modules/data-security/AssetInstanceDetail.vue | 193 | 153 |
+| frontend/src/modules/data-security/composables/useDataObjectDetail.ts | 0（本批新增） | 104 |
+| frontend/src/modules/data-security/composables/useAssetInstanceDetail.ts | 0（本批新增） | 72 |
 | frontend/src/modules/data-security/DataTypeCenter.vue | 154 | 117 |
 | frontend/src/modules/data-security/DataTypeDetail.vue | 134 | 99 |
 | frontend/src/modules/data-security/composables/useDataTypeCenter.ts | 0（本批新增） | 64 |
@@ -160,6 +177,20 @@
 
 ## 验证与已知限制
 
+- 第十八批（前端）：`npm run typecheck` 通过；全量 vitest 14 个文件 70 项通过（原 62 项 + 本批新增
+  `data-object-instance-state.test.ts` 8 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+  逐行比对：两个页面迁入 composable 的 61 行与 40 行脚本逐行未改，模板除对象页分页的
+  `@current-change` 外逐字节未改。
+- 第十八批镜像（前端）：legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/`、入口 chunk 与 `DataObjectDetail`/`AssetInstanceDetail`
+  chunk 均 200，chunk 名与本地构建一致、线上字节与本地构建 SHA256 相同、无 demo/mock 代码；
+  回退标签 `source-frontend:pre-data-object-instance-state-20260920`。
+- 第十八批真实环境只读复验（后端未改）：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/tasks?kind=data_asset_scan`、`/probes`、`/scan-profiles`、`/data/assets`、`/data-types`、
+  `/data-types/address`、`/data-objects`、`/data-objects/{id}`、`/data-objects/{id}/detections`、
+  `/asset-instances`、`/asset-instances/{id}`（含 `include_history=true`）、`/detections/{id}/evidence`、
+  `/sensitive/findings`、`/sensitivity-levels` 均 200；未调用测试数据导入接口，未操作真实探针主机，
+  迁移仍 `0015_alert_hits`（head）。
 - 第十七批（前端）：`npm run typecheck` 通过；全量 vitest 13 个文件 62 项通过（原 55 项 + 本批新增
   `data-type-catalog-state.test.ts` 7 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
   逐行比对：两个页面迁入 composable 的 37 行与 35 行脚本逐行未改，模板除类型详情分页的
@@ -384,8 +415,8 @@
 - 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
-  其余待办：其他前端页面（对象详情、实例详情；PCAP 工作台、采集任务页与类型页的状态已抽入
-  composable）、模型包拆分，最后是探针模块与分发包。
+  其余待办：前端其余页面按实际改动需求再拆（数据目录四个页面与采集任务页的状态已抽入 composable）、
+  模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。
