@@ -10,20 +10,20 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 6e19403 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 25cbbd5 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第九批：检测/引擎域路由拆分；前八批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域）见下方记录 |
+| 本批范围 | 第十批：看板/流量视图域路由拆分；前九批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域）见下方记录 |
 
 ## 本批已落地结构
 
-- 检测结果路由独立为 `api/detections.py`（3 条路径：检测列表、检测详情、分析结果），行序列化继续复用
-  finding/事件/PCAP/告警 presenter，列表时间过滤复用 `api/query_filters.py::string_time_filter`。
-- 引擎路由独立为 `api/engines.py`（2 条路径：`GET /engine/registry`、`POST /engine/pipeline`），
-  引擎清单读 `app.engine.registry`、规则清单走 `api/rule_presenter.py::rule_file_entries`，
-  内部引擎名到 UI slug 的映射 `ENGINE_PRESENTATION` 随域移动，v1 不再保留；检测判定仍在 `app/engine/*`。
-- 第八批边界维持：任务队列路由在 `api/tasks.py`（5 条路径）、审计与报表路由在 `api/reports.py`（5 条路径），
-  任务行创建/过期与审计/报表生成仍在 `services/task_service.py`、`services/probe_task_service.py`、
-  `services/audit_service.py`、`services/report_service.py`。
+- 看板、风险总览、关系图与全局流量视图独立为 `api/dashboard.py`（13 条路径：`/risk/summary`、`/graph`、
+  `/dashboard/summary|risk-trend|severity|engines|incidents|high-risk-assets|sensitive-data|incident-trend`、
+  `/flows`、`/protocols`、`/network/live`），全部数字仍由 `app/models.py` 的行实时聚合，未新增缓存或派生表。
+- 行序列化继续复用 `api/assets.py::serialize_asset`、`api/incident_presenter.py::serialize_incident`、
+  `api/pcaps.py::serialize_flow`、`api/probe_presenter.py::serialize_probe`，协议分层复用
+  `services/protocol_service.py::protocol_layer`，分页复用 `api/pagination.py`。
+- 第九批边界维持：检测结果路由在 `api/detections.py`（3 条路径）、引擎路由在 `api/engines.py`（2 条路径），
+  引擎清单/规则清单分别读 `app.engine.registry` 与 `api/rule_presenter.py::rule_file_entries`。
 - 第七批边界维持：告警域路由在 `api/alerts.py`（5 条路径），抑制合并/命中聚合/投递在
   `services/alert_service.py`，探针行与规则解析在 `api/probe_presenter.py`、`api/rule_presenter.py`。
 - 第五、六批边界维持：平台资产域路由在 `api/assets.py`（4 条路径，导出 `serialize_asset`），
@@ -43,9 +43,10 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
-| backend/app/api/v1.py | 2557 | 1055 |
-| backend/app/api/detections.py | 0（本批新增） | 110 |
-| backend/app/api/engines.py | 0（本批新增） | 110 |
+| backend/app/api/v1.py | 2557 | 804 |
+| backend/app/api/dashboard.py | 0（本批新增） | 403 |
+| backend/app/api/detections.py | 0（第九批新增） | 110 |
+| backend/app/api/engines.py | 0（第九批新增） | 110 |
 | backend/app/api/tasks.py | 0（第八批新增） | 104 |
 | backend/app/api/reports.py | 0（第八批新增） | 175 |
 | backend/app/api/alerts.py | 0（本批新增） | 252 |
@@ -71,6 +72,16 @@
 
 ## 验证与已知限制
 
+- 第十批（本机 .venv 隔离全量）671 项：664 passed / 6 failed / 1 skipped；6 项失败与第九批基线集合完全相同，
+  无新增失败、无新增错误（其中 7 项为本批新增边界测试）。拆分前后 OpenAPI 排序后字节一致；
+  路由仍 162 条记录（158 APIRoute），162 条「方法 + 路径 + 端点函数名」与拆分前逐条相同；
+  无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 看板/流量视图域 AST 逐节点比对：13 个移动函数（`risk_summary`、`graph`、`dashboard`、`risk_trend`、
+  `dashboard_severity`、`dashboard_engines`、`dashboard_incidents`、`dashboard_high_risk_assets`、
+  `dashboard_sensitive_data`、`global_flows`、`global_protocols`、`network_live`、`incident_trend`）
+  与拆分前完全相同；长行折行不改 AST。
+- `network_live` 里的 `packets` 死赋值是 v1 存量代码（`ruff` F841），本批按原样搬运并加行内
+  `# noqa: F841`，不在结构拆分中删除查询或改变行为。
 - 第九批（本机 .venv 隔离全量）664 项：657 passed / 6 failed / 1 skipped；6 项失败与第八批基线集合完全相同，
   无新增失败、无新增错误（其中 9 项为本批新增边界测试）。拆分前后 OpenAPI 排序后字节一致；
   路由仍 162 条记录（158 APIRoute），162 条「方法 + 路径 + 端点函数名」与拆分前逐条相同；
@@ -117,13 +128,14 @@
 - 第一批（容器环境）记录：582 passed / 17 failed，其同环境基线 579 passed / 17 failed，失败集合一致；
   分发包/挂载布局 14 项、缺 Redis/worker 能力 2 项、Zeek 相对 PCAP 路径 1 项。历史数字按当时口径保留。
 - 前端本批未改：类型检查、37 项测试、生产构建沿用第一批结论。
-- 路由自第一批起保持 162 条记录（158 APIRoute / 148 个路径，其中 144 条在 `/api` 下），九批拆分均未增删路径；无数据库迁移。
+- 路由自第一批起保持 162 条记录（158 APIRoute / 148 个路径，其中 144 条在 `/api` 下），十批拆分均未增删路径；无数据库迁移。
 - 边界检查累计：`tests/test_task_boundaries.py`（9 项）、`tests/test_data_asset_boundaries.py`（3 项）、
   `tests/test_pcap_boundaries.py`（6 项）、`tests/test_file_boundaries.py`（7 项）、`tests/test_asset_boundaries.py`（8 项）、
   `tests/test_incident_ioc_boundaries.py`（8 项）、`tests/test_alert_boundaries.py`（8 项）、
-  `tests/test_tasks_reports_boundaries.py`（10 项）、`tests/test_detection_engine_boundaries.py`（9 项）。
+  `tests/test_tasks_reports_boundaries.py`（10 项）、`tests/test_detection_engine_boundaries.py`（9 项）、
+  `tests/test_dashboard_boundaries.py`（7 项）。
 - 新增/拆出模块 ruff 与 ruff format 通过；`v1.py` 只减不增（PCAP 批 7 处、文件批 3 处、资产批 2 处、
-  告警批 9 处、任务/报表批 6 处、本批 7 处拆分造成的未使用导入），
+  告警批 9 处、任务/报表批 6 处、检测/引擎批 7 处、本批 17 处拆分造成的未使用导入），
   其余改动文件的历史 lint 存量未增加。
 - 本批没有修改采集判定、风险规则、历史数据或页面布局；没有导入测试数据，未操作真实探针。
 - 第二批真实环境只读复验：health 与 8 个只读接口均 200，`/test/status present=false`；资产数是时点采样值
@@ -156,6 +168,13 @@
   `source-{backend,worker,beat,deployment-worker}:pre-incident-route-split-20260920`。
 - 第七批镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
   四容器 healthy、日志无 Traceback/ERROR/unregistered，运行中的 worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 第十批镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，运行中的 worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 第十批真实环境只读复验：登录后 38 个只读接口全部 200（含 `/dashboard/*` 全部卡片、`/risk/summary`、
+  `/graph`、`/flows`、`/protocols`、`/network/live`），看板汇总 17 个键、关系图 1834 节点/4426 边、
+  协议 24 行且带 layer、`/network/live` 窗口 300 秒；这些均为时点采样值，随真实采集变化，不作验收值。
+  `/test/status present=false`、迁移仍 `0015_alert_hits`（head）；未导入测试数据、未操作真实探针。
+  回退标签 `source-{backend,worker,beat,deployment-worker}:pre-dashboard-route-split-20260920`。
 - 第九批镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
   四容器 healthy、日志无 Traceback/ERROR/unregistered，运行中的 worker 仍注册 12 个 `security_toolbox.*` 任务名。
 - 第九批真实环境只读复验：登录后 38 个只读接口全部 200（含 `/detections`、`/detections/{id}`、
@@ -185,9 +204,9 @@
 ## 剩余事项
 
 - 其余大路由、其他前端页面、模型包和探针尚按总体指南待拆分（已完成：分析任务编排与 Celery 入口、
-  PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域路由；
-  待拆：Dashboard（含 `/risk/summary`、`/graph`、`/flows`、`/protocols`、`/network/live`）、探针域，
-  以及 `integrations`/`offline`、`rules`、`auth`、`health`、`test`、`scan` 等待收敛的入口）。
+  PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域路由；
+  待拆：探针域（`/probes/*`、`/crypto/probe-profile`）、`integrations`/`offline`、`rules`，
+  以及 `auth`、`health`、`test`、`scan` 等待收敛的入口）。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

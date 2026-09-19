@@ -81,8 +81,8 @@ source/
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
 - 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、
-  `alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`extensions.py`、`data_catalog.py`、
-  `deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
+  `alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`extensions.py`、
+  `data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
@@ -238,6 +238,16 @@ PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流
 `api/rule_presenter.py::rule_file_entries`，内部引擎名与 UI slug 的映射 `ENGINE_PRESENTATION`
 随域移动，不要在 v1 或其他域再放一份。检测判定仍在 `app/engine/*`。
 边界由 `tests/test_detection_engine_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
+
+## Dashboard 与流量视图域路由入口
+
+看板、风险总览、关系图与全局流量视图在 `api/dashboard.py`（`GET /risk/summary`、`GET /graph`、
+`GET /dashboard/summary|risk-trend|severity|engines|incidents|high-risk-assets|sensitive-data|incident-trend`、
+`GET /flows`、`GET /protocols`、`GET /network/live`）。所有数字都必须由 `app/models.py` 的行实时聚合，
+不得落库缓存或写死；行序列化复用 `api/assets.py::serialize_asset`、`api/incident_presenter.py::serialize_incident`、
+`api/pcaps.py::serialize_flow`、`api/probe_presenter.py::serialize_probe`，协议分层复用
+`services/protocol_service.py::protocol_layer`，分页复用 `api/pagination.py`。
+边界由 `tests/test_dashboard_boundaries.py` 检查（路径/方法冻结、不复制共享守卫、全应用无重复注册）。
 
 ## 与其他文档的关系
 

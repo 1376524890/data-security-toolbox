@@ -327,10 +327,48 @@
   本批未导入测试数据、未操作真实探针。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-detection-engine-route-split-20260920`。
 
+## 第十批：看板/流量视图域路由拆分（2026-09-20）
+
+基线 `25cbbd5`，同一分支。目标：按指南 §C 把看板、风险总览、关系图与全局流量视图从 `api/v1.py` 独立，
+路径/方法/鉴权/分页与响应结构不变；对应后续批次第 1 项的下一个域（指南中记为 dashboard）。
+
+已完成代码：
+
+- 看板与流量视图移至 `api/dashboard.py`（13 条路径）：`GET /risk/summary`、`GET /graph`、
+  `GET /dashboard/summary|risk-trend|severity|engines|incidents|high-risk-assets|sensitive-data|incident-trend`、
+  `GET /flows`、`GET /protocols`、`GET /network/live`。
+- 所有数字仍由 `app/models.py` 的行实时聚合，未新增缓存、派生表或写死常量；行序列化继续复用
+  资产/事件/流量/探针 presenter，协议分层复用 `services/protocol_service.py::protocol_layer`，
+  分页复用 `api/pagination.py`，本批不新增序列化副本。
+- `network_live` 内的 `packets` 死赋值是 v1 存量（`ruff` F841），按原样搬运并加行内 `# noqa: F841`，
+  不在结构拆分中删除查询或改变行为。
+- `v1.router` 以 `include_router(dashboard_router)` 只注册一次。
+- 新增 `tests/test_dashboard_boundaries.py`（7 项）：13 条路径/方法冻结、仅由 `api/dashboard.py` 声明、
+  仍挂 `/api/v1` 下、全应用无重复「方法 + 路径」、域不导入 workers/extensions、
+  复用而非复制共享 presenter 与协议分层、聚合结果来自模型行、v1 只聚合一次。
+
+验证：
+
+- 本机 .venv 隔离全量 671 项：664 passed / 6 failed / 1 skipped；6 项失败与第九批基线集合完全相同，
+  无新增失败、无新增错误。
+- 拆分前后 OpenAPI **排序后字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute），
+  162 条「方法 + 路径 + 端点名」与拆分前逐条相同；13 个移动函数的 AST 与拆分前逐节点一致；
+  无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- 新增/拆出 2 个模块 ruff check 与 ruff format 通过；`v1.py` 1055 → 804 行，只减不增，
+  另清理了拆分造成的 17 处未使用导入（`v1.py` 因此第一次达到 `ruff check --select F` 全通过，
+  仅余的存量 F841 已随 `network_live` 迁到本域并用行内 noqa 标注）。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 仍注册 12 个 `security_toolbox.*` 任务名。
+- 真实环境只读复验：登录后 38 个只读接口全部 200（含看板全部卡片、`/risk/summary`、`/graph`、`/flows`、
+  `/protocols`、`/network/live`），看板汇总 17 个键、关系图 1834 节点/4426 边、协议 24 行且带 layer、
+  `/network/live` 窗口 300 秒；这些为时点采样值，随真实采集变化；`/test/status present=false`、
+  迁移仍 `0015_alert_hits`（head）；本批未导入测试数据、未操作真实探针。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-dashboard-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 1. 继续按域拆其余 v1 路由（PCAP、files、assets、incidents/iocs、alerts、tasks/audit/reports、
-   detections/engine 域已完成）：dashboard → probes → integrations/offline → rules，
+   detections/engine、dashboard 域已完成）：probes → integrations/offline → rules，
    重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
