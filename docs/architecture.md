@@ -110,6 +110,8 @@ V2.1 新增 `Integration Adapter Layer`，统一第三方组件输入：
 | 模块 | 依赖 | 边界 |
 | --- | --- | --- |
 | `app/api/*` | `app/services/*`、`app/models.py`、`app/core/*` | 只做鉴权、参数校验、查询编排，不做检测计算 |
+| `app/api/v1.py` | `app/api/data_assets.py`、`app/api/pcaps.py` 等域模块 | 只聚合子路由（`include_router`），不重复声明路径 |
+| 域路由（`data_assets.py`、`data_collection.py`、`pcaps.py`…） | 共享 `app/api/dependencies.py`、`app/api/*_presenter.py` | 每个域只声明自己的路径与响应结构；共享鉴权/守卫与序列化下沉到依赖与 presenter |
 | `app/workers/tasks.py` | `app/engine`（pipeline）、`app/incident_engine`、`app/services/*`、`app/integrations/*` | 任务入口，负责事务与回写 |
 | `app/engine/*` | `app/engine/core/*` | 每个引擎实现 `analyze(context) -> list[DetectionResult]` |
 | `app/incident_engine` | 仅依赖 `DetectionResult` | 对外暴露 `evidence_asset_keys()` / `evidence_ioc_keys()` 供他人复用 |
@@ -120,6 +122,9 @@ V2.1 新增 `Integration Adapter Layer`，统一第三方组件输入：
 横向共享数据统一通过 `DetectionContext.data` 传递（如 `dlp_policy`、`iocs`、`cve_lookup_enabled`、`probe_id`）。
 凡是需要从 evidence 解析「这是哪台主机 / 哪个指标」的模块，必须复用 `app.incident_engine.engine`
 的 `evidence_asset_keys()` 与 `evidence_ioc_keys()`，避免同一份 evidence 在不同模块被解读成不同资产。
+路由按业务域拆分：聚合入口只 include 一次子路由，`/api/v1` 前缀只叠加一次；
+跨域复用的鉴权与上传守卫放 `app/api/dependencies.py`，跨域复用的响应结构放 `app/api/*_presenter.py`，
+不新建会继续膨胀的通用 `utils.py`。
 
 ## 数据流
 

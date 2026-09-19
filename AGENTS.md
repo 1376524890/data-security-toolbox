@@ -80,8 +80,9 @@ source/
 ## API 规范
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`。
-- 路由按域拆分注册：`app/api/v1.py`（主体）、`extensions.py`、`data_catalog.py`、`deployments.py`、
-  `libraries.py`、`profiles.py`、`rulesets.py`。
+- 路由按域拆分注册：`app/api/v1.py`（聚合主体）、`data_collection.py`、`data_assets.py`、`pcaps.py`、
+  `extensions.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rulesets.py`；
+  跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
 - 不要随意删除已有 API、改路径或改返回结构。确需修改时，先评估兼容性并记入 `PROJECT_STATUS.md`。
@@ -169,6 +170,15 @@ worker 任务按职责分在 `workers/{analysis,notification,maintenance}_tasks.
 `workers/task_names.py`，生命周期在 `workers/task_runtime.py`；旧 `workers/tasks.py` 仅兼容门面，不要新增实现。
 路由/服务不得导入 `app.workers.*`（端口模块除外）；Celery 任务名、参数顺序与队列路由属兼容边界。
 边界由 `tests/test_task_boundaries.py` 检查。
+
+## PCAP 域路由入口
+
+PCAP 抓包域路由在 `api/pcaps.py`（上传、列表/详情/分析、包/流、协议/流量、DNS/HTTP/TLS、
+提取清单/预览/下载、抓包告警共 18 条路径）；上传归属与队列背压在 `api/dependencies.py`
+（`upload_probe_id`、`enforce_queue_backpressure`），Task 行序列化在 `api/task_presenter.py`。
+子路由由 `app/api/v1.py` 的 `include_router` 只注册一次，`/api/v1` 前缀只叠加一次；
+解析与提取仍在 `services/protocol_service.py`、`services/pcap_files.py`，路由只做鉴权、分页与响应结构。
+边界由 `tests/test_pcap_boundaries.py` 检查（路径/方法冻结、全应用无重复注册）。
 
 ## 与其他文档的关系
 

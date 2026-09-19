@@ -68,9 +68,47 @@
 - 真实环境只读复验：health 与 8 个只读接口均 200，`/test/status present=false`；未导入测试数据、未操作真实探针。
 - 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-analysis-task-split-20260920`。
 
+## 第三批：PCAP 域路由拆分（2026-09-20）
+
+基线 `9833cad`，同一分支。目标：按指南 §C 把 PCAP 域路由从 `api/v1.py` 独立，路径/方法/鉴权/分页不变；
+对应第二批清单第 2 项（继续拆其他大路由）的首个域。
+
+已完成代码：
+
+- PCAP 路由与专用序列化移至 `api/pcaps.py`：上传、列表/详情/分析、包/流、协议/流量、DNS/HTTP/TLS、
+  提取清单/预览/下载、抓包告警共 18 条路径；`v1.router` 以 `include_router(pcaps_router)` 只注册一次，
+  `/api/v1` 前缀只叠加一次。
+- 上传归属与队列背压从 v1 私有函数移至 `api/dependencies.py`（`upload_probe_id`、
+  `enforce_queue_backpressure`），语义不变（鉴权失败仍按原错误码抛出，队列拥挤仍是 429 + `Retry-After`）；
+  文件上传路由继续复用同一份实现。
+- Task 行序列化提取为 `api/task_presenter.py::serialize_task`，PCAP 域与 tasks 路由共用一份，不再复制。
+- 文件末尾的兼容下载端点（`packets/{id}`、`streams/{id}`、`files/{id}/download`）随域整体移动，不是按连续行区间剪切。
+  v1 保留 `_dispatch`（文件/探针域仍在用），PCAP 域直接经 `task_dispatch.dispatch_task_row` 派发，参数顺序不变。
+- 新增 `tests/test_pcap_boundaries.py`（6 项）：18 条路径/方法冻结、仅由 `api/pcaps.py` 声明、仍挂在 `/api/v1` 下、
+  全应用无重复「方法 + 路径」、PCAP 域不导入 workers/extensions、上传守卫位于共享依赖模块、v1 只聚合一次。
+- 测试 monkeypatch 目标迁到真实位置：`tests/test_pcap_workbench.py` 改为 patch
+  `pcaps.dispatch_task_row` 与 `pcaps.enforce_queue_backpressure`。
+
+验证：
+
+- 本机 .venv 隔离全量 614 项：607 passed / 6 failed / 1 skipped；6 项失败与第二批基线集合完全相同，无新增失败、无新增错误。
+- 拆分前后 OpenAPI **字节一致**（144 条路径 / 158 个操作）；路由仍 162 条记录（158 APIRoute / 148 路径），
+  端点函数名集合一致；无数据库变更，迁移仍 `0015_alert_hits`（head）。
+- `tests/test_pcap_workbench.py` 除本机缺少原生导出器 1 项外全部通过：重复上传仍返回原 ID、
+  提取文件下载仍按抓包清单校验、缺包/越界/非法哈希仍为 404/422。
+- 新增/拆出文件（`api/pcaps.py`、`api/task_presenter.py`、`tests/test_pcap_boundaries.py`）ruff check 与 ruff format 通过；
+  `v1.py` 只减不增，另清理了拆分造成的 7 处未使用导入，历史存量（E501/B008/B904/F841）不变。
+- 镜像用 legacy builder 重建并切换 backend/worker/beat/deployment-worker（未改前端，未重建 frontend）：
+  四容器 healthy、日志无 Traceback/ERROR/unregistered，worker 注册 12 个任务名与第二批一致。
+- 真实环境只读复验：登录后 16 个只读接口全部 200（含 PCAP 域的列表、详情、协议、异常、提取清单、抓包告警），
+  `/test/status present=false`；迁移仍 `0015_alert_hits`（head）。本批未导入测试数据、未操作真实探针，
+  也未写入任务行（不涉及派发，故未做队列往返）。
+- 回退标签 `source-{backend,worker,beat,deployment-worker}:pre-pcap-route-split-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
-1. 继续按域拆其余 v1 路由，重点明确文件/PCAP 对数据资产结果的写入边界。
+1. 继续按域拆其余 v1 路由（PCAP 域已完成）：files → assets → alerts → tasks/audit/reports →
+   incidents/iocs → dashboard，重点明确文件对数据资产结果的写入边界。
 2. 前端类型中心、对象详情、采集任务页与 PCAP 工作台按实际需求逐批拆分。
 3. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 4. 旧的 `workers/tasks.py` 兼容门面与 `data_object_service.py` 在确无调用方后再删除。
