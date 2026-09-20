@@ -1096,6 +1096,30 @@
   `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-threat-centre-state-20260920`。
 
+## v2.13.0 发布（2026-09-20）
+
+基线 `5c5b1d4`（develop）。把 `refactor/data-asset-boundaries` 的 30 个提交合并回 `develop` 并发布：
+平台版本 2.11.0 → **2.13.0**，探针保持 3.5.0，迁移保持 `0015_alert_hits`。本版是纯结构调整，不新增功能、
+不改判定逻辑、不动历史数据；`refactor/data-asset-boundaries` 分支保留在原位（556a37d），未删除。
+
+已完成：
+
+- 版本：`backend/app/main.py`、`frontend/package.json`、`frontend/package-lock.json` 升到 2.13.0。
+- 文档：`CHANGELOG.md` 新增 v2.13.0 段；`docs/versioning.md` 增加版本条目与发布说明；新增
+  [发布记录](docs/releases/v2.13.0.md)；更新本文件与 `PROJECT_STATUS.md`。
+- 后端核验（隔离容器、`--network none`、只读挂载源码、临时 SQLite 与隔离存储）：同环境对照 `develop`
+  596 项 / 12 项失败 → 本版 726 项 / 同样 12 项失败（新增失败 0 项，新增 130 项回归）；工作树只读挂载复核
+  726 项 / 2 项失败。
+- 契约对照：OpenAPI 144 路径 / 158 操作、38 张表、104 个索引与拆分前逐项一致。
+- 前端：`npm run typecheck` 通过；vitest 26 个文件 231 项通过；生产构建通过。
+- 镜像与运行栈：重建 backend / worker / beat / deployment-worker 与 frontend 镜像并切换容器，运行栈自报
+  2.13.0，`/health` ok，迁移 `0015_alert_hits`，只读复验的 27 个接口全 200。
+- 回退标签：`source-backend` / `source-worker` / `source-beat` / `source-deployment-worker` /
+  `source-frontend` 的 `pre-v2.13.0-20260920`（本机镜像，回退代码需回到发布提交前的快照）。
+
+未做（保持边界）：没有调用测试数据导入接口、没有历史数据重算、没有操作真实探针主机、没有重建或覆盖
+同名探针分发包。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
@@ -1114,4 +1138,5 @@
 - [本批前任务全文](docs/history/task-before-data-asset-refactor-2026-09-19.md)
 - [本批前项目状态全文](docs/history/project_status-before-data-asset-refactor-2026-09-19.md)
 - [v2.12.0 发布记录](docs/releases/v2.12.0.md)
+- [v2.13.0 发布记录](docs/releases/v2.13.0.md)
 - [总体解耦指南](docs/解耦操作指南.md)

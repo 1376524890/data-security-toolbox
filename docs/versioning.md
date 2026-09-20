@@ -26,6 +26,7 @@
 - `v2.10` 探针卸载（远程回收主机、生产文件清理与审计）、一键删除先卸载再删记录，探针 3.5.0
 - `v2.11` 引擎规则库（规则文件真实加载、上游规则在线同步、命中规则快照与解释）、引擎总览页、
   PCAP 工作台（传输文件提取与文本/Hex 预览、上传定位），探针 3.5.0
+- `v2.13` 结构与状态解耦（后端按域拆路由与编排入口、前端页面状态收进 composable），接口与数据表不变
 
 发布时创建 `vX.Y.Z` 注释标签。
 
@@ -40,3 +41,12 @@
 本次不覆盖同名探针包、不重建镜像、不升级真实主机；后续发布若更新探针包，必须先分配新版本，
 同步 `probe/probe.py`、`backend/app/core/config.py`、`scripts/build_probe_packages.py` 的版本再打包。
 详见 [发布记录](releases/v2.12.0.md)。
+
+
+## v2.13.0 发布（2026-09-20）
+
+`refactor/data-asset-boundaries` 的 30 个提交合并回 `develop` 后发布：平台版本升到 2.13.0
+（`backend/app/main.py`、`frontend/package.json`、`frontend/package-lock.json`），探针源码声明保持 3.5.0
+（本版未改探针代码，不重建也不覆盖同名分发包），数据库迁移保持 `0015_alert_hits`。本机已重建 backend /
+worker / beat / deployment-worker 与 frontend 镜像并切换容器，运行栈自报 2.13.0。
+本次是纯结构调整，不新增功能、不改判定逻辑、不动历史数据；详见 [发布记录](releases/v2.13.0.md)。

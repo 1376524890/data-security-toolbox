@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.app_name, version="2.11.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.13.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 register_error_handlers(app)
 app.include_router(router)
