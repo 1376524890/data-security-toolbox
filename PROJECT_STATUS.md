@@ -7,7 +7,7 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 最近发布 | Git 注释标签 v2.13.0（2026-09-20）；发布记录 docs/releases/v2.13.0.md（发布提交与推送状态见发布记录末节） |
+| 最近发布 | Git 注释标签 v2.13.0（2026-09-20），发布提交 a6ec580，已推送到 origin/develop；记录见 docs/releases/v2.13.0.md |
 | 源码内平台版本 | 2.13.0（`backend/app/main.py`、`frontend/package.json` 与 `package-lock.json`） |
 | 探针源码版本 | 3.5.0；本版未改探针或分发包 |
 | 本批基线 / 分支 | v2.13.0：`refactor/data-asset-boundaries` 的 30 个提交自 5c5b1d4（develop）合并发布 |

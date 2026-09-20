@@ -1116,6 +1116,8 @@
   2.13.0，`/health` ok，迁移 `0015_alert_hits`，只读复验的 27 个接口全 200。
 - 回退标签：`source-backend` / `source-worker` / `source-beat` / `source-deployment-worker` /
   `source-frontend` 的 `pre-v2.13.0-20260920`（本机镜像，回退代码需回到发布提交前的快照）。
+- 发布：发布快照提交 `15a6ace`，`develop` 上的合并提交 `a6ec580`（`--no-ff`），注释标签 `v2.13.0`；
+  `origin/develop` 与标签均已推送。
 
 未做（保持边界）：没有调用测试数据导入接口、没有历史数据重算、没有操作真实探针主机、没有重建或覆盖
 同名探针分发包。
