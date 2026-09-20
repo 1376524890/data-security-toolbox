@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.extensions import queue_probe_data_asset_job
+from app.services.probe_task_service import queue_probe_data_asset_job
 from app.core.database import get_db
 from app.core.security import get_session_user
 from app.models import Probe, ScanProfile, Task

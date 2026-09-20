@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
+from app.services.data_objects import persistence
 from app.models import (
     Alert,
     Asset,
@@ -29,7 +30,6 @@ from app.models import (
     ProbeEnrollment,
     Task,
 )
-from app.services import data_object_service
 from app.services.probe_task_service import expire_probe_tasks
 
 # A deployment in any other state is still holding the host, so the record has
@@ -72,7 +72,7 @@ def delete_probe_record(db: Session, probe_id: int) -> dict[str, str]:
     # (probe_id, normalised path), so it cannot survive as a detached row.
     # Its own observation state is removed while the logical objects, the
     # legacy data_assets projection and every other collected record stay.
-    data_object_service.forget_probe(db, probe_id)
+    persistence.forget_probe(db, probe_id)
     if probe.deployment_id:
         db.execute(update(ProbeEnrollment).where(
             ProbeEnrollment.deployment_id == probe.deployment_id,

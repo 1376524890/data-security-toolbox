@@ -17,7 +17,8 @@ from sqlalchemy import delete, func, select
 
 from app.core.config import settings
 from app.models import Alert, AlertDelivery, AlertHit, AnalysisResult, Anomaly, Asset, DetectionFinding, FileRecord, Flow, Incident, PacketRecord, PcapRecord, Probe, Task
-from app.workers.tasks import analyze_pcap_task, create_task, metadata_task
+from app.services.task_dispatch import ANALYZE_METADATA, ANALYZE_PCAP, dispatch
+from app.services.task_service import create_task
 
 # The manual testpack is mounted read-only into the backend container.
 TESTPACK_DIR = Path("/app/data_security_toolbox_manual_testpack")
@@ -76,7 +77,7 @@ def import_test_data(db) -> dict[str, Any]:
             db.add(rec)
             db.flush()
             task = create_task(db, "metadata", {"file_id": rec.id})
-            metadata_task.delay(rec.id, task.id)
+            dispatch(ANALYZE_METADATA, rec.id, task.id)
             files_added += 1
 
     pcaps_added = 0
@@ -94,7 +95,7 @@ def import_test_data(db) -> dict[str, Any]:
             db.add(rec)
             db.flush()
             task = create_task(db, "pcap", {"pcap_id": rec.id})
-            analyze_pcap_task.delay(rec.id, task.id)
+            dispatch(ANALYZE_PCAP, rec.id, task.id)
             pcaps_added += 1
 
     db.commit()

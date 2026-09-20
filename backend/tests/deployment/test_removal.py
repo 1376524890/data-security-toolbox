@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.api import deployments as deployments_module
-from app.api import v1 as v1_module
+from app.api import probes as probes_module
 from app.core.database import SessionLocal
 from app.deployment import removal, service
 from app.deployment.credential import encrypt_credential
@@ -287,7 +287,7 @@ def test_removal_api_creates_a_row_and_refuses_a_busy_host(monkeypatch) -> None:
 
 
 def test_delete_probe_can_strip_the_host_in_the_same_request(monkeypatch) -> None:
-    monkeypatch.setattr(v1_module, "dispatch_probe_deployment", lambda deployment_id: None)
+    monkeypatch.setattr(probes_module, "dispatch_probe_deployment", lambda deployment_id: None)
     with SessionLocal() as db:
         probe = Probe(name="one-step", ip_address="10.8.6.6", status="online", token="live", token_hash="hash")
         db.add(probe)

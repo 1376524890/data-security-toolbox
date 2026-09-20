@@ -1,6 +1,107 @@
 # 架构
 
-当前实现见本文；后续拆分步骤见 [解耦操作指南](解耦操作指南.md)。该指南是计划，尚未实施，不代表当前目录结构。
+当前实现见本文；后续拆分步骤见 [解耦操作指南](解耦操作指南.md)。该指南按批次实施；下面第一批（数据资产边界）
+与第二批（分析编排与任务入口）边界已落地，第三至七批（PCAP 域、文件证据域、平台资产域、事件/情报域、告警域）
+为按域拆出的路由模块与共享 presenter（见「域路由模块」一节），其他拟新增模块仍按计划描述。
+
+## 数据资产采集与展示边界（2026-09-19 第一批）
+
+`DataAsset.vue -> useDataAssetCollection -> api/probes -> api/data_collection -> probe_task_service`
+负责采集任务；`useDataAssetList -> api/dataAssets -> api/data_assets` 负责旧资产列表/详情。
+`PcapWorkbench.vue -> usePcapWorkbench -> api/pcaps`：工作台只渲染，抓包列表与上传、分析轮询、
+包分页与详情、文件预览、TCP 流跟踪的状态与竞态防护都在 composable 里。
+`DataAssetJobs.vue -> useDataAssetJobs -> api/tasks|api/probes|api/scanProfiles`：采集任务页只渲染，
+任务列表按 `kind=data_asset_scan` 查询，派发/取消/移除与 5 秒自动刷新（卸载即停）都在 composable 里。
+`DataTypeCenter.vue -> useDataTypeCenter -> api/dataCatalog`：类型页只渲染，类型行、分级目录与
+服务端去重 totals 都在 composable 里；`DataTypeDetail.vue -> useDataTypeDetail`（路由 category + 分页）
+同理，翻页走 `setPage()`。
+`DataObjectDetail.vue -> useDataObjectDetail -> api/dataCatalog`（对象 + 检测分页 + 证据抽屉）与
+`AssetInstanceDetail.vue -> useAssetInstanceDetail`（实例 + 历史开关 + 证据抽屉）同样只渲染，
+路由 id 与分页都经 composable 的参数与 `setDetectionPage()`；时间格式化留在视图。
+`ScanProfiles.vue -> useScanProfiles -> api/scanProfiles|api/probes`（配置行 + 草稿 + 下发弹窗）与
+`RuleVersions.vue -> useRuleVersions -> api/ruleSets|api/probes`（规则集 + 版本 + 探针已观测版本）
+同样只渲染：扫描配置翻页走 `setPage()`，探针版本分类（已同步/待更新/同步失败）在 composable 里。
+`FileAnalysis.vue -> useFileAnalysis -> api/client`（文件行 + 筛选 + 详情抽屉 + 4 秒刷新）、
+`NetworkDlp.vue -> useNetworkDlp -> api/client`（策略表单 + 传输记录 + 正则规则 + 证据竞态守卫）与
+`SensitiveDiscovery.vue -> useSensitiveDiscovery -> api/dataAssets`（服务端发现统计 + 图表投影）
+同样只渲染。
+`IncidentCenter.vue -> useIncidentCenter -> api/incidents`（事件行 + 详情 + 状态流转 + 手工关联）与
+`AlertCenter.vue -> useAlertCenter -> api/alerts`（告警行 + 汇总 + 详情 + 状态流转）同样只渲染，
+两个页面都只保留筛选字段配置与攻击阶段标签这类静态展示。
+`AssetCenter.vue -> useAssetCenter -> api/assets`（资产行 + 详情抽屉 + 关系图投影）与
+`api/probes`/`api/scan`（探针下拉与网络扫描控制台）同样只渲染，页面只保留筛选字段配置与
+格式化函数这类静态展示。
+`DetectionCenter.vue -> useDetectionCenter -> api/detections`（发现行 + 详情抽屉）与 `api/engine`
+（引擎下拉、手动流水线）同样只渲染，页面只保留筛选字段配置与格式化函数这类静态展示。
+`EngineDetail.vue -> useEngineDetail(name) -> api/engine`（注册表解析）加上 `api/integrations`、
+`api/health`、`api/tasks`、`api/rules` 与 `api/detections` 同样只渲染；视图保留路由、导航与
+`executionLabels` 这类静态标签。
+`Dashboard.vue -> useDashboard -> api/dashboard`（汇总、两条趋势、四组图表序列与两张表）加上
+`api/risk`、`api/health` 同样只渲染；视图保留路由与格式化函数，`levelBreakdown` 让两处环形图
+共用同一套四级刻度与配色。
+`SecurityAudit.vue -> useSecurityAudit -> api/audit`（审计汇总只读 + 粘贴日志分析）同样只渲染；
+视图保留 `riskLabels` 这类静态标签与格式化函数，`matchGroups` 由 composable 提供。
+`LiveTraffic.vue -> useLiveTraffic -> api/network`（实时窗口）加上 `api/health`、`api/probes`、
+`api/pcaps` 与 `api/alerts`（汇总 + 告警流）同样只渲染；告警流的 `EventSource` 归 composable 所有，
+卸载时关闭，视图保留路由与格式化函数。
+`AlgorithmEvaluation.vue -> useAlgorithmEvaluation -> api/probes`（探针列表）与 `api/crypto`（单个
+探针的密码画像）同样只渲染；密码评估与复杂度分析都在浏览器本地计算，视图保留三个展示组件与静态
+语言下拉，等级到颜色的映射由 composable 提供。
+`RulesCenter.vue -> useRulesCenter -> api/rules|api/engine`（规则库 + 引擎注册表）、
+`CveCenter.vue -> useCveCenter -> api/offline|api/client`（本地 CVE + Grype 库与导入任务）与
+`IocCenter.vue -> useIocCenter -> api/intelligence|api/client`（指标 + 关联抽屉 + 启停）同样只渲染；
+Grype 任务的 2s 轮询由 composable 持有并在卸载时清除，视图保留执行状态标签、CVSS 等级映射、筛选
+字段配置与格式化函数。
+类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
+
+上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，
+仍由路由持有同一 Session 并 commit；模型、旧投影与任务状态在同一事务保存。
+`data_object_service.py` 保留兼容导出。探针鉴权由 `api/dependencies.py` 复用，
+任务创建冲突由服务抛领域异常，再由 `api/error_handlers.py` 映射为原 404/409。
+具体修改路径见 [数据资产开发入口](数据资产开发入口.md)。
+
+## 分析编排与任务入口边界（2026-09-20 第二批）
+
+`api/* -> services.task_dispatch（按注册名派发）-> Celery 队列 -> workers/*_tasks`
+是唯一派发链路：路由与领域服务不再导入 `app.workers`，应用层也不引用 worker 模块。
+任务行持久化在 `services/task_service.py`；跨域分析编排在 `application/analysis.py`
+（`run_pipeline`、`run_correlations_and_alerts`、`upsert_incident`），只依赖领域逻辑与派发端口，
+既不 import `app.api` 也不依赖被装饰的 task 对象。事务边界不变：只有 `run_pipeline` 自建 session 时才 commit。
+
+`domain/evidence_identity.py` 负责 finding 证据里的资产/IOC 身份解析，`incident_engine` 只重导出旧名；
+这与 `services/data_objects/identity.py` 的文件身份是两件事，不合并。
+
+worker 任务按职责分为 `workers/{analysis,notification,maintenance}_tasks.py`，生命周期在 `workers/task_runtime.py`，
+注册名集中在 `workers/task_names.py`，旧 `workers/tasks.py` 仅兼容重导出。
+Celery 任务名、参数顺序与队列路由属于兼容边界，不随文件位置改变。
+
+## 域路由模块（2026-09-20 第三批至第十四批）
+
+`api/pcaps.py`（18 条路径）、`api/files.py`（5 条路径）、`api/assets.py`（4 条路径）、
+`api/incidents.py`（7 条路径）、`api/alerts.py`（5 条路径）、`api/tasks.py`（5 条路径）与
+`api/reports.py`（5 条路径）、`api/detections.py`（3 条路径）、`api/engines.py`（2 条路径）与
+`api/dashboard.py`（13 条路径）、`api/probes.py`（9 条路径）、`api/integrations.py`（11 条路径）、
+`api/rules.py`（5 条路径）、`api/auth.py`（3 条路径）、`api/health.py`（1 条路径）、
+`api/network_scan.py`（2 条路径）、`api/test_data.py`（3 条路径）
+分别承载 PCAP 抓包域、文件证据域、平台资产域、事件/情报域、告警域、任务队列域、审计/报表域、
+检测/引擎域、看板/流量视图域、探针域、集成/离线导入域、规则域、控制台会话域、平台健康、
+主动扫描与手动测试数据，
+都由 `v1.router` 只 include 一次、`/api/v1` 前缀只叠加一次，
+路径/方法/鉴权/分页与拆分前逐一对应，`v1.py` 自身不再声明任何路径（只做聚合与兼容重导出）。
+子路由在 `v1.router` 末尾追加，只改变注册顺序，不改变匹配结果
+（全应用没有单段通配路径，路径集合与拆分前一致）。
+跨域复用的上传归属（`api/dependencies.py`）、Task 行序列化（`api/task_presenter.py`）、检测结果序列化
+（`api/finding_presenter.py`）、事件/IOC 行序列化（`api/incident_presenter.py`、`api/ioc_presenter.py`）
+与探针行序列化/规则解析（`api/probe_presenter.py`、`api/rule_presenter.py`）、
+队列派发端口（`api/dependencies.py::dispatch_task`，按注册名派发、broker 不可用才回退本进程）
+与 worker 能力/规则清单读取（`api/runtime_status.py`，`/health` 与集成目录共用）
+只保留一份实现，序列化器共用的时间归一化在 `core/datetimes.py::aware`，列表时间过滤在
+`api/query_filters.py`；解析、提取、哈希、告警抑制投递、任务创建/过期（`services/task_service.py`、
+`services/probe_task_service.py`）、审计/报表生成（`services/audit_service.py`、`services/report_service.py`）
+与检测判定（`app/engine/*`）以及资产关联判定仍在 `services/*`、`incident_engine`，
+域路由只做鉴权、分页与响应结构。各域路径/方法由
+`tests/test_{pcap,file,asset,incident_ioc,alert,tasks_reports,detection_engine,dashboard,probe,integration_offline,rule,auth,health,network_scan,test_data}_boundaries.py` 冻结，
+全应用不允许重复「方法 + 路径」。
 
 系统由三部分组成：
 
@@ -82,6 +183,8 @@ V2.1 新增 `Integration Adapter Layer`，统一第三方组件输入：
 | 模块 | 依赖 | 边界 |
 | --- | --- | --- |
 | `app/api/*` | `app/services/*`、`app/models.py`、`app/core/*` | 只做鉴权、参数校验、查询编排，不做检测计算 |
+| `app/api/v1.py` | `app/api/data_assets.py`、`app/api/pcaps.py`、`app/api/files.py`、`app/api/assets.py`、`app/api/incidents.py`、`app/api/alerts.py`、`app/api/tasks.py`、`app/api/reports.py`、`app/api/detections.py`、`app/api/engines.py`、`app/api/dashboard.py`、`app/api/probes.py`、`app/api/integrations.py`、`app/api/rules.py`、`app/api/auth.py`、`app/api/health.py`、`app/api/network_scan.py`、`app/api/test_data.py` 等域模块 | 只聚合子路由（`include_router`），自身不声明路径 |
+| 域路由（`data_assets.py`、`data_collection.py`、`pcaps.py`、`files.py`、`assets.py`、`incidents.py`、`alerts.py`、`tasks.py`、`reports.py`、`detections.py`、`engines.py`、`dashboard.py`、`probes.py`、`integrations.py`、`rules.py`、`auth.py`、`health.py`、`network_scan.py`、`test_data.py`…） | 共享 `app/api/dependencies.py`、`app/api/*_presenter.py`、`app/api/query_filters.py`、`app/api/runtime_status.py` | 每个域只声明自己的路径与响应结构；共享鉴权/守卫、序列化、列表过滤与运行时状态读取下沉到依赖、presenter、query_filters 与 runtime_status |
 | `app/workers/tasks.py` | `app/engine`（pipeline）、`app/incident_engine`、`app/services/*`、`app/integrations/*` | 任务入口，负责事务与回写 |
 | `app/engine/*` | `app/engine/core/*` | 每个引擎实现 `analyze(context) -> list[DetectionResult]` |
 | `app/incident_engine` | 仅依赖 `DetectionResult` | 对外暴露 `evidence_asset_keys()` / `evidence_ioc_keys()` 供他人复用 |
@@ -92,6 +195,9 @@ V2.1 新增 `Integration Adapter Layer`，统一第三方组件输入：
 横向共享数据统一通过 `DetectionContext.data` 传递（如 `dlp_policy`、`iocs`、`cve_lookup_enabled`、`probe_id`）。
 凡是需要从 evidence 解析「这是哪台主机 / 哪个指标」的模块，必须复用 `app.incident_engine.engine`
 的 `evidence_asset_keys()` 与 `evidence_ioc_keys()`，避免同一份 evidence 在不同模块被解读成不同资产。
+路由按业务域拆分：聚合入口只 include 一次子路由、自身不声明路径，`/api/v1` 前缀只叠加一次；
+跨域复用的鉴权与上传守卫放 `app/api/dependencies.py`，跨域复用的响应结构放 `app/api/*_presenter.py`，
+不新建会继续膨胀的通用 `utils.py`。
 
 ## 数据流
 
@@ -176,7 +282,7 @@ scan_profiles 驱动探针侧扫描；reports / audit_logs / system_settings / i
 | 注册表引擎名 | `getEngineRegistry()` / 检测管线 | `sigma_log_engine`、`traffic_engine`、`threat_intel` |
 | 落库引擎名 | `detection_findings.engine`（告警 `source` 同源） | 与注册表引擎名一致 |
 
-统一方式：`app/api/v1.py` 的 `ENGINE_PRESENTATION` 定义 slug ↔ 引擎名 ↔ 中文标签，
+统一方式：`app/api/engines.py` 的 `ENGINE_PRESENTATION` 定义 slug ↔ 引擎名 ↔ 中文标签，
 由 `GET /engine/registry` 下发 `slug` / `label` / `detection_engine` / `rule_count` / `detection_count`，
 **前端不再持有任何引擎名单**。
 

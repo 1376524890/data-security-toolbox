@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.13.0（2026-09-20）— 结构与状态解耦
+
+本次发布把采集、编排、路由与页面状态按边界拆开，是纯结构调整：接口集合、数据表与索引、迁移基线与
+运行行为都不变。平台版本升至 2.13.0（`backend/app/main.py`、`frontend/package.json` 与 lock），
+探针声明保持 3.5.0（本版未改探针与分发包），迁移仍为 `0015_alert_hits (head)`。
+
+- **分析编排与 Celery 入口分离**：跨域编排移到 `app/application/analysis.py`，`workers/*_tasks` 只做入口；
+  路由与领域服务不再导入 `app.workers`，派发统一经 `services.task_dispatch`。
+- **数据资产边界**：采集接口拆到 `app/api/data_collection.py` 与 `data_collection_schemas.py`；探针鉴权移到
+  `app/api/dependencies.py`；任务创建集中到 `services/probe_task_service.py`；数据对象服务拆成
+  `app/services/data_objects/`（身份、覆盖度、证据、入库、投影、查询），`data_object_service.py` 保留兼容导出。
+- **v1 大路由按域拆出**：PCAP、文件证据、平台资产、事件/情报、告警、任务/审计/报表、检测/引擎、看板/流量、
+  探针、集成与离线导入、规则以及 v1 剩余零散入口各自成模块；`app/api/v1.py` 只做聚合，自身不声明路径。
+- **前端页面状态解耦**：15 批把约 25 个页面的状态抽到 `modules/*/composables/*.ts`，视图只保留模板、静态
+  展示配置与格式化函数；轮询与长连接（`EventSource`、定时器）随状态进 composable 并在卸载时清除。
+- **回归测试**：新增 17 个后端边界测试文件与 15 个前端状态测试文件；后端测试项由 596 增至 726。
+- **验证**：隔离容器同环境对照——`develop` 基线 596 项 / 12 项失败，本版 726 项 / 同样 12 项失败，失败用例
+  集合逐项一致、新增失败 0 项；前端 `vue-tsc` 通过、vitest 231 项通过、生产构建通过；OpenAPI（144 路径 /
+  158 操作）、38 张表与 104 个索引与拆分前逐项一致。详见 [发布记录](docs/releases/v2.13.0.md)。
+
 ## v2.12.0（2026-09-19，Git 标签发布）— 业务逻辑与数据真实性整改
 
 本次按“不修改代码”要求发布现有整改快照，源码内平台版本仍为 2.11.0、探针声明版本仍为 3.5.0；

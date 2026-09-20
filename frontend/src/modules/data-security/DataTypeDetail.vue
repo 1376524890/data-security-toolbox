@@ -1,56 +1,21 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getDataType, type DataObjectRow, type DataTypeRow } from '../../api/dataCatalog'
+import type { DataObjectRow } from '../../api/dataCatalog'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
+import { useDataTypeDetail } from './composables/useDataTypeDetail'
 
+// The type row, its object page and the pager live in the composable; this view
+// only binds them into the template below.
 const route = useRoute()
 const router = useRouter()
 const category = computed(() => String(route.params.category || ''))
-
-const loading = ref(true)
-const error = ref('')
-const row = ref<DataTypeRow | null>(null)
-const objects = ref<DataObjectRow[]>([])
-const page = ref(1)
-const pageSize = ref(20)
-const total = ref(0)
-
-function identityTag(row: DataObjectRow): { text: string; type: 'success' | 'warning' | 'info' } {
-  if (row.identity_kind === 'confirmed') return { text: `内容一致 ${row.identity_confidence}`, type: 'success' }
-  // A partial fingerprint on a lone instance is an unresolved identity; only
-  // two or more instances make it a suspected copy.
-  if (row.identity_kind === 'candidate') {
-    return {
-      text: row.active_instance_count >= 2 ? `疑似副本 ${row.identity_confidence}` : `待确认身份 ${row.identity_confidence}`,
-      type: 'warning',
-    }
-  }
-  return { text: '作用域内标识', type: 'info' }
-}
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const result = await getDataType(category.value, { page: page.value, page_size: pageSize.value })
-    row.value = result
-    objects.value = result.objects.items
-    total.value = result.objects.total
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
+const { loading, error, row, objects, page, pageSize, total, identityTag, load, setPage } = useDataTypeDetail(category)
 
 function openObject(item: DataObjectRow): void {
   router.push({ path: `/data-objects/${item.id}` })
 }
-
-watch([page, () => route.params.category], () => { void load() })
-onMounted(load)
 </script>
 
 <template>
@@ -115,7 +80,7 @@ onMounted(load)
           </el-table-column>
         </el-table>
         <el-pagination class="pagination" layout="total, prev, pager, next" :total="total"
-                       :current-page="page" :page-size="pageSize" @current-change="(value: number) => (page = value)" />
+                       :current-page="page" :page-size="pageSize" @current-change="setPage" />
       </div>
 
       <div class="soc-card" style="margin-top: 12px">

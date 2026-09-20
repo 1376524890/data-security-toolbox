@@ -18,10 +18,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.services.data_objects import definitions, projection, queries
 from app.api.pagination import page_response, paginate
 from app.core.database import get_db
 from app.models import AssetInstance, DataObject, Detection, DetectionEvidence, Probe
-from app.services import data_object_service, sensitivity_map
+from app.services import sensitivity_map
 from app.services.audit_service import record_audit
 
 router = APIRouter(prefix='/api/v1')
@@ -57,8 +58,8 @@ def _object_row(obj: DataObject, mapping: dict[str, str] | None = None) -> dict[
         'id': obj.id, 'object_key': obj.object_key, 'object_type': obj.object_type,
         'content_hash': obj.content_hash, 'hash_type': obj.hash_type,
         'identity_confidence': round(float(obj.identity_confidence or 0), 3),
-        'identity_kind': ('confirmed' if obj.hash_type == data_object_service.HASH_FULL
-                          else 'candidate' if obj.hash_type == data_object_service.HASH_PARTIAL
+        'identity_kind': ('confirmed' if obj.hash_type == definitions.HASH_FULL
+                          else 'candidate' if obj.hash_type == definitions.HASH_PARTIAL
                           else 'scoped'),
         'partial_version': obj.partial_version,
         'size': obj.size, 'categories': list(obj.categories or []),
@@ -117,7 +118,7 @@ def list_data_types(probe_id: int | None = Query(default=None),
                     db: Session = Depends(get_db)) -> dict[str, Any]:
     """The data-type centre: one row per sensitive type with its real metrics."""
     mapping = sensitivity_map.overrides(db)
-    rows = data_object_service.data_type_rows(db, mapping=mapping, probe_id=probe_id)
+    rows = queries.data_type_rows(db, mapping=mapping, probe_id=probe_id)
     return {
         'items': rows,
         'count': len(rows),
@@ -125,7 +126,7 @@ def list_data_types(probe_id: int | None = Query(default=None),
         # ``object_count``/``active_instance_count`` are type relations and may
         # count the same object twice, so a page must read these instead of
         # summing the table.
-        'totals': data_object_service.data_type_summary(db, probe_id=probe_id),
+        'totals': queries.data_type_summary(db, probe_id=probe_id),
         'totals_scope': 'all_probes' if not probe_id else f'probe:{probe_id}',
         'dedup_rules': {
             'totals.objects': '存在 ACTIVE 实例的敏感对象数，跨类型去重',
@@ -149,7 +150,7 @@ def data_type_detail(category: str, probe_id: int | None = Query(default=None),
                      db: Session = Depends(get_db)) -> dict[str, Any]:
     mapping = sensitivity_map.overrides(db)
     rows = {row['category']: row for row in
-            data_object_service.data_type_rows(db, mapping=mapping, probe_id=probe_id)}
+            queries.data_type_rows(db, mapping=mapping, probe_id=probe_id)}
     key = str(category or '').strip().lower()
     row = rows.get(key)
     if row is None:
@@ -159,7 +160,7 @@ def data_type_detail(category: str, probe_id: int | None = Query(default=None),
     object_query = (select(Detection.object_id)
                     .join(AssetInstance, AssetInstance.id == Detection.instance_id)
                     .where(Detection.category == key,
-                           AssetInstance.status == data_object_service.INSTANCE_ACTIVE,
+                           AssetInstance.status == definitions.INSTANCE_ACTIVE,
                            Detection.object_id == AssetInstance.object_id))
     if probe_id:
         object_query = object_query.where(AssetInstance.probe_id == probe_id)
@@ -184,11 +185,11 @@ def list_data_objects(category: str | None = None, hash_type: str | None = None,
     if hash_type:
         query = query.where(DataObject.hash_type == hash_type)
     if identity_kind == 'confirmed':
-        query = query.where(DataObject.hash_type == data_object_service.HASH_FULL)
+        query = query.where(DataObject.hash_type == definitions.HASH_FULL)
     elif identity_kind == 'candidate':
-        query = query.where(DataObject.hash_type == data_object_service.HASH_PARTIAL)
+        query = query.where(DataObject.hash_type == definitions.HASH_PARTIAL)
     elif identity_kind == 'scoped':
-        query = query.where(DataObject.hash_type == data_object_service.HASH_SCOPED)
+        query = query.where(DataObject.hash_type == definitions.HASH_SCOPED)
     if probe_id:
         query = query.where(DataObject.id.in_(
             select(AssetInstance.object_id).where(AssetInstance.probe_id == probe_id)))
@@ -203,7 +204,7 @@ def list_data_objects(category: str | None = None, hash_type: str | None = None,
 
 @router.get('/data-objects/{object_id}')
 def data_object_detail(object_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    payload = data_object_service.object_detail(db, object_id)
+    payload = queries.object_detail(db, object_id)
     if payload is None:
         raise HTTPException(404, 'data object not found')
     probe_ids = db.scalars(select(AssetInstance.probe_id).where(
@@ -270,7 +271,7 @@ def asset_instance_detail(instance_id: int, include_history: bool = False,
     this path, which is how a content change stays explainable instead of looking
     like the old findings were deleted.
     """
-    payload = data_object_service.instance_detail(db, instance_id)
+    payload = queries.instance_detail(db, instance_id)
     if payload is None:
         raise HTTPException(404, 'asset instance not found')
     query = select(Detection).where(Detection.instance_id == instance_id)
@@ -323,7 +324,7 @@ class ProjectionRebuild(BaseModel):
 def rebuild_projection(payload: ProjectionRebuild, request: Request,
                        db: Session = Depends(get_db)) -> dict[str, Any]:
     """Recover the derived legacy projection from the object model."""
-    result = data_object_service.rebuild_projection(db, payload.probe_id)
+    result = projection.rebuild_projection(db, payload.probe_id)
     record_audit(db, request, action='data_assets.rebuild_projection',
                  target=f'probe:{payload.probe_id}' if payload.probe_id else 'all',
                  details=result)
@@ -334,7 +335,7 @@ def rebuild_projection(payload: ProjectionRebuild, request: Request,
 @router.post('/admin/data-assets/backfill')
 def backfill(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Project pre-existing ``data_assets`` rows once, without inventing metadata."""
-    result = data_object_service.backfill_legacy(db)
+    result = projection.backfill_legacy(db)
     record_audit(db, request, action='data_assets.backfill', target='data_assets',
                  details=result)
     db.commit()

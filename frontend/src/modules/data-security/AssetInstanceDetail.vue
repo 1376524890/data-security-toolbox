@@ -1,26 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  getAssetInstance, getDetectionEvidence,
-  type DetectionRow, type EvidenceRow, type InstanceDetail,
-} from '../../api/dataCatalog'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
+import { useAssetInstanceDetail } from './composables/useAssetInstanceDetail'
 
+// The instance row, the history toggle and the evidence drawer live in the
+// composable; this view keeps the template and the time formatters.
 const route = useRoute()
 const router = useRouter()
 const instanceId = computed(() => Number(route.params.id))
-
-const loading = ref(true)
-const error = ref('')
-const detail = ref<InstanceDetail | null>(null)
-const includeHistory = ref(false)
-
-const evidenceOpen = ref(false)
-const evidenceLoading = ref(false)
-const evidenceError = ref('')
-const evidence = ref<{ detection: DetectionRow; items: EvidenceRow[]; note: string } | null>(null)
+const {
+  loading, error, detail, includeHistory, evidenceOpen, evidenceLoading, evidenceError, evidence,
+  load, openEvidence, toggleHistory,
+} = useAssetInstanceDetail(instanceId)
 
 function formatTime(value: string | null | undefined): string {
   return value ? value.replace('T', ' ').slice(0, 19) : '—'
@@ -32,39 +25,6 @@ function formatMtime(ns: number | null): string {
   const date = new Date(Math.floor(ns / 1e6))
   return Number.isNaN(date.getTime()) ? '—' : date.toISOString().replace('T', ' ').slice(0, 19)
 }
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    detail.value = await getAssetInstance(instanceId.value, includeHistory.value)
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function openEvidence(row: DetectionRow): Promise<void> {
-  evidenceOpen.value = true
-  evidenceLoading.value = true
-  evidenceError.value = ''
-  evidence.value = null
-  try {
-    evidence.value = await getDetectionEvidence(row.id)
-  } catch (err) {
-    evidenceError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    evidenceLoading.value = false
-  }
-}
-
-async function toggleHistory(): Promise<void> {
-  includeHistory.value = !includeHistory.value
-  await load()
-}
-
-onMounted(load)
 </script>
 
 <template>

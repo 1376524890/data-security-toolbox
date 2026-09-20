@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.api import v1
+from app.api import pcaps
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
@@ -79,7 +79,7 @@ def test_native_exporter_retains_response_without_python_reassembly(storage, mon
 
 
 def test_invalid_upload_is_rejected_and_not_saved(storage, monkeypatch):
-    monkeypatch.setattr(v1, '_dispatch', lambda *args: None)
+    monkeypatch.setattr(pcaps, 'dispatch_task_row', lambda *args: None)
     with TestClient(app) as client:
         result = client.post('/api/v1/pcaps/upload', files={'file': ('bad.pcap', b'not a capture')})
     assert result.status_code == 422
@@ -87,7 +87,7 @@ def test_invalid_upload_is_rejected_and_not_saved(storage, monkeypatch):
 
 
 def test_manual_duplicate_returns_existing_capture_even_when_queue_busy(storage, monkeypatch):
-    monkeypatch.setattr(v1, '_dispatch', lambda *args: None)
+    monkeypatch.setattr(pcaps, 'dispatch_task_row', lambda *args: None)
     data = http_capture(storage / 'duplicate.pcap', b'duplicate-upload-workbench').read_bytes()
     with TestClient(app) as client:
         first = client.post('/api/v1/pcaps/upload', files={'file': ('manual.pcap', data)})
@@ -95,7 +95,7 @@ def test_manual_duplicate_returns_existing_capture_even_when_queue_busy(storage,
         assert not first.json()['duplicate']
         def busy(_db):
             raise HTTPException(429, 'busy')
-        monkeypatch.setattr(v1, '_queue_backpressure', busy)
+        monkeypatch.setattr(pcaps, 'enforce_queue_backpressure', busy)
         duplicate = client.post('/api/v1/pcaps/upload', files={'file': ('renamed.pcap', data)})
     assert duplicate.status_code == 200
     assert duplicate.json()['duplicate']

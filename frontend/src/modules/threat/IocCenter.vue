@@ -1,8 +1,4 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { listIocs, getIocAssociations } from '../../api/intelligence'
-import type { Ioc, IocAssociation } from '../../types/ioc'
 import StateBox from '../../components/common/StateBox.vue'
 import FilterBar, { type FilterField } from '../../components/common/FilterBar.vue'
 import DetailDrawer from '../../components/common/DetailDrawer.vue'
@@ -12,15 +8,14 @@ import EvidenceViewer from '../../components/evidence/EvidenceViewer.vue'
 import JsonViewer from '../../components/evidence/JsonViewer.vue'
 import { formatDateTime } from '../../utils/format'
 import IntelligenceSources from './IntelligenceSources.vue'
-import { apiPost } from '../../api/client'
+import { useIocCenter } from './composables/useIocCenter'
 
-const loading = ref(true)
-const error = ref('')
-const items = ref<Ioc[]>([])
-const total = ref(0)
-const detail = ref<IocAssociation | null>(null)
-const drawer = ref(false)
-const filters = reactive({ type: '', source: '', search: '', page: 1, page_size: 50 })
+// The inventory, the association drawer and the toggle live in the composable;
+// this view keeps the static filter fields and binds the state into the
+// template below.
+const {
+  loading, error, items, total, detail, drawer, filters, load, open, reset, toggle,
+} = useIocCenter()
 
 const filterFields: FilterField[] = [
   { key: 'search', label: '搜索值', placeholder: '搜索指标', width: '220px' },
@@ -28,37 +23,6 @@ const filterFields: FilterField[] = [
   { key: 'source', label: '来源', type: 'select', options: ['misp', 'offline', 'manual'].map((v) => ({ label: v, value: v })), width: '120px' },
 ]
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const result = await listIocs({ ...filters })
-    items.value = result.items
-    total.value = result.total
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function open(row: Ioc): Promise<void> {
-  try {
-    detail.value = await getIocAssociations(row.id)
-    drawer.value = true
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : String(err))
-  }
-}
-
-function reset(): void { filters.page = 1; load() }
-
-async function toggle(row: Ioc) {
-  try { await apiPost(`/intelligence/${row.id}/toggle`, { enabled: row.metadata?.enabled === false }); await load() }
-  catch (e) { ElMessage.error(String(e)) }
-}
-
-onMounted(load)
 </script>
 
 <template>

@@ -1,49 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
-import { getSensitiveFindings, type SensitiveFindings } from '../../api/dataAssets'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
 import DonutChart from '../../components/charts/DonutChart.vue'
 import SeverityTag from '../../components/security/SeverityTag.vue'
 import RiskBadge from '../../components/security/RiskBadge.vue'
 import EvidenceViewer from '../../components/evidence/EvidenceViewer.vue'
+import { useSensitiveDiscovery } from './composables/useSensitiveDiscovery'
 
-const loading = ref(true)
-const error = ref('')
-const sensitive = ref<SensitiveFindings | null>(null)
-const page = ref(1)
-const pageSize = ref(50)
-
-const categoryLabels: Record<string, string> = {
-  id_card: '身份证', phone: '手机号', bank_card: '银行卡', email: 'Email', medical_record: '医疗记录',
-  api_key: 'API 密钥', token: 'Token', credential: '凭证', name: '姓名', address: '地址', user_id: '用户标识',
-}
-
-const assets = computed(() => sensitive.value?.data_assets)
-const totals = computed(() => sensitive.value?.totals)
-const entityData = computed(() => (sensitive.value?.entities || []).map(
-  (item) => ({ name: categoryLabels[item.category] || item.category, value: item.count })))
-const sensitivityData = computed(() => Object.entries(assets.value?.by_sensitivity || {}).map(([name, value]) => ({ name, value })))
-const sources = computed(() => sensitive.value?.sources || [])
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    sensitive.value = await getSensitiveFindings({ page: page.value, page_size: pageSize.value })
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-function onPageChange(value: number): void {
-  page.value = value
-  void load()
-}
-
-onMounted(load)
+// The findings, the pager and the chart projections live in the composable;
+// this view only binds them into the template below.
+const {
+  loading, error, sensitive, page, pageSize, assets, totals, entityData,
+  sensitivityData, sources, load, onPageChange,
+} = useSensitiveDiscovery()
 </script>
 
 <template>
