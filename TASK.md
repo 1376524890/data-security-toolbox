@@ -1053,13 +1053,56 @@
   `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-algorithm-evaluation-state-20260920`。
 
+## 第二十九批：前端威胁情报与规则页状态解耦（2026-09-20）
+
+基线 `c1438a0`，同一分支。目标：按指南 §F 把威胁情报与规则三页的状态抽到 composable，模板与交互
+不变。本批没有模板改动。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/threat/composables/useRulesCenter.ts`（74 行）、`useCveCenter.ts`（92 行）
+  与 `useIocCenter.ts`（59 行）；`RulesCenter.vue` 110 → 65 行、`CveCenter.vue` 126 → 60 行、
+  `IocCenter.vue` 118 → 82 行。去掉缩进后，迁入的 52/70/39 行脚本逐行比对未改，三页模板与样式
+  逐字节未改。
+- 页面只保留静态展示：执行状态标签（`executionLabels`）、CVSS 等级映射（`cvssLevel`）、筛选字段配置
+  （`filterFields`）与时间/展示格式化函数；`RulesCenter.vue` 仍保留模板用到的 `RuleItem` 行类型导入。
+- 行为不变：规则库以 `include_content: false` 读取、内容按需展开拉取（已展开且已有内容时不重复请求）；
+  新增规则仍由服务端校验后重载列表；CVE 页的 Grype 任务轮询（2s）归 composable 所有、任务 id 存
+  `localStorage`、卸载时清除定时器、失败或完成即停止；IOC 启停仍按 `metadata.enabled` 取反提交后重载。
+- 新增 `frontend/src/__tests__/threat-center-state.test.ts`（32 项）：规则中心的挂载加载与失败、类型/
+  引擎过滤、名称/规则 ID/路径的忽略大小写搜索、每页 30 条分页、筛选变化回到第一页、去重并排序的类型
+  列表、添加弹窗按当前类型赋默认值、超过 1 MB 的规则文件被拒、读取文件并推导规则名、校验新增后重载、
+  新增失败不关弹窗、展开时按需拉取内容且不重复请求；CVE 中心的挂载加载与 Grype 库标注、已导入库的
+  标注、加载失败、搜索回到第一页、跟踪并记住 Grype 任务、轮询到完成后重载、失败后停止轮询、导入错误
+  优先于计数上报、导入计数、空文件选择被忽略、手工新增后关闭弹窗、挂载时恢复记忆任务且卸载后不再轮询；
+  IOC 中心的挂载加载、加载失败、重置到第一页、打开关联抽屉、关联失败不开抽屉、启停取反并重载、
+  启停失败上报。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 26 个文件 231 项通过（原 199 项 + 本批 32 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与 `RulesCenter`/`CveCenter`/`IocCenter` chunk 均 200，
+  chunk 名与本地构建一致、线上字节 SHA256 相同；chunk 内无 `VITE_DEMO_MODE`（IOC chunk 里唯一命中
+  「demo」的是 `IntelligenceSources.vue` 既有占位示例 `demo-exfil.example`，非本批改动）。
+- 真实环境只读复验：`/network/live`（窗口 300s、连接 157、包 416、pps 1.39、bps 1022.7、在线探针 1）、
+  `/pcaps`、`/alerts/summary`、`/probes`、`/flows`、`/protocols`、`/health`、`/test/status`
+  （`present=false`）、`/auth/me`、`/audit/summary`、`/dashboard/summary`、`/risk/summary`、
+  `/engine/registry`、`/detections`、`/assets`、`/incidents`、`/alerts`、`/files`、`/dlp/policy`、
+  `/scan-profiles`、`/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、
+  `/sensitive/findings`、`/sensitivity-levels` 均 200；未订阅真实告警流（`/alerts/stream` 未连接）、
+  未导入测试数据、未提交规则新增或 CVE/情报导入请求、未操作真实探针主机；后端未重建，迁移仍
+  `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-threat-centre-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
-1. 前端其余页面（威胁情报/规则页、检测分析、任务与报表、探针页等）按实际改动需求再拆
-   （同一模式：先抽状态，再抽视图；数据安全域、事件/告警中心、资产中心、检测中心、引擎详情、
-   看板、安全审计、流量视图与算法评估已完成）。
+1. 前端其余页面（检测分析、任务与报表、探针页等）按实际改动需求再拆（同一模式：
+   先抽状态，再抽视图；数据安全域、事件/告警中心、资产中心、检测中心、引擎详情、看板、
+   安全审计、流量视图、算法评估与威胁情报三页已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。

@@ -10,12 +10,20 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 32f7821 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | c1438a0 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第二十八批：前端算法评估页状态解耦；前二十七批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态、事件中心与告警中心页状态、资产中心页状态、检测中心页状态、引擎详情页状态、看板页状态、安全审计页状态、流量视图页状态）见下方记录 |
+| 本批范围 | 第二十九批：前端威胁情报与规则页状态解耦；前二十八批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态、事件中心与告警中心页状态、资产中心页状态、检测中心页状态、引擎详情页状态、看板页状态、安全审计页状态、流量视图页状态、算法评估页状态）见下方记录 |
 
 ## 本批已落地结构
 
+- 威胁情报与规则三页的状态收拢到 `frontend/src/modules/threat/composables/`：`useRulesCenter.ts`
+  （74 行，`RulesCenter.vue` 110 → 65 行）、`useCveCenter.ts`（92 行，`CveCenter.vue` 126 → 60 行）与
+  `useIocCenter.ts`（59 行，`IocCenter.vue` 118 → 82 行）；去掉缩进后，迁入的 52/70/39 行脚本逐行未改，
+  三页的模板与样式逐字节未改。
+- 行为不变：规则库仍以 `include_content: false` 读取、规则内容按需展开拉取（已展开且已有内容时不重复
+  请求）；CVE 页的 Grype 任务轮询（2s）归 composable 所有、任务 id 存 `localStorage`、卸载时清除定时器；
+  IOC 启停仍按 `metadata.enabled` 取反提交后重载。页面仅保留执行状态标签、CVSS 等级映射、筛选字段
+  配置与时间格式化函数这类静态展示。
 - 算法评估的状态收拢到
   `frontend/src/modules/tools/composables/useAlgorithmEvaluation.ts`（141 行），页面只保留模板
   （`AlgorithmEvaluation.vue` 306 → 196 行）；去掉缩进后，迁入的 116 行脚本逐行未改，模板与样式
@@ -224,6 +232,12 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
+| frontend/src/modules/threat/RulesCenter.vue | 110 | 65 |
+| frontend/src/modules/threat/composables/useRulesCenter.ts | 0（本批新增） | 74 |
+| frontend/src/modules/threat/CveCenter.vue | 126 | 60 |
+| frontend/src/modules/threat/composables/useCveCenter.ts | 0（本批新增） | 92 |
+| frontend/src/modules/threat/IocCenter.vue | 118 | 82 |
+| frontend/src/modules/threat/composables/useIocCenter.ts | 0（本批新增） | 59 |
 | frontend/src/modules/tools/AlgorithmEvaluation.vue | 306 | 196 |
 | frontend/src/modules/tools/composables/useAlgorithmEvaluation.ts | 0（本批新增） | 141 |
 | frontend/src/modules/network/traffic/LiveTraffic.vue | 143 | 90 |
@@ -296,6 +310,22 @@
 
 ## 验证与已知限制
 
+- 第二十九批（前端）：`npm run typecheck` 通过；全量 vitest 26 个文件 231 项通过（原 199 项 + 本批新增
+  `threat-center-state.test.ts` 32 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+  逐行比对：去掉缩进后，迁入三个 composable 的 52/70/39 行脚本逐行未改，三页模板与样式逐字节未改。
+- 第二十九批镜像（前端）：legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/`、入口 chunk 与 `RulesCenter`/`CveCenter`/`IocCenter` chunk
+  均 200，chunk 名与本地构建一致、线上字节与本地构建 SHA256 相同；chunk 内无 `VITE_DEMO_MODE`（IOC chunk
+  里唯一命中「demo」的是 `IntelligenceSources.vue` 既有的占位示例 `demo-exfil.example`，非本批改动）；
+  回退标签 `source-frontend:pre-threat-centre-state-20260920`。
+- 第二十九批真实环境只读复验（后端未改）：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/network/live`（窗口 300s、连接 157、包 416、pps 1.39、bps 1022.7、在线探针 1）、`/pcaps`、
+  `/alerts/summary`、`/probes`、`/flows`、`/protocols`、`/audit/summary`、`/dashboard/summary`、
+  `/risk/summary`、`/engine/registry`、`/detections`、`/assets`、`/incidents`、`/alerts`、`/files`、
+  `/dlp/policy`、`/scan-profiles`、`/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、
+  `/asset-instances`、`/sensitive/findings`、`/sensitivity-levels` 均 200；未订阅真实告警流
+  （`/alerts/stream` 未连接）、未调用测试数据导入接口、未提交规则新增或 CVE/情报导入请求、未操作
+  真实探针主机，迁移仍 `0015_alert_hits`（head）。
 - 第二十八批（前端）：`npm run typecheck` 通过；全量 vitest 25 个文件 199 项通过（原 184 项 + 本批新增
   `algorithm-evaluation-state.test.ts` 15 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
   逐行比对：去掉缩进后，迁入 composable 的 116 行脚本逐行未改，模板与样式逐字节未改。
@@ -676,9 +706,9 @@
 - 后端路由已全部按域拆出（分析任务编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
-  其余待办：前端其余页面（威胁情报/规则页、检测分析、任务与报表、探针页等）按实际改动需求再拆
-  （数据安全域、事件/告警中心、资产中心、检测中心、引擎详情、看板、安全审计、流量视图与算法
-  评估的状态已抽入 composable）、模型包拆分，最后是探针模块与分发包。
+  其余待办：前端其余页面（检测分析、任务与报表、探针页等）按实际改动需求再拆（数据安全域、
+  事件/告警中心、资产中心、检测中心、引擎详情、看板、安全审计、流量视图、算法评估与威胁情报
+  三页的状态已抽入 composable）、模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

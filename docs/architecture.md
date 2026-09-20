@@ -47,6 +47,11 @@
 `AlgorithmEvaluation.vue -> useAlgorithmEvaluation -> api/probes`（探针列表）与 `api/crypto`（单个
 探针的密码画像）同样只渲染；密码评估与复杂度分析都在浏览器本地计算，视图保留三个展示组件与静态
 语言下拉，等级到颜色的映射由 composable 提供。
+`RulesCenter.vue -> useRulesCenter -> api/rules|api/engine`（规则库 + 引擎注册表）、
+`CveCenter.vue -> useCveCenter -> api/offline|api/client`（本地 CVE + Grype 库与导入任务）与
+`IocCenter.vue -> useIocCenter -> api/intelligence|api/client`（指标 + 关联抽屉 + 启停）同样只渲染；
+Grype 任务的 2s 轮询由 composable 持有并在卸载时清除，视图保留执行状态标签、CVSS 等级映射、筛选
+字段配置与格式化函数。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

@@ -460,6 +460,16 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 识别在画像字段为空时回退默认配置，并把 `passwordSignals` 按「密码/认证」维度并入评估发现。
 回归：`frontend/src/__tests__/algorithm-evaluation-state.test.ts`（15 项）。
 
+## 威胁情报与规则页状态边界
+
+威胁情报与规则三页的状态都在 `modules/threat/composables/`：规则中心（`RulesCenter.vue` 110 → 65 行，
+`useRulesCenter.ts` 74 行，迁入 52 行）、CVE 中心（`CveCenter.vue` 126 → 60 行，`useCveCenter.ts` 92 行，
+迁入 70 行）与 IOC 中心（`IocCenter.vue` 118 → 82 行，`useIocCenter.ts` 59 行，迁入 39 行）；去掉缩进后，
+迁入脚本逐行未改，三页的模板与样式逐字节未改。页面只保留静态展示：执行状态标签、CVSS 等级映射、
+筛选字段配置与时间格式化函数。规则库仍以 `include_content: false` 读取、内容按需展开拉取；CVE 页的
+Grype 导入任务轮询（2s）由 composable 持有，任务 id 存 `localStorage`，卸载时清除定时器；IOC 开关按
+`metadata.enabled` 取反提交后重载。回归：`frontend/src/__tests__/threat-center-state.test.ts`（32 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`
