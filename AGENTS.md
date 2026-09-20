@@ -450,6 +450,16 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 捕获推导（没有专门的实时接口），无实时窗口时三项为 `null`。注：`recentPcaps` 仍在加载但模板未渲染，
 本批保持原样。回归：`frontend/src/__tests__/live-traffic-state.test.ts`（8 项）。
 
+## 算法评估页状态边界
+
+算法评估（`frontend/src/modules/tools/AlgorithmEvaluation.vue`）的状态在
+`modules/tools/composables/useAlgorithmEvaluation.ts`（141 行），页面只保留模板（306 → 196 行）；
+去掉缩进后，迁入的 116 行脚本逐行未改，模板与样式逐字节未改（175 行）。页面保留三个展示组件与
+静态语言下拉 `languages`。密码评估在浏览器本地完成，只读探针列表与单个探针的密码画像；复杂度
+分析用 `acorn` AST 完全本地计算。`cryptoLevelTone`（等级 → 颜色）随结果进 composable；从探针自动
+识别在画像字段为空时回退默认配置，并把 `passwordSignals` 按「密码/认证」维度并入评估发现。
+回归：`frontend/src/__tests__/algorithm-evaluation-state.test.ts`（15 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

@@ -10,12 +10,21 @@
 | 最近发布 | Git 注释标签 v2.12.0，发布提交 d1c1569 |
 | 源码内平台版本 | 2.11.0（上一轮按不改代码约定保留，本轮不发新版本） |
 | 探针源码版本 | 3.5.0；本轮未改探针或分发包 |
-| 本批基线 / 分支 | 673e5f1 / refactor/data-asset-boundaries |
+| 本批基线 / 分支 | 32f7821 / refactor/data-asset-boundaries |
 | 数据库迁移 | 0015_alert_hits；本批无模型/表结构变更 |
-| 本批范围 | 第二十七批：前端流量视图页状态解耦；前二十六批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态、事件中心与告警中心页状态、资产中心页状态、检测中心页状态、引擎详情页状态、看板页状态、安全审计页状态）见下方记录 |
+| 本批范围 | 第二十八批：前端算法评估页状态解耦；前二十七批（数据资产边界、分析编排与 Celery 入口、PCAP 域、文件域、平台资产域、事件/情报域、告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域、v1 剩余零散入口、PCAP 工作台状态、采集任务页状态、类型页状态、对象/实例详情页状态、扫描配置与规则版本页状态、文件分析/网络 DLP/敏感发现页状态、事件中心与告警中心页状态、资产中心页状态、检测中心页状态、引擎详情页状态、看板页状态、安全审计页状态、流量视图页状态）见下方记录 |
 
 ## 本批已落地结构
 
+- 算法评估的状态收拢到
+  `frontend/src/modules/tools/composables/useAlgorithmEvaluation.ts`（141 行），页面只保留模板
+  （`AlgorithmEvaluation.vue` 306 → 196 行）；去掉缩进后，迁入的 116 行脚本逐行未改，模板与样式
+  逐字节未改（175 行）。
+- 两个标签页的状态一起进 composable：标签选择、密码配置与四个文本输入、评估结果、探针列表与选择、
+  自动识别结果，以及代码/语言/复杂度结果；页面保留三个展示组件与静态语言下拉。
+- 行为不变：密码评估仍在浏览器本地计算，只读探针列表与单个探针的密码画像；从探针自动识别在
+  `algorithms`/`cipherSuites`/`protocols`/`keyLengths` 为空时回退默认配置，`passwordSignals` 并入
+  评估发现；复杂度分析仍用 `acorn` AST 本地计算；`cryptoLevelTone` 随结果进 composable。
 - 流量视图的状态收拢到
   `frontend/src/modules/network/traffic/composables/useLiveTraffic.ts`（77 行），页面只保留模板
   （`LiveTraffic.vue` 143 → 90 行）；去掉缩进后，迁入的 53 行脚本逐行未改，模板与样式逐字节未改。
@@ -215,6 +224,8 @@
 
 | 文件 | 拆分前行数（首次） | 当前行数 |
 | --- | ---: | ---: |
+| frontend/src/modules/tools/AlgorithmEvaluation.vue | 306 | 196 |
+| frontend/src/modules/tools/composables/useAlgorithmEvaluation.ts | 0（本批新增） | 141 |
 | frontend/src/modules/network/traffic/LiveTraffic.vue | 143 | 90 |
 | frontend/src/modules/network/traffic/composables/useLiveTraffic.ts | 0（本批新增） | 77 |
 | frontend/src/modules/operations/audit/SecurityAudit.vue | 167 | 121 |
@@ -285,6 +296,21 @@
 
 ## 验证与已知限制
 
+- 第二十八批（前端）：`npm run typecheck` 通过；全量 vitest 25 个文件 199 项通过（原 184 项 + 本批新增
+  `algorithm-evaluation-state.test.ts` 15 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+  逐行比对：去掉缩进后，迁入 composable 的 116 行脚本逐行未改，模板与样式逐字节未改。
+- 第二十八批镜像（前端）：legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器
+  未重建）：容器 Up，`http://localhost:8088/`、入口 chunk 与 `AlgorithmEvaluation`/`LiveTraffic` chunk
+  均 200，chunk 名与本地构建一致、线上字节与本地构建 SHA256 相同、无 demo/mock 代码；回退标签
+  `source-frontend:pre-algorithm-evaluation-state-20260920`。
+- 第二十八批真实环境只读复验（后端未改）：`/health`、`/test/status`（`present=false`）、`/auth/me`、
+  `/network/live`（窗口 300s、连接 115、包 277、pps 0.92、bps 436.04、在线探针 1）、`/pcaps`、
+  `/alerts/summary`、`/probes`、`/flows`、`/protocols`、`/audit/summary`、`/dashboard/summary`、
+  `/risk/summary`、`/engine/registry`、`/detections`、`/assets`、`/incidents`、`/alerts`、`/files`、
+  `/dlp/policy`、`/scan-profiles`、`/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、
+  `/asset-instances`、`/sensitive/findings`、`/sensitivity-levels` 均 200；未订阅真实告警流
+  （`/alerts/stream` 未连接）、未调用测试数据导入接口、未提交密码评估或探针画像请求、未操作真实
+  探针主机，迁移仍 `0015_alert_hits`（head）。
 - 第二十七批（前端）：`npm run typecheck` 通过；全量 vitest 24 个文件 184 项通过（原 176 项 + 本批新增
   `live-traffic-state.test.ts` 8 项）；生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
   逐行比对：去掉缩进后，迁入 composable 的 53 行脚本逐行未改，模板与样式逐字节未改。
@@ -651,8 +677,8 @@
   告警域、任务/审计/报表域、检测/引擎域、看板/流量视图域、探针域、集成与离线导入域、规则域，
   以及最后一组 `auth`、`health`、`network_scan`、`test_data`；`v1.py` 自此只做聚合，自身不声明路径）。
   其余待办：前端其余页面（威胁情报/规则页、检测分析、任务与报表、探针页等）按实际改动需求再拆
-  （数据安全域、事件/告警中心、资产中心、检测中心、引擎详情、看板、安全审计与流量视图的状态已抽入
-  composable）、模型包拆分，最后是探针模块与分发包。
+  （数据安全域、事件/告警中心、资产中心、检测中心、引擎详情、看板、安全审计、流量视图与算法
+  评估的状态已抽入 composable）、模型包拆分，最后是探针模块与分发包。
 - 历史对象计数/投影/告警命中回填仍是独立任务；只读 remediation_dry_run 工具已存在，不能默认执行修复。
 - 旧测试布局与既有失败需单独解决，不在结构移动中绕过测试。
 - 旧代码 ruff 存量仍存在；仅约束本次新增/变更内容，不全仓格式化。

@@ -44,6 +44,9 @@
 `LiveTraffic.vue -> useLiveTraffic -> api/network`（实时窗口）加上 `api/health`、`api/probes`、
 `api/pcaps` 与 `api/alerts`（汇总 + 告警流）同样只渲染；告警流的 `EventSource` 归 composable 所有，
 卸载时关闭，视图保留路由与格式化函数。
+`AlgorithmEvaluation.vue -> useAlgorithmEvaluation -> api/probes`（探针列表）与 `api/crypto`（单个
+探针的密码画像）同样只渲染；密码评估与复杂度分析都在浏览器本地计算，视图保留三个展示组件与静态
+语言下拉，等级到颜色的映射由 composable 提供。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，

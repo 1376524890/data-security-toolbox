@@ -1015,13 +1015,51 @@
   未导入测试数据、未操作真实探针主机；后端未重建，迁移仍 `0015_alert_hits`（head）。
 - 回退标签 `source-frontend:pre-live-traffic-state-20260920`。
 
+## 第二十八批：前端算法评估页状态解耦（2026-09-20）
+
+基线 `32f7821`，同一分支。目标：按指南 §F 把算法评估页的状态抽到 composable，模板与交互不变。
+本批没有模板改动。
+
+已完成代码：
+
+- 新增 `frontend/src/modules/tools/composables/useAlgorithmEvaluation.ts`（141 行）；
+  `AlgorithmEvaluation.vue` 306 → 196 行。去掉缩进后，迁入的 116 行脚本逐行比对未改；模板与样式
+  逐字节未改（175 行）。
+- 两个标签页的状态一起进 composable：标签选择、密码配置与四个文本输入、评估结果、探针列表与选择、
+  自动识别结果，以及代码/语言/复杂度结果；页面保留三个展示组件与静态语言下拉 `languages`。
+- 行为不变：密码评估仍在浏览器本地计算，只读探针列表与单个探针的密码画像；从探针自动识别在
+  `algorithms`/`cipherSuites`/`protocols`/`keyLengths` 为空时回退默认配置，`passwordSignals` 并入评估
+  发现；复杂度分析仍用 `acorn` AST 本地计算；`cryptoLevelTone` 随结果进 composable。
+- 新增 `frontend/src/__tests__/algorithm-evaluation-state.test.ts`（15 项）：默认标签与默认配置、挂载
+  加载探针列表、空列表、加载失败、默认配置评估为「合规」、四个文本输入的解析（分号/换行与非数字
+  过滤）、弱配置样例清空结果且评分低于 90、等级到颜色的映射、未选探针时只警告不发请求、从探针填充
+  并立即评估、画像字段为空时回退默认、画像密码信号并入发现、画像读取失败、复杂度分析、切换语言后的
+  复杂度分析。
+
+验证：
+
+- `npm run typecheck` 通过；全量 vitest 25 个文件 199 项通过（原 184 项 + 本批 15 项）；
+  生产构建 `npm run build`（未启用 `VITE_DEMO_MODE`）通过。
+- 前端镜像用 legacy builder 重建并切换 `source-frontend:latest`（后端未改，四个后端容器未重建）：
+  容器 Up，`http://localhost:8088/`、入口 chunk 与 `AlgorithmEvaluation`/`LiveTraffic` chunk 均 200，
+  chunk 名与本地构建一致、线上字节 SHA256 相同、无 demo/mock 代码。
+- 真实环境只读复验：`/network/live`（窗口 300s、连接 115、包 277、pps 0.92、bps 436.04、在线探针 1）、
+  `/pcaps`、`/alerts/summary`、`/probes`、`/flows`、`/protocols`、`/health`、`/test/status`
+  （`present=false`）、`/auth/me`、`/audit/summary`、`/dashboard/summary`、`/risk/summary`、
+  `/engine/registry`、`/detections`、`/assets`、`/incidents`、`/alerts`、`/files`、`/dlp/policy`、
+  `/scan-profiles`、`/rulesets`、`/data/assets`、`/data-types`、`/data-objects`、`/asset-instances`、
+  `/sensitive/findings`、`/sensitivity-levels` 均 200；未订阅真实告警流（`/alerts/stream` 未连接）、
+  未导入测试数据、未提交密码评估或探针画像请求、未操作真实探针主机；后端未重建，迁移仍
+  `0015_alert_hits`（head）。
+- 回退标签 `source-frontend:pre-algorithm-evaluation-state-20260920`。
+
 ## 后续批次（尚未实施，不宣称全项目解耦完成）
 
 后端路由已全部按域拆出（`v1.py` 只做聚合）。剩余：
 
 1. 前端其余页面（威胁情报/规则页、检测分析、任务与报表、探针页等）按实际改动需求再拆
    （同一模式：先抽状态，再抽视图；数据安全域、事件/告警中心、资产中心、检测中心、引擎详情、
-   看板、安全审计与流量视图已完成）。
+   看板、安全审计、流量视图与算法评估已完成）。
 2. 模型包拆分放在业务依赖稳定之后；最后独立处理探针模块及分发包，不擅自升级真实主机。
 3. 旧的 `workers/tasks.py` 兼容门面、`data_object_service.py` 与 `v1.py` 里的兼容重导出
    在确无调用方后再删除。
