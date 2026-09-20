@@ -1,72 +1,19 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { getHealth, type HealthResponse } from '../../../api/health'
-import { listProbes, type Probe } from '../../../api/probes'
-import { getLiveNetwork, type LiveNetwork } from '../../../api/network'
-import { listPcaps } from '../../../api/pcaps'
-import type { PcapRecord } from '../../../types/pcap'
-import { getAlertSummary, alertStreamUrl } from '../../../api/alerts'
 import StateBox from '../../../components/common/StateBox.vue'
 import StatCard from '../../../components/common/StatCard.vue'
 import SeverityTag from '../../../components/security/SeverityTag.vue'
 import StatusBadge from '../../../components/security/StatusBadge.vue'
 import { formatDateTime, formatBytes } from '../../../utils/format'
+import { useLiveTraffic } from './composables/useLiveTraffic'
 
+// The live window, the online probes and the alert stream live in the
+// composable (the EventSource is opened on mount and closed on unmount); this
+// view keeps the router and binds the state into the template below.
 const router = useRouter()
-const loading = ref(true)
-const error = ref('')
-const health = ref<HealthResponse | null>(null)
-const probes = ref<Probe[]>([])
-const recentPcaps = ref<PcapRecord[]>([])
-const live = ref<LiveNetwork | null>(null)
-const summary = ref<{ total: number; unhandled_critical_high: number } | null>(null)
-const liveAlerts = ref<Array<{ id: number; severity: string; title: string; time: string }>>([])
-let eventSource: EventSource | null = null
-
-const onlineProbes = computed(() => probes.value.filter((p: Probe) => p.status === 'online'))
-// Derive a real capture rate from the most recently analyzed capture (no dedicated live endpoint).
-const captureRate = computed(() => {
-  if (!live.value) return { pps: null as number | null, bps: null as number | null, source: null as string | null }
-  return { pps: Math.round(live.value.pps), bps: Math.round(live.value.bps), source: `实时窗口 ${live.value.window_seconds}s` }
-})
-
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const [h, p, s, pcaps, lv] = await Promise.all([
-      getHealth(),
-      listProbes({ page: 1, page_size: 100 }),
-      getAlertSummary(),
-      listPcaps({ page: 1, page_size: 5 }),
-      getLiveNetwork(),
-    ])
-    health.value = h
-    probes.value = p.items
-    summary.value = s
-    recentPcaps.value = pcaps.items
-    live.value = lv
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    loading.value = false
-  }
-}
-
-function connect(): void {
-  eventSource = new EventSource(alertStreamUrl())
-  eventSource.addEventListener('alert', (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      liveAlerts.value.unshift({ id: data.alert_id, severity: data.severity || 'Medium', title: data.title || '新告警', time: new Date().toISOString() })
-      liveAlerts.value = liveAlerts.value.slice(0, 50)
-    } catch { /* ignore */ }
-  })
-}
-
-onMounted(() => { load(); connect() })
-onBeforeUnmount(() => { eventSource?.close() })
+const {
+  loading, error, health, live, summary, liveAlerts, onlineProbes, captureRate, load,
+} = useLiveTraffic()
 </script>
 
 <template>

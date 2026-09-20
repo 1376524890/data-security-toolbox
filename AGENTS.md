@@ -440,6 +440,16 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 汇总页只读；日志分析失败进 `logError`（页面级 `error` 不受影响），空内容不发请求。回归：
 `frontend/src/__tests__/security-audit-state.test.ts`（7 项）。
 
+## 流量视图页状态边界
+
+流量视图（`frontend/src/modules/network/traffic/LiveTraffic.vue`）的状态在
+`modules/network/traffic/composables/useLiveTraffic.ts`（77 行），页面只保留模板（143 → 90 行）；
+去掉缩进后，迁入的 53 行脚本逐行未改，模板与样式逐字节未改。页面保留路由与
+`formatDateTime`/`formatBytes`。实时告警流是一个 `EventSource`，归 composable 所有：挂载时打开、
+卸载时关闭（`onBeforeUnmount`），只保留最新 50 条；非法事件静默丢弃。抓包速率仍从最近一次已分析
+捕获推导（没有专门的实时接口），无实时窗口时三项为 `null`。注：`recentPcaps` 仍在加载但模板未渲染，
+本批保持原样。回归：`frontend/src/__tests__/live-traffic-state.test.ts`（8 项）。
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`

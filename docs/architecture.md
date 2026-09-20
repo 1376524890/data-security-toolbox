@@ -41,6 +41,9 @@
 共用同一套四级刻度与配色。
 `SecurityAudit.vue -> useSecurityAudit -> api/audit`（审计汇总只读 + 粘贴日志分析）同样只渲染；
 视图保留 `riskLabels` 这类静态标签与格式化函数，`matchGroups` 由 composable 提供。
+`LiveTraffic.vue -> useLiveTraffic -> api/network`（实时窗口）加上 `api/health`、`api/probes`、
+`api/pcaps` 与 `api/alerts`（汇总 + 告警流）同样只渲染；告警流的 `EventSource` 归 composable 所有，
+卸载时关闭，视图保留路由与格式化函数。
 类型/对象/实例页面仍经 `api/data_catalog`，其查询读 `services/data_objects/queries.py`。
 
 上报 `data_collection_schemas -> data_collection -> ingestion -> identity/coverage/evidence/persistence/projection`，
