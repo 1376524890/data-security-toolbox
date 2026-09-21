@@ -28,6 +28,7 @@ dumpcap；服务单元仍是 `dstprobe` + `NET_RAW`/`NET_ADMIN`/`DAC_READ_SEARCH
   与整包指纹区分版本）；`VERSION` 写明
   `probe_python = 随包独立 Python 3.11，目标机无需 Python/pip/抓包工具`；`probe-offline/` 只做架构分发，
   不再探测主机解释器，也不接受 `--python`/`--wheels`。
+- **Git**：平台 2.14.0 / 探针 3.7.0 已提交到 `develop`（`c903768`）并推送，创建注释标签 **v2.14.0**。
 - **验证**：交付包内的探针包在一次性、无网络、无 Python 的 Ubuntu 22.04 容器里跑通离线安装冒烟
   （私有库不外泄、真实 `dumpcap` 抓包、重装保留 token 与 spool、`--keep-data` 卸载）；后端全量 6 项失败与
   基线逐项一致；平台镜像重建并切换后 `/api/v1/health` 全绿、`openapi.json` 2.14.0、

@@ -1,6 +1,6 @@
 # 项目状态
 
-2026-09-21 第三十二批（工作树未提交）：**探针自带运行时（探针 3.7.0）**。分发包自带私有 CPython 3.11、
+2026-09-21 第三十二批（已发布：提交 `c903768`，注释标签 `v2.14.0`）：**探针自带运行时（探针 3.7.0）**
 全部 Python 依赖、`dumpcap`/`tcpdump` 与 ELF 库闭包、私有加载器与 CA 证书；平台预检
 （`app/deployment/{preflight,runtime}.py`）改用同一运行时探测目标机，不再要求主机 `python3 >= 3.11` 或
 预装抓包工具。`install.sh` 先验证再原子替换 runtime，保留 `probe.toml`/`probe.token`/spool/rules/cache，
@@ -149,10 +149,10 @@ vitest 29 文件 249 项通过，部署后 `/api/v1/data-types` 与 `/data-types
 
 | 项目 | 当前值 |
 | --- | --- |
-| 最近发布 | Git 注释标签 v2.13.0（2026-09-20）；2.14.0 与探针 3.7.0 的记录见 docs/releases/v2.14.0.md（v2.14.0 未打标签） |
+| 最近发布 | Git 注释标签 **v2.14.0**（2026-09-21，提交 `c903768`，已推送 `origin/develop`）；2.14.0 与探针 3.7.0 的细节见 docs/releases/v2.14.0.md，上一版为 v2.13.0（2026-09-20） |
 | 源码内平台版本 | 2.14.0（`backend/app/main.py`、`frontend/package.json` 与 `package-lock.json`） |
 | 探针源码版本 | 3.7.0（自带运行时：私有 CPython 3.11 + 依赖 + dumpcap/tcpdump + 库闭包；`probe/probe.py::AGENT_VERSION`） |
-| 本批基线 / 分支 | a51bffe（develop）；本批与前面几批改动仍在工作树、未提交 |
+| 本批基线 / 分支 | a51bffe → `c903768`（develop）；第三十~三十二批已提交并推送，创建标签 v2.14.0 |
 | 数据库迁移 | 0017_file_sources (head)；本批无模型/表结构变更 |
 | 本批范围 | 资产与数据安全增强（统一规则源与命中原文、共享文件来源、数据库直连盘点、探针自带运行时 3.7.0）；逐批记录见 TASK.md，汇总见 CHANGELOG.md |
 

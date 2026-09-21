@@ -106,7 +106,8 @@
   按覆盖缺口如实上报）。
 - arm64 抓包未在原生环境验证：本机只有 qemu（qemu-user 不能翻译 libpcap 的 socket ioctl），arm64 冒烟
   显式跳过真实抓包，其余项通过；要给出 arm64 抓包证据需一台原生 arm64 主机。
-- 未提交 git；未在真机跑 `sha256sum -c CHECKSUMS.sha256`（本地 `verify_bundle.py` 已等价校验）。
+- 已提交并推送到 `origin/develop`（`c903768`）并创建注释标签 `v2.14.0`；未在真机跑
+  `sha256sum -c CHECKSUMS.sha256`（本地 `verify_bundle.py` 已等价校验）。
 - 已知的测试隔离问题（本批未引入、也未修）：把 `tests/test_probe_delete.py` 与 `tests/deployment` 放进同一
   个 pytest 进程时 `tests/deployment/test_enrollment.py` 两项会因共享 DB 状态报 `IntegrityError`；分开跑
   各自全通过，全量 `backend/tests` 的 6 项失败与本批前逐项一致。
