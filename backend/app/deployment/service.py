@@ -259,4 +259,10 @@ class DeploymentService(DeploymentRecord):
                     except Exception:
                         pass
                 ssh.close()
-            self._destroy_credential(deployment)
+            # A task-dedicated probe (retain_credential) keeps its credential so
+            # the platform can uninstall it when the task ends; every other run -
+            # including a failed one, via _fail - destroys it here.
+            keep_for_task = (bool((deployment.data_config or {}).get("retain_credential"))
+                             and deployment.status == "WAIT_CALLBACK")
+            if not keep_for_task:
+                self._destroy_credential(deployment)

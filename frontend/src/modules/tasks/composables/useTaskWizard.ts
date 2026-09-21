@@ -138,6 +138,9 @@ export function useTaskWizard() {
               key_passphrase: host.keyPassphrase || undefined,
               profile: 'standard', data_paths: paths,
               data_interval_seconds: taskMode.value === 'scheduled' ? intervalSeconds.value : undefined,
+              // The probe is task-dedicated: keep its credential so the platform
+              // can uninstall it once this task ends.
+              retain_credential: true,
             })
           } else {
             const source = await saveFileSource(null, {

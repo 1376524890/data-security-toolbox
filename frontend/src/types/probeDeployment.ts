@@ -98,6 +98,9 @@ export interface PreflightPayload {
   data_max_files?: number
   data_max_depth?: number
   data_include_databases?: boolean
+  /** Keep the credential encrypted until the owning task ends, so a
+   *  task-dedicated probe can be uninstalled by the platform itself. */
+  retain_credential?: boolean
 }
 
 export interface CreateDeploymentPayload extends PreflightPayload {

@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     deployment_removal_timeout_seconds: int = 900
     deployment_worker_queue: str = "deployment"
     deployment_credential_ttl_seconds: int = 3600
+    #: A task-dedicated probe keeps its credential until its task ends, so the
+    #: window is the task lifetime rather than a single install run.
+    deployment_retained_credential_ttl_seconds: int = 604800
     deployment_allow_password: bool = True
     deployment_default_profile: str = "standard"
     deployment_verify_host_key: bool = True

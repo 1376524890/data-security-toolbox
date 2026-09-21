@@ -143,6 +143,9 @@ def create_deployment(payload: ProbeDeploymentCreate, request: Request, db: Sess
             "max_files": payload.data_max_files,
             "max_depth": payload.data_max_depth,
             "include_databases": payload.data_include_databases,
+            # Marks a task-dedicated probe whose credential is kept (encrypted)
+            # until the owning task ends, so the platform can retire it itself.
+            "retain_credential": payload.retain_credential,
         },
     )
     db.add(deployment)
@@ -154,6 +157,8 @@ def create_deployment(payload: ProbeDeploymentCreate, request: Request, db: Sess
         password=payload.password,
         private_key=payload.private_key,
         key_passphrase=payload.key_passphrase,
+        ttl_seconds=(settings.deployment_retained_credential_ttl_seconds
+                     if payload.retain_credential else None),
     )
     db.commit()
     _dispatch(deployment.id)

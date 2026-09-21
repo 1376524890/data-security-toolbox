@@ -247,8 +247,8 @@ onMounted(load)
             <div class="muted">开启后请把探针部署在网络关键位置以抓取全局流量；每 30 秒一段抓包并自动分析。</div>
           </el-form-item>
         </el-form>
-        <el-alert type="warning" :closable="false" show-icon
-                  title="注意：探针安装凭据在安装成功后即销毁，平台无法在任务结束时自动卸载探针——回收需要在任务结束后重新提供凭据执行卸载。" />
+        <el-alert type="info" :closable="false" show-icon
+                  title="下发的探针是任务专属的：凭据加密保留至任务结束，任务到达终态后自动卸载并销毁凭据；同一主机若还有其它在用任务则不卸载。手工注册的探针永远不会被自动卸载。" />
       </template>
 
       <template #footer>

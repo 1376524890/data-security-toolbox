@@ -173,6 +173,11 @@ class ProbeDeploymentPreflightRequest(BaseModel):
     data_max_files: int = Field(default=200, ge=1, le=2000)
     data_max_depth: int = Field(default=3, ge=0, le=8)
     data_include_databases: bool = True
+    #: Keep the SSH credential encrypted until the owning task ends, so the
+    #: platform can uninstall this task-dedicated probe itself. Off by default:
+    #: an operator-dispatched deployment still has its credential destroyed the
+    #: moment the install finishes.
+    retain_credential: bool = False
 
     @field_validator("data_paths")
     @classmethod

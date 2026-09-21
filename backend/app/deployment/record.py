@@ -56,6 +56,7 @@ def store_credential(
     password: str | None = None,
     private_key: str | None = None,
     key_passphrase: str | None = None,
+    ttl_seconds: int | None = None,
 ) -> None:
     """Replace the row's credential with an encrypted copy of the supplied one.
 
@@ -78,7 +79,7 @@ def store_credential(
         deployment.id,
         auth_type,
         secret,
-        settings.deployment_credential_ttl_seconds,
+        settings.deployment_credential_ttl_seconds if ttl_seconds is None else ttl_seconds,
     )
     db.add(
         ProbeDeploymentCredential(

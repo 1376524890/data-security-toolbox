@@ -162,6 +162,11 @@ def data_asset_inventory(
         )
     )
     db.commit()
+    # A task-dedicated probe is retired once its task ends; the call is a no-op
+    # for a hand-registered probe or when another task still needs it.
+    from app.services import probe_lifecycle
+
+    probe_lifecycle.retire_after_task(db, task)
     return {
         "id": task.id,
         "duplicate": False,
