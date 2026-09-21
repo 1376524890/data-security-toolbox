@@ -5,6 +5,10 @@
  * under one of them. A sub-item that opens a tab of a hub carries its own
  * ``view`` query, so the same route can appear more than once with a distinct
  * highlight and a distinct deep link.
+ *
+ * FROZEN (2026-09-21): the six sections and their sub-items are final. Changing
+ * this list is a design change, not a refactor — do not add a seventh section or
+ * re-introduce a removed page as a new entry.
  */
 export interface MenuItem {
   path: string
