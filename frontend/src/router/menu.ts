@@ -51,6 +51,7 @@ export const menuGroups: MenuGroup[] = [
     { path: '/collection-rules', title: '规则集与规则', icon: 'Collection' },
     { path: '/collection-rules', title: '规则版本', icon: 'Tickets', query: { view: 'versions' } },
     { path: '/collection-rules', title: '策略分组', icon: 'Files', query: { view: 'groups' } },
+    { path: '/collection-rules', title: '候选指纹', icon: 'Aim', query: { view: 'fingerprints' } },
     { path: '/collection-rules', title: '出境判定名单', icon: 'Position', query: { view: 'egress' } },
   ]},
 ]

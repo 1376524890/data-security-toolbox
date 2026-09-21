@@ -3,6 +3,7 @@ import hashlib
 from sqlalchemy import select
 from app.models import AssetInstance, DataObject
 from app.services import sensitive_engine, sensitivity_map
+from app.services import fingerprint_candidates
 from app.services.data_objects.evidence import _evidence_rows, _merge_detection
 from app.services.data_objects.persistence import _get_or_create, recount_object
 from shared.scanning import magic
@@ -62,6 +63,12 @@ def store(db, source, task, remote_path, size, scan, now):
     instance.termination_reason = scan['reason']
     instance.categories = categories if scan['coverage'] == 'complete' else sorted(set(instance.categories or []) | set(categories))
     instance.sensitivity = sensitivity_map.worst_severity(instance.categories)
+    # A high-risk file is proposed as a fingerprint candidate; nothing is added to
+    # a rule until an operator accepts it (see services/fingerprint_candidates).
+    fingerprint_candidates.record(
+        db, sha256=digest, path=remote_path, name=instance.name, source_name=source.name,
+        level=sensitivity_map.worst_level(instance.categories), severity=instance.sensitivity,
+        task_id=task.id)
     instance.extra = {**(instance.extra or {}), 'source_name': source.name, 'host': source.host,
                       'source_id': source.id, 'protocol': source.protocol,
                       'last_change': 'new' if created else 'changed' if previous and digest and previous != digest else 'unchanged'}

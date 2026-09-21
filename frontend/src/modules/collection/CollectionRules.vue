@@ -5,6 +5,7 @@ import RuleLibrary from './RuleLibrary.vue'
 import RuleVersions from './RuleVersions.vue'
 import PolicyGroups from './PolicyGroups.vue'
 import EgressPolicyForm from './EgressPolicyForm.vue'
+import FingerprintCandidates from './FingerprintCandidates.vue'
 
 // 采集与规则 owns every rule configuration and nothing else: the rule set (the
 // regexes for sensitive-data discovery and traffic monitoring), the versioned
@@ -33,6 +34,9 @@ function onChange(name: string): void {
       </el-tab-pane>
       <el-tab-pane label="策略分组" name="groups">
         <PolicyGroups v-if="active === 'groups'" />
+      </el-tab-pane>
+      <el-tab-pane label="候选指纹" name="fingerprints">
+        <FingerprintCandidates v-if="active === 'fingerprints'" />
       </el-tab-pane>
       <el-tab-pane label="出境判定名单" name="egress">
         <EgressPolicyForm v-if="active === 'egress'" />

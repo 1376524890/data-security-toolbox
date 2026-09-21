@@ -16,6 +16,7 @@ from app.core.database import get_db
 from app.core.security import get_session_user
 from app.models import PolicyGroup, Task
 from app.services import policy_groups as groups
+from app.services import fingerprint_candidates as candidates
 from app.services.policy_groups import PolicyGroupError
 
 router = APIRouter(tags=["policy-groups"])
@@ -33,6 +34,7 @@ class GroupPayload(BaseModel):
     rule_ids: list[str] = Field(default_factory=list, max_length=512)
     categories: list[str] = Field(default_factory=list, max_length=256)
     keywords: list[str] = Field(default_factory=list, max_length=256)
+    fingerprints: list[str] = Field(default_factory=list, max_length=512)
     min_confidence: float = 0.6
     min_matches: int = 1
 
@@ -47,6 +49,7 @@ class GroupPatch(BaseModel):
     rule_ids: list[str] | None = None
     categories: list[str] | None = None
     keywords: list[str] | None = None
+    fingerprints: list[str] | None = None
     min_confidence: float | None = None
     min_matches: int | None = None
 
@@ -145,6 +148,42 @@ def update_group(group_id: int, payload: GroupPatch, db: Session = Depends(get_d
     db.commit()
     db.refresh(group)
     return groups.serialize(group)
+
+
+class CandidateAccept(BaseModel):
+    """Where an accepted fingerprint lands. Empty = a group named after its task."""
+
+    group_name: str = Field(default="", max_length=128)
+
+
+@router.get("/fingerprint-candidates")
+def list_candidates(status: str | None = Query(default=None, max_length=16),
+                    db: Session = Depends(get_db)) -> dict:
+    """Hashes a scan proposed but nobody has accepted yet.
+
+    Candidates never take part in detection; an operator accepts or ignores them.
+    """
+    items = candidates.list_candidates(db, status=status)
+    return {"items": items, "count": len(items),
+            "candidate_count": sum(1 for item in items if item.get("status") == "candidate"),
+            "trigger": "高危（Critical/High）且带完整 SHA256 的文件"}
+
+
+@router.post("/fingerprint-candidates/{sha256}/accept")
+def accept_candidate(sha256: str, payload: CandidateAccept, db: Session = Depends(get_db)) -> dict:
+    """One click: add the hash to a policy group (never to the default policy)."""
+    try:
+        return candidates.accept(db, sha256, group_name=payload.group_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/fingerprint-candidates/{sha256}/ignore")
+def ignore_candidate(sha256: str, db: Session = Depends(get_db)) -> dict:
+    try:
+        return candidates.ignore(db, sha256)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.delete("/policy-groups/{group_id}")

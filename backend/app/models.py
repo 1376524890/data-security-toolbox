@@ -454,6 +454,10 @@ class PolicyGroup(TimestampMixin, Base):
     #: Extra sensitive categories/keywords beyond the referenced rules.
     categories: Mapped[list[str]] = mapped_column(JSON, default=list)
     keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: SHA256 fingerprints this group matches on (a risky file's whole-content
+    #: hash). Kept per group so a task's accepted hashes never leak into the
+    #: default policy.
+    fingerprints: Mapped[list[str]] = mapped_column(JSON, default=list)
     min_confidence: Mapped[float] = mapped_column(Float, default=0.6)
     min_matches: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[str] = mapped_column(String(128), default="")

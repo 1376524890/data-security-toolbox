@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AssetInstance, DataObject, Probe
-from app.services import sensitivity_map
+from app.services import fingerprint_candidates, sensitivity_map
 from app.services.data_objects.coverage import _is_late, complete_scope, in_scope
 from app.services.data_objects.definitions import (
     HASH_FULL,
@@ -222,6 +222,13 @@ def ingest_report(
                 :24
             ]
         instance.sensitivity = sensitivity_map.worst_severity(instance.categories)
+        # A high-risk file becomes a *candidate* fingerprint; it only becomes a
+        # rule when an operator accepts it in 采集与规则.
+        fingerprint_candidates.record(
+            db, sha256=instance.content_hash, path=instance.path, name=instance.name,
+            source_name=(instance.extra or {}).get("probe_name") or instance.owner_key,
+            level=sensitivity_map.worst_level(instance.categories),
+            severity=instance.sensitivity, task_id=task.id if task else None)
         instance.extra = {
             **(instance.extra or {}),
             "scanner": _text(payload.get("scanner"), 64),

@@ -22,6 +22,10 @@ GROUP_ROUTES = {
     ("GET", "/policy-groups/{group_id}"),
     ("PATCH", "/policy-groups/{group_id}"),
     ("DELETE", "/policy-groups/{group_id}"),
+    # Candidate fingerprints are the "propose then accept" path into a group.
+    ("GET", "/fingerprint-candidates"),
+    ("POST", "/fingerprint-candidates/{sha256}/accept"),
+    ("POST", "/fingerprint-candidates/{sha256}/ignore"),
 }
 
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}

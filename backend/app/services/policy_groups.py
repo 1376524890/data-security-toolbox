@@ -8,6 +8,7 @@ resolved snapshot so editing a group later cannot change work already handed out
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -17,6 +18,9 @@ from app.models import PolicyGroup
 
 class PolicyGroupError(ValueError):
     """The group cannot be stored or turned into a dispatch snapshot."""
+
+
+_SHA256 = re.compile(r"^[a-f0-9]{64}$")
 
 
 #: Where a group may apply; anything else is rejected instead of silently ignored.
@@ -60,6 +64,12 @@ def validate(values: dict[str, Any]) -> dict[str, Any]:
             cleaned[key] = _clean_terms(value, field="categories", limit=MAX_TERMS)
         elif key == "keywords":
             cleaned[key] = _clean_terms(value, field="keywords", limit=MAX_TERMS)
+        elif key == "fingerprints":
+            items = _clean_terms(value, field="fingerprints", limit=MAX_RULE_IDS)
+            bad = [item for item in items if not _SHA256.match(item.lower())]
+            if bad:
+                raise PolicyGroupError(f"fingerprints 必须是 SHA256：{', '.join(bad[:3])}")
+            cleaned[key] = [item.lower() for item in items]
         elif key == "min_confidence":
             try:
                 number = float(value)
@@ -93,6 +103,7 @@ def serialize(group: PolicyGroup) -> dict[str, Any]:
         "rule_ids": list(group.rule_ids or []),
         "categories": list(group.categories or []),
         "keywords": list(group.keywords or []),
+        "fingerprints": list(group.fingerprints or []),
         "min_confidence": float(group.min_confidence or 0.0),
         "min_matches": int(group.min_matches or 1),
         "created_by": group.created_by,
