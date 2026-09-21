@@ -1,5 +1,28 @@
 # 项目状态
 
+2026-09-21 第三十三批（已推送：提交 `9cb08b2`、`d67c989`）：**数据安全评估与菜单收敛（第一批）**。
+本次把控制台「资产与数据安全」从 11 项菜单收敛为 **6 项**（资产中心 / 任务中心 / 数据资产 / 数据流动与防护 /
+文件证据 / 策略中心），新增**策略分组**与**六路只读评估**，并把平台持久状态从命名卷改为本地目录。
+
+- **后端**：新增 `policy_groups` 表（迁移 `0018_policy_groups`，`down_revision=0017_file_sources`）与
+  `GET/POST /api/v1/policy-groups`、`GET/PATCH/DELETE /policy-groups/{id}`（被未完成任务引用时删除返回 409）；
+  新增 `api/assessments.py` 六个只读端点（`overview/classification/exposure/flow/egress/compliance`），
+  全部复用既有对象模型与引擎，统一「结论条→KPI（带分母）→主视图→明细→口径与缺口」信封，口径随响应返回；
+  新增 `services/egress_regions.py`（离线 IP 出境判定：白名单 > 黑名单 > 特殊网段 > 静态 CIDR→地区表，
+  **无地区表时降级为「无法判定」**）与 `GET/POST /api/v1/egress/policy`。不改任何已发布迁移、不新增事实来源。
+- **前端**：`router/menu.ts` 与 `router/index.ts` 收敛为 6 项，新增 `DataAssetHub`（3 视图 + 数据安全评估）、
+  任务中心、策略中心、数据流动与防护四个 Hub；旧顶层路由改为重定向（不重复出现在菜单、旧链接仍可用），
+  详情路由保留；评估用单一 `AssessmentPanel` 渲染五段式骨架。
+- **持久化**：`docker-compose.yml` 的 postgres/redis/backend 由命名卷改为 `${DATA_ROOT:-./deploy-data}` 绑定挂载，
+  重建不再触碰数据；首次部署需对 `deploy-data/backend` 执行一次 `chown 10001:10001`（手册已写）。
+- **验证**：前端 `vue-tsc` 通过、`vitest` 31 文件 / 277 项通过；后端策略分组 CRUD、评估契约、两组边界测试共
+  15 项通过（`ruff` 新文件仅剩与既有 `profiles.py` 同款的 `B008`）。**已实际部署**：`source-*` 七个容器在
+  `localhost:8000`（API）/ `localhost:8080`（控制台）运行，`/api/v1/health` 200、迁移 head
+  `0018_policy_groups`、新端点联调通过；旧 `0916_v27` 栈已停并删除容器与镜像（其数据卷保留）。
+- **未做**：非文本数据（Word/PDF/Excel/图片/压缩包）抽取与服务端 OCR；`NetworkDlp` 页面的策略/规则控件
+  尚未物理搬入策略中心（当前仍可从流动页进入）；全量后端回归未跑完（网络扫描类用例耗时且含与本改动无关的
+  基线失败）。
+
 2026-09-21 第三十二批（已发布：提交 `c903768`，注释标签 `v2.14.0`）：**探针自带运行时（探针 3.7.0）**
 全部 Python 依赖、`dumpcap`/`tcpdump` 与 ELF 库闭包、私有加载器与 CA 证书；平台预检
 （`app/deployment/{preflight,runtime}.py`）改用同一运行时探测目标机，不再要求主机 `python3 >= 3.11` 或

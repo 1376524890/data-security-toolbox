@@ -25,9 +25,25 @@
 `docker compose config -q` 在 base / +prod+dev / +integrations 三种合并下均 exit 0，绑定路径解析到 `deploy-data/*`。
 未跑 pytest（host 无 py3.11 且无 venv，需重建后端镜像后在容器内跑）。
 
-**待办（后续批次）**：前端导航/路由收敛与页面搬迁；`api/assessments.py`+`services/assessments/` 只读聚合；
-评估 Tab 五段式（结论条→KPI 带分母→主视图→明细→口径缺口）；出境判定（IP + 黑白名单 + 地区表 + 降级）；
-服务端 OCR 与非文本抽取（docx/doc/xls/pdf/图片/归档有界解压，加密/无法解析如实标注）。
+**已完成（第三十三批 批次 2：评估聚合 + 出境判定）**
+- `backend/app/api/assessments.py`（6 个只读端点）与 `backend/app/services/assessments/`
+  （`envelope` + `classification/exposure/compliance/flow/egress/overview`），统一五段式信封、每卡带分母。
+- `backend/app/services/egress_regions.py`（白名单 > 黑名单 > 特殊网段 > 静态 CIDR→地区表；无表降级「无法判定」）
+  与 `GET/POST /api/v1/egress/policy`（挂在 `api/extensions.py` 的 DLP/flow 域）。
+- 测试：`test_assessments_api.py`、`test_assessment_boundaries.py`、`test_policy_groups.py`、
+  `test_policy_group_boundaries.py`（15 项全通过）。
+
+**已完成（第三十三批 批次 3：前端收敛与部署）**
+- `router/menu.ts`/`router/index.ts`：11→6 菜单；`DataAssetHub`（3 视图 + 评估）、任务中心、策略中心、
+  数据流动与防护四个 Hub；旧顶层路由重定向，详情路由保留。
+- 评估 UI：`AssessmentPanel` 单一渲染五段式；`api/assessments|policyGroups|egress.ts`。
+- 验证：`vue-tsc` 通过、`vitest` 277 项通过；实际部署 `source-*` 栈（API 8000 / 控制台 8080）健康，
+  迁移 head `0018_policy_groups`；旧 `0916_v27` 栈已停并清理容器与镜像。
+- Git：`9cb08b2`（后端+基础设施）与 `d67c989`（前端）已推送 `origin/develop`。
+
+**待办（第三十三批 批次 4）**：非文本数据抽取与服务端 OCR（docx/doc/xls/pdf/图片/压缩包有界解压，
+加密/无法解析如实标注；需 OCR 的字节上传平台分析）；把 `NetworkDlp` 的策略/规则控件物理搬入策略中心；
+全量后端回归补跑。
 
 ## 第三十二批：探针自带运行时（探针 3.7.0，2026-09-21）
 
