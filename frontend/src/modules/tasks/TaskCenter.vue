@@ -199,11 +199,14 @@ onMounted(load)
         <div v-for="host in wizard.hosts.value" :key="host.key" class="host-block">
           <div class="host-title">{{ host.host }}:{{ host.port }}</div>
           <el-form label-width="110px" size="small">
-            <el-form-item label="连接方式">
-              <el-radio-group v-model="host.mode">
-                <el-radio-button value="probe">下发探针</el-radio-button>
-                <el-radio-button value="direct">不走探针（远程协议）</el-radio-button>
-              </el-radio-group>
+            <!-- Data detection needs no probe: the platform reads the files over a
+                 remote protocol. Deploying a probe is for traffic monitoring on a
+                 core network device, so it is a checkbox rather than a mode. -->
+            <el-form-item label="探针">
+              <el-checkbox :model-value="host.mode === 'probe'"
+                           @change="(value: boolean | string | number) => { host.mode = value ? 'probe' : 'direct' }">
+                在该设备下发探针（用于抓取网络流量；不勾选则平台只读远程访问文件做数据检测）
+              </el-checkbox>
             </el-form-item>
             <el-form-item label="用户名">
               <el-select v-model="host.username" filterable allow-create default-first-option
