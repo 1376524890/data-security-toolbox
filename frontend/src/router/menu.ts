@@ -34,13 +34,6 @@ export const menuGroups: MenuGroup[] = [
   ]},
   { group: '数据资产', items: [
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },
-    { path: '/data-assets', title: '资产目录', icon: 'Grid', query: { view: 'inventory' } },
-    { path: '/data-assets', title: '数据类型', icon: 'Files', query: { view: 'types' } },
-    { path: '/data-assets', title: '数据安全评估', icon: 'DataAnalysis', query: { view: 'assessment' } },
-    { path: '/detections', title: '检测中心', icon: 'Aim' },
-    { path: '/alerts', title: '告警中心', icon: 'Bell' },
-    { path: '/incidents', title: '安全事件中心', icon: 'Warning' },
-    { path: '/risk', title: '风险分析', icon: 'TrendCharts' },
   ]},
   { group: '数据流动与防护', items: [
     { path: '/network/dlp', title: '传输结果', icon: 'Lock' },

@@ -14,10 +14,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Dashboard', group: 'Overview' },
   },
   // Security Operations
-  { path: '/alerts', component: () => import('../modules/operations/alerts/AlertCenter.vue'), meta: { title: 'Alert Center', group: 'Security Operations' } },
-  { path: '/incidents', component: () => import('../modules/operations/incidents/IncidentCenter.vue'), meta: { title: 'Incident Center', group: 'Security Operations' } },
-  { path: '/detections', component: () => import('../modules/operations/detections/DetectionCenter.vue'), meta: { title: 'Detection Center', group: 'Security Operations' } },
-  { path: '/risk', component: () => import('../modules/operations/detections/RiskAnalysis.vue'), meta: { title: 'Risk Analysis', group: 'Security Operations' } },
   // Network Analysis
   { path: '/network/pcap', component: () => import('../modules/network/pcap/PcapWorkbench.vue'), meta: { title: 'PCAP Workbench', group: 'Network Analysis' } },
   { path: '/network/live', component: () => import('../modules/network/traffic/LiveTraffic.vue'), meta: { title: 'Live Traffic', group: 'Network Analysis' } },
@@ -31,16 +27,13 @@ const routes: RouteRecordRaw[] = [
   // 采集与规则 owns sources, scan config, collection jobs and all rule management.
   { path: '/collection-rules', component: () => import('../modules/collection/CollectionRules.vue'), meta: { title: '采集与规则', group: 'Asset & Data Security' } },
   { path: '/files', component: () => import('../modules/data-security/FileAnalysis.vue'), meta: { title: '文件证据', group: 'Asset & Data Security' } },
-  { path: '/data-types/:category', component: () => import('../modules/data-security/DataTypeDetail.vue'), meta: { title: 'DataType Detail', group: 'Asset & Data Security' } },
-  { path: '/data-objects/:id', component: () => import('../modules/data-security/DataObjectDetail.vue'), meta: { title: 'DataObject Detail', group: 'Asset & Data Security' } },
-  { path: '/asset-instances/:id', component: () => import('../modules/data-security/AssetInstanceDetail.vue'), meta: { title: 'AssetInstance Detail', group: 'Asset & Data Security' } },
   // 数据流动与防护 keeps only results and the egress verdict.
   { path: '/network/dlp', component: () => import('../modules/data-security/flow/DataFlowProtection.vue'), meta: { title: '数据流动与防护', group: 'Asset & Data Security' } },
   // Old top-level routes are gone from the menu; these redirects keep deep links
   // and any bookmark working without re-introducing a second navigation entry.
-  { path: '/asset-inventory', redirect: { path: '/data-assets', query: { view: 'inventory' } } },
-  { path: '/data-types', redirect: { path: '/data-assets', query: { view: 'types' } } },
-  { path: '/sensitive', redirect: { path: '/data-assets', query: { view: 'assessment' } } },
+  { path: '/asset-inventory', redirect: { path: '/data-assets' } },
+  { path: '/data-types', redirect: { path: '/data-assets' } },
+  { path: '/sensitive', redirect: { path: '/data-assets' } },
   { path: '/data-asset-jobs', redirect: { path: '/collection-rules', query: { view: 'jobs' } } },
   { path: '/source-management', redirect: { path: '/collection-rules', query: { view: 'sources' } } },
   { path: '/database-connections', redirect: { path: '/collection-rules', query: { view: 'sources' } } },
