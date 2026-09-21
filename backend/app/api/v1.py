@@ -67,6 +67,9 @@ from app.api.reports import (
 from app.api.rules import (
     router as rules_router,
 )
+from app.api.targets import (
+    router as targets_router,
+)
 from app.api.tasks import (
     router as tasks_router,
 )
@@ -101,3 +104,4 @@ router.include_router(file_sources_router)
 router.include_router(test_data_router)
 router.include_router(policy_groups_router)
 router.include_router(assessments_router)
+router.include_router(targets_router)

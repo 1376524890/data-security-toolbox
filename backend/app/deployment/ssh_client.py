@@ -180,6 +180,38 @@ class SshClient:
         finally:
             sftp.close()
 
+    def listdir(self, path: str, limit: int = 2000) -> list[tuple[str, str, int]]:
+        """One directory level as ``(name, kind, size)``; ``kind`` is dir/file/skip.
+
+        Read-only and bounded: the directory tree explorer walks a *handful* of
+        levels for an operator to tick, so the caller passes the limits and this
+        never recurses on its own.
+        """
+        if not self._client:
+            raise SshError("CONNECT_FAILED", "not connected")
+        sftp = self._client.open_sftp()
+        try:
+            entries: list[tuple[str, str, int]] = []
+            for index, item in enumerate(sftp.listdir_attr(path)):
+                if index >= limit:
+                    raise SshError("ENTRY_BUDGET", f"{path} 条目超过上限 {limit}")
+                name = str(item.filename)
+                if name in {".", ".."}:
+                    continue
+                mode = item.st_mode or 0
+                import stat as _stat
+
+                kind = ("dir" if _stat.S_ISDIR(mode)
+                        else "file" if _stat.S_ISREG(mode) else "skip")
+                entries.append((name, kind, int(item.st_size or 0)))
+            return entries
+        except SshError:
+            raise
+        except OSError as exc:
+            raise SshError("PATH_ERROR", f"无法读取目录 {path}: {exc}") from exc
+        finally:
+            sftp.close()
+
     def close(self) -> None:
         if self._client:
             self._client.close()
