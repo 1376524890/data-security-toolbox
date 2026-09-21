@@ -41,7 +41,7 @@ MIB = 1024 * 1024
 
 def test_defaults_match_the_shipped_scanner_behaviour() -> None:
     budget = ScanBudget()
-    assert budget.max_files == 200
+    assert budget.max_files == 10000
     assert budget.max_depth == 3
     assert budget.max_dirs == 500
     assert budget.max_single_file == 2 * MIB
@@ -52,8 +52,8 @@ def test_defaults_match_the_shipped_scanner_behaviour() -> None:
 
 
 def test_limits_are_clamped_to_their_ceilings() -> None:
-    budget = ScanBudget({"max_files": 99999, "max_depth": 99, "max_runtime_seconds": 99999})
-    assert budget.max_files == 2000
+    budget = ScanBudget({"max_files": 999999, "max_depth": 99, "max_runtime_seconds": 99999})
+    assert budget.max_files == 100000
     assert budget.max_depth == 8
     assert budget.max_runtime == 1800
 

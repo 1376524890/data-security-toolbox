@@ -9,6 +9,15 @@ from app.models import AssetInstance, DataObject, FileSource, Task
 from app.services.data_objects.persistence import recount_object
 from . import adapters, ingest, service
 
+#: Stops that mean "this scan is over", not "this one item is unreadable". They
+#: are raised from ``check()`` deep inside the loops, so the per-item handlers
+#: must let them through instead of recording them as unreadable content.
+GLOBAL_STOPS = frozenset({'time_budget', 'cancelled', 'byte_budget'})
+
+
+def _is_global_stop(exc: BaseException) -> bool:
+    return isinstance(exc, adapters.SourceError) and str(exc) in GLOBAL_STOPS
+
 
 def run(db, task_id):
     task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
@@ -54,24 +63,28 @@ def run(db, task_id):
                         dirs += 1
                         if dirs > 500:
                             raise adapters.SourceError('directory_budget')
+                        listing_error: Exception | None = None
                         try:
                             entries = list(remote.entries(directory, check))
-                        except UnicodeDecodeError:
+                        except Exception as exc:  # noqa: BLE001 - classified below
+                            if _is_global_stop(exc):
+                                raise
+                            entries = None
+                            listing_error = exc
+                        if entries is None:
                             # A name that is not valid UTF-8 makes the SFTP
                             # listing itself raise. Retry once with a raw listing
                             # so one bad name does not lose the whole directory.
                             try:
                                 entries = list(remote.entries_raw(directory, check))
-                            except Exception as exc:  # noqa: BLE001 - reported below
+                            except Exception as exc:  # noqa: BLE001 - one bad directory
+                                if _is_global_stop(exc):
+                                    raise
                                 unreadable.append({'path': directory,
-                                                   'reason': type(exc).__name__})
+                                                   'reason': type(listing_error).__name__,
+                                                   'fallback': type(exc).__name__})
                                 skipped += 1
                                 continue
-                        except Exception as exc:  # noqa: BLE001 - one bad directory
-                            unreadable.append({'path': directory,
-                                               'reason': type(exc).__name__})
-                            skipped += 1
-                            continue
                         for path, kind, size in entries:
                             check()
                             if kind == 'dir':
@@ -112,6 +125,8 @@ def run(db, task_id):
                                     if scan['coverage'] != 'complete':
                                         complete, reason = False, scan['reason']
                                 except Exception as exc:  # noqa: BLE001 - one bad file
+                                    if _is_global_stop(exc):
+                                        raise
                                     # A file we could not read is recorded as failed
                                     # rather than dropped: an unreadable asset must
                                     # never look like a clean one.

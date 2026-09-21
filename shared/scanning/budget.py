@@ -38,12 +38,12 @@ TERMINATION_UNCONFIGURED = "unconfigured"
 #: They still make the report incomplete, so nothing unseen gets retired.
 CONTENT_TRUNCATION_REASONS = frozenset({TERMINATION_ROWS, TERMINATION_FILE_SIZE})
 
-# Documented defaults. These preserve the shipped 3.3.1 behaviour: 200 files
-# (max 2000), depth 3 (max 8), 500 directories, 2 MiB content sample,
-# 25 rows, 120 s task budget, 8 MiB full-hash ceiling.
+# Documented defaults: 10000 files (max 100000), depth 3 (max 8), 500
+# directories, 2 MiB content sample, 25 rows, 120 s task budget, 8 MiB
+# full-hash ceiling.
 DEFAULT_LIMITS: dict[str, Any] = {
-    "max_files": 200,
-    "max_files_ceiling": 2000,
+    "max_files": 10000,
+    "max_files_ceiling": 100000,
     "max_depth": 3,
     "max_depth_ceiling": 8,
     "max_dirs": 500,

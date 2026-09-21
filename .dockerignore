@@ -19,6 +19,9 @@ node_modules
 *.log
 *.tsbuildinfo
 data
+# Test/inspection artefacts written under backend/ by a local pytest run; the
+# real service data lives in backend/app/services/data and must stay.
+backend/data
 *.db
 *.sqlite3
 .DS_Store

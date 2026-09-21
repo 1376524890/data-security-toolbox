@@ -11,9 +11,9 @@ from .adapters import SourceError
 
 FIELDS = ('name', 'protocol', 'host', 'port', 'username', 'root_path', 'host_key_sha256',
           'enabled', 'limits', 'interval_minutes')
-DEFAULT_LIMITS = {'max_files': 200, 'max_depth': 3, 'max_bytes': 67108864,
+DEFAULT_LIMITS = {'max_files': 10000, 'max_depth': 3, 'max_bytes': 67108864,
                   'max_file_bytes': 8388608, 'max_seconds': 120}
-CEILINGS = {'max_files': 2000, 'max_depth': 8, 'max_bytes': 536870912,
+CEILINGS = {'max_files': 100000, 'max_depth': 8, 'max_bytes': 536870912,
             'max_file_bytes': 33554432, 'max_seconds': 900}
 
 

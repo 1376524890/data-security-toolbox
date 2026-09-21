@@ -92,7 +92,7 @@ DEFAULT_CONFIG = {
         "allow_auto_reenroll": False,
         "ports": [22, 80, 443, 445, 3306, 5432, 6379, 8080],
         "paths": [],
-        "max_files": 50,
+        "max_files": 10000,
         "demo": False,
     },
     "scan": {

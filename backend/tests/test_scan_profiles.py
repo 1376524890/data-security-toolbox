@@ -34,7 +34,7 @@ def _payload(**overrides) -> dict:
 
 def test_service_defaults_match_the_shipped_scanner() -> None:
     values = scan_profile_service.default_values()
-    assert values["max_files"] == DEFAULT_LIMITS["max_files"] == 200
+    assert values["max_files"] == DEFAULT_LIMITS["max_files"] == 10000
     assert values["max_dirs"] == 500
     assert values["max_depth"] == 3
     assert values["max_runtime_seconds"] == 120
@@ -78,7 +78,7 @@ def test_probe_config_translates_every_probe_knob() -> None:
     "values, message",
     [
         ({"max_files": 0}, "max_files"),
-        ({"max_files": 5000}, "max_files"),
+        ({"max_files": 500000}, "max_files"),
         ({"max_depth": 99}, "max_depth"),
         ({"max_runtime_seconds": 1}, "max_runtime_seconds"),
         ({"max_full_hash_size": 1024 * 1024 * 1024}, "max_full_hash_size"),

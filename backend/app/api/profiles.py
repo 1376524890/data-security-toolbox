@@ -26,7 +26,7 @@ class ProfilePayload(BaseModel):
     include_paths: list[str] = Field(default_factory=list, max_length=64)
     exclude_paths: list[str] = Field(default_factory=list, max_length=64)
     file_types: list[str] = Field(default_factory=list, max_length=64)
-    max_files: int = 200
+    max_files: int = 10000
     max_dirs: int = 500
     max_depth: int = 3
     max_runtime_seconds: int = 120

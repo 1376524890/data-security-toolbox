@@ -28,7 +28,7 @@ token_path = "/etc/data-security-toolbox/probe.token"
 ports = [22, 80, 443, 445, 3306, 5432, 6379, 8080]
 # Directories scanned for file content (sha256 + md5 + sensitive-data analysis).
 paths = []
-max_files = 50
+max_files = 10000
 demo = false
 
 # Data-asset inventory of the server the probe runs on. Only identity, inferred
@@ -55,7 +55,7 @@ poll_seconds = 30
 # and a stopped run is Partial - it never claims a path disappeared.
 #
 # Files/directories visited, and how deep the walk goes below each root.
-max_files = 200
+max_files = 10000
 max_depth = 3
 max_dirs = 500
 # Total bytes read across the whole run, and per file.

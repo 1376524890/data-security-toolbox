@@ -402,7 +402,7 @@ class ScanProfile(TimestampMixin, Base):
     exclude_paths: Mapped[list[str]] = mapped_column(JSON, default=list)
     file_types: Mapped[list[str]] = mapped_column(JSON, default=list)
     # Bounds
-    max_files: Mapped[int] = mapped_column(Integer, default=200)
+    max_files: Mapped[int] = mapped_column(Integer, default=10000)
     max_dirs: Mapped[int] = mapped_column(Integer, default=500)
     max_depth: Mapped[int] = mapped_column(Integer, default=3)
     max_runtime_seconds: Mapped[int] = mapped_column(Integer, default=120)

@@ -170,7 +170,7 @@ class ProbeDeploymentPreflightRequest(BaseModel):
     backend_url: str = Field(default='', max_length=1024)
     data_paths: list[str] = Field(default_factory=list, max_length=32, description="探针所在服务器要采集的数据资产目录")
     data_interval_seconds: int = Field(default=3600, ge=60, le=86400)
-    data_max_files: int = Field(default=200, ge=1, le=2000)
+    data_max_files: int = Field(default=10000, ge=1, le=100000)
     data_max_depth: int = Field(default=3, ge=0, le=8)
     data_include_databases: bool = True
     #: Keep the SSH credential encrypted until the owning task ends, so the

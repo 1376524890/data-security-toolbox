@@ -76,7 +76,7 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
     data_paths = [str(item) for item in (data_config.get("paths") or []) if str(item).strip()]
     data_enabled = "true" if data_paths else "false"
     data_interval = int(data_config.get("interval_seconds") or 3600)
-    data_max_files = int(data_config.get("max_files") or 200)
+    data_max_files = int(data_config.get("max_files") or 10000)
     data_max_depth = int(data_config.get("max_depth") or 3)
     data_databases = "true" if data_config.get("include_databases", True) else "false"
     return "\n".join(

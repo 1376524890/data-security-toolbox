@@ -9,7 +9,7 @@ class DataAssetScanConfig(BaseModel):
     paths: list[str] = Field(
         default_factory=list, max_length=32, description="目标服务器上要采集的目录"
     )
-    max_files: int = Field(default=200, ge=1, le=2000)
+    max_files: int = Field(default=10000, ge=1, le=100000)
     max_depth: int = Field(default=3, ge=0, le=8)
     include_databases: bool = True
     timeout_seconds: int = Field(default=120, ge=5, le=1800)
