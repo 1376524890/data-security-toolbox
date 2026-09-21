@@ -11,6 +11,7 @@ import { computed, onMounted, ref } from 'vue'
 import { getDashboardSummary, getRiskTrend, getIncidentTrend, getDashboardSeverity, getDashboardEngines, getDashboardIncidents, getHighRiskAssets, getSensitiveData } from '../../../api/dashboard'
 import { getRiskSummary, type RiskSummary } from '../../../api/risk'
 import { getHealth, type HealthResponse } from '../../../api/health'
+import { getAssessment, type AssessmentEnvelope } from '../../../api/assessments'
 import type { DashboardSummary } from '../../../types/dashboard'
 import type { Incident } from '../../../types/incident'
 import type { Asset } from '../../../types/asset'
@@ -26,6 +27,9 @@ export function useDashboard() {
   const assets = ref<Asset[]>([])
   const trend = ref<{ time: string; count: number; risk_score: number }[]>([])
   const incidentTrend = ref<Array<{ time: string; count: number }>>([])
+  // The data-security headline, taken from the same read-only assessment the
+  // 数据资产 tab renders, so the big screen and the detail page never disagree.
+  const assessment = ref<AssessmentEnvelope | null>(null)
 
   const riskLevels = computed(() => {
     const levels = risk.value?.risk_levels || {}
@@ -68,6 +72,7 @@ export function useDashboard() {
         getHighRiskAssets(),
         getSensitiveData(),
       ])
+      getAssessment('overview').then((data) => { assessment.value = data }).catch(() => undefined)
       summary.value = s
       risk.value = r
       health.value = h
@@ -89,6 +94,6 @@ export function useDashboard() {
 
   return {
     loading, error, summary, risk, health, incidents, assets, trend, incidentTrend,
-    riskLevels, severityData, engineData, sensitiveData, load,
+    riskLevels, severityData, engineData, sensitiveData, assessment, load,
   }
 }

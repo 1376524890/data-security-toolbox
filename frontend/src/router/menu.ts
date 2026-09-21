@@ -27,13 +27,7 @@ export function menuIndex(item: MenuItem): string {
 
 export const menuGroups: MenuGroup[] = [
   { group: '资产中心', items: [
-    { path: '/', title: '安全驾驶舱', icon: 'Odometer' },
-    { path: '/assets', title: '资产大屏', icon: 'Monitor' },
-    { path: '/probes', title: '探针管理', icon: 'Connection' },
-    { path: '/probe-deployments', title: '探针部署', icon: 'Position' },
-    { path: '/health', title: '健康状态', icon: 'Odometer' },
-    { path: '/reports', title: '报告中心', icon: 'Document' },
-    { path: '/audit', title: '安全审计', icon: 'DocumentChecked' },
+    { path: '/', title: '数据大屏', icon: 'Odometer' },
   ]},
   { group: '任务中心', items: [
     { path: '/tasks', title: '任务监控', icon: 'List' },

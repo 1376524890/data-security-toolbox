@@ -12,7 +12,6 @@ const sources: Record<string,string> = { file:'主机文件', database:'数据�
 <template><div>
   <div class="toolbar"><strong>{{ sensitiveOnly ? '敏感发现' : '资产目录' }}</strong><span class="muted">{{ total }} 条 · {{ owner || '全部来源' }}</span><div class="toolbar-spacer" />
     <el-button v-if="sensitiveOnly" @click="router.push('/data-types')">按敏感类型汇总</el-button>
-    <el-button v-else @click="router.push('/assets')">主机与服务资产</el-button>
     <el-button @click="router.push('/data-asset-jobs')">采集任务</el-button>
   </div>
   <div class="toolbar">

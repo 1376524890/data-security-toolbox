@@ -18,14 +18,12 @@ const routes: RouteRecordRaw[] = [
   { path: '/incidents', component: () => import('../modules/operations/incidents/IncidentCenter.vue'), meta: { title: 'Incident Center', group: 'Security Operations' } },
   { path: '/detections', component: () => import('../modules/operations/detections/DetectionCenter.vue'), meta: { title: 'Detection Center', group: 'Security Operations' } },
   { path: '/risk', component: () => import('../modules/operations/detections/RiskAnalysis.vue'), meta: { title: 'Risk Analysis', group: 'Security Operations' } },
-  { path: '/audit', component: () => import('../modules/operations/audit/SecurityAudit.vue'), meta: { title: 'Security Audit', group: 'Security Operations' } },
   // Network Analysis
   { path: '/network/pcap', component: () => import('../modules/network/pcap/PcapWorkbench.vue'), meta: { title: 'PCAP Workbench', group: 'Network Analysis' } },
   { path: '/network/live', component: () => import('../modules/network/traffic/LiveTraffic.vue'), meta: { title: 'Live Traffic', group: 'Network Analysis' } },
   { path: '/network/flows', component: () => import('../modules/network/traffic/FlowExplorer.vue'), meta: { title: 'Flow Explorer', group: 'Network Analysis' } },
   { path: '/network/protocols', component: () => import('../modules/network/protocol/ProtocolAnalysis.vue'), meta: { title: 'Protocol Analysis', group: 'Network Analysis' } },
   // Asset & Data Security
-  { path: '/assets', component: () => import('../modules/asset/AssetCenter.vue'), meta: { title: 'Asset Center', group: 'Asset & Data Security' } },
   // 任务中心 owns dispatch + progress + sources + scan config.
   { path: '/tasks', component: () => import('../modules/tasks/TaskCenter.vue'), meta: { title: '任务中心', group: 'Asset & Data Security' } },
   // 数据资产: one hub with the object model, the inventory and the assessment tabs.
@@ -58,10 +56,6 @@ const routes: RouteRecordRaw[] = [
   { path: '/engines', component: () => import('../modules/engines/EnginesOverview.vue'), meta: { title: 'Engines', group: 'Security Engines' } },
   { path: '/engines/:name', component: () => import('../modules/engines/EngineDetail.vue'), meta: { title: 'Engine', group: 'Security Engines' } },
   // Operations
-  { path: '/probes', component: () => import('../modules/operations-admin/ProbeCenter.vue'), meta: { title: 'Probe', group: 'Operations' } },
-  { path: '/probe-deployments', component: () => import('../modules/operations-admin/ProbeDeployment.vue'), meta: { title: 'Probe Deployment', group: 'Operations' } },
-  { path: '/health', component: () => import('../modules/operations-admin/HealthCenter.vue'), meta: { title: 'Health', group: 'Operations' } },
-  { path: '/reports', component: () => import('../modules/operations-admin/ReportCenter.vue'), meta: { title: 'Reports', group: 'Operations' } },
   // Tools
   { path: '/algorithms', component: () => import('../modules/tools/AlgorithmEvaluation.vue'), meta: { title: 'Algorithm Evaluation', group: 'Tools' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },

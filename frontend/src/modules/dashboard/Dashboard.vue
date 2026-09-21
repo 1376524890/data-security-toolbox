@@ -19,7 +19,7 @@ import { useDashboard } from './composables/useDashboard'
 const router = useRouter()
 const {
   loading, error, summary, risk, health, incidents, assets, trend, incidentTrend,
-  riskLevels, severityData, engineData, sensitiveData, load,
+  riskLevels, severityData, engineData, sensitiveData, assessment, load,
 } = useDashboard()
 </script>
 
@@ -35,6 +35,19 @@ const {
           <StatCard label="高风险资产" :value="summary.high_risk_assets" tone="danger" />
           <StatCard label="敏感数据资产" :value="summary.sensitive_data_assets" tone="warning" />
           <StatCard label="在线探针" :value="summary.online_probes" tone="success" />
+        </div>
+
+        <!-- Data-security headline: the five dimensions of the assessment, each
+             metric carrying its denominator so a count is never read bare. -->
+        <div v-if="assessment" class="soc-card" style="margin-top: 12px">
+          <div class="soc-card-title"><span class="dot" />数据安全评估总览</div>
+          <div class="muted">{{ assessment.conclusion }}</div>
+          <div class="stat-grid cols-5" style="margin-top: 10px">
+            <StatCard v-for="item in assessment.kpis" :key="item.key" :label="item.label"
+                      :value="String(item.value)"
+                      :sub="`分母 ${item.denominator}${item.unit ? ' ' + item.unit : ''}`"
+                      :tone="item.tone as never" />
+          </div>
         </div>
 
         <!-- Risk distribution + run status -->
@@ -102,7 +115,7 @@ const {
           </div>
           <div class="soc-card">
             <div class="soc-card-title"><span class="dot danger" />高风险资产</div>
-            <el-table :data="assets" size="small" @row-click="(row: Asset) => router.push('/assets')">
+            <el-table :data="assets" size="small">
               <el-table-column prop="ip" label="IP" />
               <el-table-column prop="service" label="服务" />
               <el-table-column prop="asset_type" label="类型" />
