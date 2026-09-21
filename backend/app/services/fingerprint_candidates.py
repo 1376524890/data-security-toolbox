@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import PolicyGroup, SystemSetting
 
@@ -70,6 +71,7 @@ def record(db: Session, *, sha256: str, path: str, name: str, source_name: str,
         "first_seen": datetime.now(UTC).isoformat(),
     })
     row.value = {"items": items[:500]}
+    flag_modified(row, "value")
     db.flush()
     return True
 
@@ -86,7 +88,8 @@ def _find(items: list[dict[str, Any]], sha256: str) -> dict[str, Any] | None:
     return next((item for item in items if str(item.get("sha256", "")).lower() == digest), None)
 
 
-def accept(db: Session, sha256: str, *, group_name: str = "", actor: str = "admin") -> dict[str, Any]:
+def accept(db: Session, sha256: str, *, group_name: str = "",
+           actor: str = "admin") -> dict[str, Any]:
     """One click: put the hash into a policy group, never into the default policy.
 
     With no explicit name the group is named after the task that found it
@@ -104,7 +107,8 @@ def accept(db: Session, sha256: str, *, group_name: str = "", actor: str = "admi
         f"任务 #{item['task_id']} 指纹" if item.get("task_id") else "手工确认指纹")
     group = db.scalar(select(PolicyGroup).where(PolicyGroup.name == name))
     if group is None:
-        group = PolicyGroup(name=name, description=f"由 {item.get('path') or '扫描结果'} 确认的指纹规则集",
+        group = PolicyGroup(name=name,
+                            description=f"由 {item.get('path') or '扫描结果'} 确认的指纹规则集",
                             scope=["file", "network"], fingerprints=[], created_by=actor)
         db.add(group)
         db.flush()
@@ -115,6 +119,7 @@ def accept(db: Session, sha256: str, *, group_name: str = "", actor: str = "admi
     item["status"] = "accepted"
     item["group_name"] = group.name
     row.value = {"items": row.value["items"]}
+    flag_modified(row, "value")
     db.commit()
     return {"sha256": digest, "group_id": group.id, "group_name": group.name}
 
@@ -127,5 +132,6 @@ def ignore(db: Session, sha256: str) -> dict[str, Any]:
         raise ValueError("候选指纹不存在")
     item["status"] = "ignored"
     row.value = {"items": row.value["items"]}
+    flag_modified(row, "value")
     db.commit()
     return {"sha256": digest, "status": "ignored"}
