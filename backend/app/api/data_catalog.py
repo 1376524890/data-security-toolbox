@@ -16,12 +16,20 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.api.pagination import page_response, paginate
 from app.core.database import get_db
-from app.models import AssetInstance, DataObject, Detection, DetectionEvidence, Probe, Task
+from app.models import (
+    AssetInstance,
+    DataObject,
+    Detection,
+    DetectionEvidence,
+    FileSource,
+    Probe,
+    Task,
+)
 from app.services import sensitivity_map
 from app.services.audit_service import record_audit
 from app.services.data_objects import definitions, projection, queries
@@ -358,6 +366,62 @@ def detection_evidence(detection_id: int, db: Session = Depends(get_db)) -> dict
         'count': len(rows),
         'matches_returned': sum(len(item['matches']) for item in items),
         'note': '证据含规则、识别器、字段与计数，并回传命中处原文（每命中最多 3 条，长度有上限）',
+    }
+
+
+#: How much of a risky file is shown inline. Bounded on purpose: this is a
+#: preview, not a download, and the platform stays a read-only observer.
+PREVIEW_BYTES = 64 * 1024
+
+
+@router.get('/asset-instances/{instance_id}/content')
+def asset_instance_content(instance_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Preview the file an instance points at, re-read from its source on demand.
+
+    A scan downloads to a temporary file and deletes it, so no file body is kept:
+    the preview goes back to the source, read-only and capped. Host files a probe
+    collected cannot be re-read this way - the probe owns that path - and that is
+    stated instead of being shown as an empty file.
+    """
+    instance = db.get(AssetInstance, instance_id)
+    if instance is None:
+        raise HTTPException(404, 'asset instance not found')
+    if instance.instance_type != 'file':
+        raise HTTPException(400, 'only file instances have content to preview')
+    owner = str(instance.owner_key or '')
+    if not owner.startswith('file-source:'):
+        raise HTTPException(409, detail={
+            'error': 'not_retrievable',
+            'detail': '该文件由探针或上传采集，平台只保留元数据与命中原文；原文预览需要回到采集端重新读取'})
+    source = db.get(FileSource, int(owner.split(':', 1)[1]))
+    if source is None:
+        raise HTTPException(404, 'source not found')
+    try:
+        from app.services.file_scan import adapters, service
+
+        config = {'protocol': source.protocol, 'host': source.host, 'port': source.port,
+                  'username': source.username, 'host_key_sha256': source.host_key_sha256,
+                  'root_path': source.root_path}
+        with adapters.connect(config, service.password(source)) as remote:
+            payload = remote.preview(instance.path, PREVIEW_BYTES)
+    except Exception as exc:  # noqa: BLE001 - reported as a read failure
+        raise HTTPException(502, detail={'error': 'read_failed',
+                                         'detail': type(exc).__name__}) from exc
+    text = None
+    encoding = ''
+    for candidate in ('utf-8', 'gb18030'):
+        try:
+            text = payload.decode(candidate)
+            encoding = candidate
+            break
+        except UnicodeDecodeError:
+            continue
+    return {
+        'instance_id': instance.id, 'path': instance.path, 'name': instance.name,
+        'source_name': source.name, 'size': int(instance.size or 0),
+        'preview_bytes': len(payload), 'truncated': int(instance.size or 0) > len(payload),
+        'encoding': encoding or 'binary', 'text': text,
+        'hex': None if text is not None else payload[:4096].hex(),
     }
 
 

@@ -233,3 +233,31 @@ class Remote:
                         receive(block)
             else:
                 self.client.retrbinary('RETR ' + path, receive, blocksize=65536)
+
+    def preview(self, path, limit):
+        """At most ``limit`` bytes of ``path``, read once, never stored.
+
+        A risk file can be gigabytes; previewing it must not pull the whole thing
+        over the link, so both transports stop as soon as the window is full.
+        """
+        if self.sftp:
+            with self.client.open(path, 'rb') as handle:
+                return handle.read(limit)
+        chunks: list[bytes] = []
+        read = 0
+
+        class _Full(Exception):
+            pass
+
+        def receive(block):
+            nonlocal read
+            chunks.append(block)
+            read += len(block)
+            if read >= limit:
+                raise _Full
+
+        try:
+            self.client.retrbinary('RETR ' + path, receive, blocksize=32768)
+        except _Full:
+            pass
+        return b''.join(chunks)[:limit]

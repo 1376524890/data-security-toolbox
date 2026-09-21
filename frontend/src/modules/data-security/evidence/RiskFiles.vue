@@ -22,6 +22,10 @@ const total = ref(0)
 const filters = reactive({ page: 1, page_size: 50, search: '', level: '', source_kind: '' })
 const selected = ref<RiskFile | null>(null)
 const drawer = ref(false)
+// The preview re-reads the file from its source on demand; the platform keeps no
+// file body, so the button is the only way to see the original content.
+const preview = ref<{ loading: boolean; error: string; text: string; hex: string; encoding: string; truncated: boolean; size: number }>(
+  { loading: false, error: '', text: '', hex: '', encoding: '', truncated: false, size: 0 })
 
 const LEVELS = ['L4', 'L3', 'L2', 'L1']
 const SOURCES = [{ l: '主机文件', v: 'file' }, { l: '共享文件', v: 'file_share' }, { l: '数据库', v: 'database' }]
@@ -48,6 +52,20 @@ async function load(): Promise<void> {
 function open(row: RiskFile): void {
   selected.value = row
   drawer.value = true
+  preview.value = { loading: false, error: '', text: '', hex: '', encoding: '', truncated: false, size: 0 }
+}
+
+async function loadPreview(): Promise<void> {
+  if (!selected.value) return
+  preview.value = { ...preview.value, loading: true, error: '' }
+  try {
+    const data = await apiGet<{ text: string | null; hex: string | null; encoding: string; truncated: boolean; size: number }>(
+      `/asset-instances/${selected.value.id}/content`)
+    preview.value = { loading: false, error: '', text: data.text || '', hex: data.hex || '',
+      encoding: data.encoding, truncated: data.truncated, size: data.size }
+  } catch (err) {
+    preview.value = { ...preview.value, loading: false, error: String(err) }
+  }
 }
 
 onMounted(load)
@@ -117,6 +135,21 @@ onMounted(load)
           <el-descriptions-item label="覆盖口径">{{ selected.coverage }} / {{ selected.termination_reason }}</el-descriptions-item>
           <el-descriptions-item label="权限">{{ selected.permission || '未上报' }}</el-descriptions-item>
         </el-descriptions>
+        <div class="section-title">原文件预览
+          <el-button size="small" type="primary" style="margin-left: 10px"
+                     :loading="preview.loading" @click="loadPreview">读取原文件</el-button>
+        </div>
+        <div v-if="preview.error" class="preview-error">{{ preview.error }}</div>
+        <template v-else-if="preview.text || preview.hex">
+          <div class="muted">
+            编码 {{ preview.encoding }} · 预览 {{ preview.text ? preview.text.length : preview.hex.length / 2 }} 字节
+            <span v-if="preview.truncated">（文件共 {{ preview.size }} 字节，仅显示前 64 KiB）</span>
+          </div>
+          <pre v-if="preview.text" class="preview">{{ preview.text }}</pre>
+          <pre v-else class="preview">{{ preview.hex }}</pre>
+        </template>
+        <div v-else class="muted">点击「读取原文件」从采集来源只读回取该文件（最多 64 KiB，平台不留存文件本体）。</div>
+
         <div class="section-title">原始记录</div>
         <JsonViewer :value="selected" />
       </template>
@@ -128,5 +161,8 @@ onMounted(load)
 .muted { color: var(--soc-text-dim); font-size: 12px; }
 .section-title { font-weight: 600; margin: 14px 0 8px; }
 .wrap { overflow-wrap: anywhere; }
+.preview { background: var(--soc-panel-2); border: 1px solid var(--soc-border); border-radius: 6px;
+           padding: 10px; font-size: 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
+.preview-error { color: var(--soc-warning); font-size: 12px; }
 :deep(.el-table__row) { cursor: pointer; }
 </style>
