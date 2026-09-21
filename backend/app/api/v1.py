@@ -27,12 +27,6 @@ from app.api.data_assets import sensitive_findings as sensitive_findings
 from app.api.database_connections import (
     router as database_connections_router,
 )
-from app.api.detections import (
-    router as detections_router,
-)
-from app.api.engines import (
-    router as engines_router,
-)
 from app.api.file_sources import router as file_sources_router
 from app.api.files import (
     router as files_router,
@@ -42,9 +36,6 @@ from app.api.finding_presenter import _attack as _attack
 from app.api.finding_presenter import _serialize_detection as _serialize_detection
 from app.api.health import (
     router as health_router,
-)
-from app.api.incidents import (
-    router as incidents_router,
 )
 from app.api.integrations import (
     router as integrations_router,
@@ -63,9 +54,6 @@ from app.api.probes import (
 )
 from app.api.reports import (
     router as reports_router,
-)
-from app.api.rules import (
-    router as rules_router,
 )
 from app.api.targets import (
     router as targets_router,
@@ -86,16 +74,12 @@ router.include_router(data_assets_router)
 router.include_router(pcaps_router)
 router.include_router(files_router)
 router.include_router(assets_router)
-router.include_router(incidents_router)
 router.include_router(alerts_router)
 router.include_router(tasks_router)
 router.include_router(reports_router)
-router.include_router(detections_router)
-router.include_router(engines_router)
 router.include_router(dashboard_router)
 router.include_router(probes_router)
 router.include_router(integrations_router)
-router.include_router(rules_router)
 router.include_router(auth_router)
 router.include_router(health_router)
 router.include_router(network_scan_router)
