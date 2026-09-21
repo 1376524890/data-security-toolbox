@@ -37,12 +37,13 @@ describe('format utils', () => {
 describe('navigation menu', () => {
   it('produces a flat route list covering all groups', () => {
     const flat = flatMenu()
-    expect(flat.length).toBeGreaterThanOrEqual(20)
-    expect(flat.some((m) => m.path === '/network/pcap')).toBe(true)
-    // The engines live behind one sidebar entry; the per-engine pages are
-    // reached from the overview, not from the menu.
-    expect(flat.some((m) => m.path === '/engines')).toBe(true)
-    expect(flat.some((m) => m.path.startsWith('/engines/'))).toBe(false)
+    expect(flat.length).toBeGreaterThanOrEqual(10)
+    // The reports and the rule tabs are the only entries; the removed pages
+    // (PCAP 工作台 / 实时流量 / IOC / CVE / 引擎总览 …) must not come back.
+    for (const gone of ['/network/pcap', '/network/live', '/network/flows',
+      '/network/protocols', '/threat/ioc', '/threat/cve', '/engines', '/algorithms']) {
+      expect(flat.some((m) => m.path === gone)).toBe(false)
+    }
   })
   it('has exactly the six data-security sections', () => {
     expect(menuGroups.map((g) => g.group)).toEqual([

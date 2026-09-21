@@ -13,12 +13,6 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../modules/dashboard/Dashboard.vue'),
     meta: { title: 'Dashboard', group: 'Overview' },
   },
-  // Security Operations
-  // Network Analysis
-  { path: '/network/pcap', component: () => import('../modules/network/pcap/PcapWorkbench.vue'), meta: { title: 'PCAP Workbench', group: 'Network Analysis' } },
-  { path: '/network/live', component: () => import('../modules/network/traffic/LiveTraffic.vue'), meta: { title: 'Live Traffic', group: 'Network Analysis' } },
-  { path: '/network/flows', component: () => import('../modules/network/traffic/FlowExplorer.vue'), meta: { title: 'Flow Explorer', group: 'Network Analysis' } },
-  { path: '/network/protocols', component: () => import('../modules/network/protocol/ProtocolAnalysis.vue'), meta: { title: 'Protocol Analysis', group: 'Network Analysis' } },
   // Asset & Data Security
   // 任务中心 owns dispatch + progress + sources + scan config.
   { path: '/tasks', component: () => import('../modules/tasks/TaskCenter.vue'), meta: { title: '任务中心', group: 'Asset & Data Security' } },
@@ -26,7 +20,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/data-assets', component: () => import('../modules/data-security/DataAssetHub.vue'), meta: { title: '数据资产', group: 'Asset & Data Security' } },
   // 采集与规则 owns sources, scan config, collection jobs and all rule management.
   { path: '/collection-rules', component: () => import('../modules/collection/CollectionRules.vue'), meta: { title: '采集与规则', group: 'Asset & Data Security' } },
-  { path: '/files', component: () => import('../modules/data-security/FileAnalysis.vue'), meta: { title: '文件证据', group: 'Asset & Data Security' } },
+  { path: '/files', component: () => import('../modules/data-security/FileEvidence.vue'), meta: { title: '文件证据', group: 'Asset & Data Security' } },
   // 数据流动与防护 keeps only results and the egress verdict.
   { path: '/network/dlp', component: () => import('../modules/data-security/flow/DataFlowProtection.vue'), meta: { title: '数据流动与防护', group: 'Asset & Data Security' } },
   // Old top-level routes are gone from the menu; these redirects keep deep links
@@ -35,22 +29,16 @@ const routes: RouteRecordRaw[] = [
   { path: '/data-types', redirect: { path: '/data-assets' } },
   { path: '/sensitive', redirect: { path: '/data-assets' } },
   { path: '/data-asset-jobs', redirect: { path: '/collection-rules', query: { view: 'jobs' } } },
-  { path: '/source-management', redirect: { path: '/collection-rules', query: { view: 'sources' } } },
-  { path: '/database-connections', redirect: { path: '/collection-rules', query: { view: 'sources' } } },
-  { path: '/scan-profiles', redirect: { path: '/collection-rules', query: { view: 'profiles' } } },
+  { path: '/source-management', redirect: { path: '/collection-rules' } },
+  { path: '/database-connections', redirect: { path: '/collection-rules' } },
+  { path: '/scan-profiles', redirect: { path: '/collection-rules' } },
   { path: '/rule-versions', redirect: { path: '/collection-rules', query: { view: 'versions' } } },
-  // Threat Intelligence
-  { path: '/threat/ioc', component: () => import('../modules/threat/IocCenter.vue'), meta: { title: 'IOC', group: 'Threat Intelligence' } },
-  { path: '/threat/cve', component: () => import('../modules/threat/CveCenter.vue'), meta: { title: 'CVE', group: 'Threat Intelligence' } },
-  // The detection-rule library is a tab of 采集与规则 now; keep the old URL alive.
-  { path: '/threat/rules', redirect: { path: '/collection-rules', query: { view: 'library' } } },
-  { path: '/threat/offline', component: () => import('../modules/threat/OfflineResource.vue'), meta: { title: 'Offline Resource', group: 'Threat Intelligence' } },
-  // Security Engines
-  { path: '/engines', component: () => import('../modules/engines/EnginesOverview.vue'), meta: { title: 'Engines', group: 'Security Engines' } },
-  { path: '/engines/:name', component: () => import('../modules/engines/EngineDetail.vue'), meta: { title: 'Engine', group: 'Security Engines' } },
-  // Operations
-  // Tools
-  { path: '/algorithms', component: () => import('../modules/tools/AlgorithmEvaluation.vue'), meta: { title: 'Algorithm Evaluation', group: 'Tools' } },
+  { path: '/threat/rules', redirect: { path: '/collection-rules' } },
+  { path: '/threat/ioc', redirect: { path: '/collection-rules' } },
+  { path: '/threat/cve', redirect: { path: '/collection-rules' } },
+  { path: '/threat/offline', redirect: { path: '/collection-rules' } },
+  { path: '/engines', redirect: { path: '/collection-rules' } },
+  { path: '/algorithms', redirect: { path: '/collection-rules' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

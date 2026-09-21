@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getEgressPolicy, saveEgressPolicy } from '../../../api/egress'
+import { getEgressPolicy, saveEgressPolicy } from '../../api/egress'
 
 // The only egress control: manual white/black lists and extra internal ranges.
 // The default judgement is the static CIDR→region table; when that table is not
