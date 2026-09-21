@@ -21,9 +21,20 @@ def test_every_assessment_returns_the_five_segment_envelope() -> None:
             assert isinstance(body["gaps"], list)
 
 
-def test_assessments_never_look_clean_without_the_region_table() -> None:
-    """No region table ⇒ egress degrades to “无法判定”, never “无出境”."""
-    with TestClient(app) as client:
-        body = client.get("/api/v1/assessments/egress").json()
-    assert body["caliber"]["region_table_present"] is False
-    assert "无法判定" in body["conclusion"]
+def test_assessments_never_look_clean_without_the_region_table(monkeypatch) -> None:
+    """No region table ⇒ egress degrades to “无法判定”, never “无出境”.
+
+    The shipped table is present, so the degrade path is forced here rather than
+    relying on the deployment having no data.
+    """
+    from app.services import egress_regions
+
+    monkeypatch.setattr(egress_regions, "country_table", lambda path=None: {"regions": {}})
+    egress_regions._country_ranges.cache_clear()
+    try:
+        with TestClient(app) as client:
+            body = client.get("/api/v1/assessments/egress").json()
+        assert body["caliber"]["region_table_present"] is False
+        assert "无法判定" in body["conclusion"]
+    finally:
+        egress_regions._country_ranges.cache_clear()

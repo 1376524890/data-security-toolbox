@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+from bisect import bisect_right
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -76,25 +77,67 @@ def _special_networks() -> tuple[tuple[ipaddress._BaseNetwork, str], ...]:
     return tuple(_networks([{"cidr": cidr, "region": label} for cidr, label in SPECIAL_USE]))
 
 
-def country_table(path: Path | None = None) -> list[dict[str, str]]:
-    """The static CIDR → country table, or an empty list when none is present."""
+def country_table(path: Path | None = None) -> dict[str, Any]:
+    """The static table: ``{"version", "source", "count", "regions": {CC: [CIDR]}}``.
+
+    Empty ``regions`` means no country table is loaded, which is what drives the
+    degrade-to-"无法判定" path instead of a false "无出境".
+    """
     target = path or EGRESS_TABLE_PATH
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
+        return {"regions": {}}
     regions = payload.get("regions") if isinstance(payload, dict) else payload
-    return [{"cidr": str(item["cidr"]), "region": str(item["region"])}
-            for item in (regions or []) if isinstance(item, dict) and item.get("cidr")]
+    if not isinstance(regions, dict):
+        return {"regions": {}}
+    return {"version": str(payload.get("version", "")), "source": str(payload.get("source", "")),
+            "count": int(payload.get("count", 0) or 0), "regions": regions}
 
 
-def _country_networks() -> list[tuple[ipaddress._BaseNetwork, str]]:
-    return _networks(country_table())
+@lru_cache(maxsize=1)
+def _country_ranges() -> tuple[tuple[int, ...], tuple[tuple[int, int, str], ...]]:
+    """Flattened, sorted ``(starts, (start, end, country))`` for a bisect lookup.
+
+    A linear scan of ~260k registry blocks per address would be unusable, so the
+    table is resolved once into sorted integer ranges and each lookup is O(log n).
+    """
+    table = country_table().get("regions") or {}
+    flat: list[tuple[int, int, str]] = []
+    for country, cidrs in table.items():
+        code = str(country).upper()
+        for cidr in cidrs or []:
+            try:
+                network = ipaddress.ip_network(str(cidr), strict=False)
+            except ValueError:
+                continue
+            if network.version != 4:
+                continue
+            flat.append((int(network.network_address), int(network.broadcast_address), code))
+    flat.sort()
+    return tuple(item[0] for item in flat), tuple(flat)
+
+
+def _country_of(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return ""
+    if address.version != 4:
+        return ""
+    number = int(address)
+    starts, ranges = _country_ranges()
+    index = bisect_right(starts, number) - 1
+    if index >= 0:
+        start, end, country = ranges[index]
+        if start <= number <= end:
+            return country
+    return ""
 
 
 def table_present() -> bool:
     """True only when a *country* table is loaded; drives the degrade-to-unknown path."""
-    return bool(country_table())
+    return bool(country_table().get("regions") or {})
 
 
 def _entry(ip: str | None, networks) -> str:
@@ -106,6 +149,23 @@ def _entry(ip: str | None, networks) -> str:
         if address.version == network.version and address in network:
             return region
     return ""
+
+
+def _in(ip: str | None, entries: Any) -> bool:
+    """True when ``ip`` falls inside any of the given ranges.
+
+    Separate from :func:`_entry` on purpose: a black/white-list range carries no
+    region label, so membership must not be decided by whether the label is
+    empty (that bug made every list entry silently miss).
+    """
+    try:
+        address = ipaddress.ip_address(str(ip or ""))
+    except ValueError:
+        return False
+    for network, _region in _networks(entries):
+        if address.version == network.version and address in network:
+            return True
+    return False
 
 
 def policy(db: Session | None) -> dict[str, Any]:
@@ -151,19 +211,16 @@ def normalize_policy(value: dict[str, Any] | None) -> dict[str, Any]:
 def classify(ip: str | None, *, blacklist: list[str], whitelist: list[str],
              internal: list[str]) -> dict[str, str]:
     """Bucket one destination address: whitelist / blacklist / internal / country|unknown."""
-    black = _entry(ip, _networks(blacklist))
-    if black:
+    if _in(ip, blacklist):
         return {"bucket": "blacklist", "region": "", "reason": "命中黑名单"}
-    white = _entry(ip, _networks(whitelist))
-    if white:
+    if _in(ip, whitelist):
         return {"bucket": "whitelist", "region": "", "reason": "命中白名单"}
     special = _entry(ip, _special_networks())
     if special:
         return {"bucket": "internal", "region": "", "reason": f"特殊/私网地址（{special}）"}
-    internal_hit = _entry(ip, _networks(internal))
-    if internal_hit:
+    if _in(ip, internal):
         return {"bucket": "internal", "region": "", "reason": "命中自定义内网段"}
-    region = _entry(ip, _country_networks())
+    region = _country_of(str(ip or ""))
     if region:
         return {"bucket": "country", "region": region, "reason": f"地区表命中 {region}"}
     return {"bucket": "unknown", "region": "", "reason": "地区表未命中"}

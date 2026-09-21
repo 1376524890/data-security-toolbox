@@ -40,3 +40,7 @@ deploy-data/
 # Built-in data detection rules are source assets.
 !backend/app/rules/data/
 !backend/app/rules/data/*.yar
+
+# Offline CIDR→country table (a source asset, rebuilt by scripts/build_egress_regions.py).
+!backend/app/services/data/
+!backend/app/services/data/*.json
