@@ -1,8 +1,8 @@
 # 项目状态
 
-2026-09-21 第三十三批（已推送：提交 `9cb08b2`、`d67c989`）：**数据安全评估与菜单收敛（第一批）**。
+2026-09-21 第三十三批（已推送：提交 `9cb08b2`、`d67c989`、`bc58775`、`58aaad5`）：**数据安全评估与菜单收敛**。
 本次把控制台「资产与数据安全」从 11 项菜单收敛为 **6 项**（资产中心 / 任务中心 / 数据资产 / 数据流动与防护 /
-文件证据 / 策略中心），新增**策略分组**与**六路只读评估**，并把平台持久状态从命名卷改为本地目录。
+文件证据 / **采集与规则**），新增**策略分组**与**六路只读评估**，并把平台持久状态从命名卷改为本地目录。
 
 - **后端**：新增 `policy_groups` 表（迁移 `0018_policy_groups`，`down_revision=0017_file_sources`）与
   `GET/POST /api/v1/policy-groups`、`GET/PATCH/DELETE /policy-groups/{id}`（被未完成任务引用时删除返回 409）；
@@ -11,8 +11,11 @@
   新增 `services/egress_regions.py`（离线 IP 出境判定：白名单 > 黑名单 > 特殊网段 > 静态 CIDR→地区表，
   **无地区表时降级为「无法判定」**）与 `GET/POST /api/v1/egress/policy`。不改任何已发布迁移、不新增事实来源。
 - **前端**：`router/menu.ts` 与 `router/index.ts` 收敛为 6 项，新增 `DataAssetHub`（3 视图 + 数据安全评估）、
-  任务中心、策略中心、数据流动与防护四个 Hub；旧顶层路由改为重定向（不重复出现在菜单、旧链接仍可用），
-  详情路由保留；评估用单一 `AssessmentPanel` 渲染五段式骨架。
+  任务中心、采集与规则、数据流动与防护四个 Hub；`任务中心`是**下发控制台**（选目标与连接方式〔探针/无探针〕、
+  文件范围、检测项〔策略组〕、单次或定时，另含进度监控），`采集与规则`=`来源管理 + 扫描配置 + 采集任务 +
+  规则版本 + 策略分组 + 检测规则库`（页面物理归入 `modules/collection/`）；旧顶层路由改为重定向、详情路由保留；
+  评估用单一 `AssessmentPanel` 渲染五段式骨架。已删除 `SensitiveDiscovery` 页与 composable、未用的评估
+  composable、前端 `sensitive/findings` 客户端与 `/policies` 路由等死代码。
 - **持久化**：`docker-compose.yml` 的 postgres/redis/backend 由命名卷改为 `${DATA_ROOT:-./deploy-data}` 绑定挂载，
   重建不再触碰数据；首次部署需对 `deploy-data/backend` 执行一次 `chown 10001:10001`（手册已写）。
 - **验证**：前端 `vue-tsc` 通过、`vitest` 31 文件 / 277 项通过；后端策略分组 CRUD、评估契约、两组边界测试共
