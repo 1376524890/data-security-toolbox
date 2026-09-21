@@ -33,6 +33,10 @@ dist-deploy.tar
 .local/
 probe_packages/
 
+# Local persistent data root for the compose stack (DB, redis, storage, reports).
+# Bind-mounted so a rebuild never touches it and it can be backed up as a folder.
+deploy-data/
+
 # Built-in data detection rules are source assets.
 !backend/app/rules/data/
 !backend/app/rules/data/*.yar

@@ -431,6 +431,33 @@ class ScanProfile(TimestampMixin, Base):
     created_by: Mapped[str] = mapped_column(String(128), default="")
 
 
+# --- policy groups -----------------------------------------------------------
+# A policy group is the selectable unit at task-dispatch time: it bundles the
+# rule identifiers, sensitive categories and thresholds a scan should enforce,
+# so an operator picks "which policy" instead of every rule one by one. Rule
+# *definitions* stay in the rule library (`rules` + the rule store); a group only
+# references them, so no rule content is duplicated here and editing a rule still
+# has a single home.
+class PolicyGroup(TimestampMixin, Base):
+    __tablename__ = "policy_groups"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str] = mapped_column(String(512), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    #: Bumped on every edit so a task can say which revision it ran with.
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    #: Where the group applies: any of file / network / database.
+    scope: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: Rule identifiers from the shared rule library (builtin pack + manual rules).
+    rule_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: Extra sensitive categories/keywords beyond the referenced rules.
+    categories: Mapped[list[str]] = mapped_column(JSON, default=list)
+    keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
+    min_confidence: Mapped[float] = mapped_column(Float, default=0.6)
+    min_matches: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(128), default="")
+
+
 # --- data objects, instances and detections ----------------------------------
 # Three levels instead of one flat row. A `DataObject` is the logical identity of
 # the content, an `AssetInstance` is one physical copy on one probe, and a

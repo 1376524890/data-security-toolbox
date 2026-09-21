@@ -1,0 +1,7 @@
+rule_id: DATA_PII_001
+title: 个人敏感信息
+severity: High
+confidence: 0.9
+condition: pii_count > 0
+recommendation: 对包含身份证、手机号、银行卡、邮箱等 PII 的文件实施加密、脱敏和访问控制。
+

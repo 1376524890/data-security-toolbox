@@ -321,6 +321,45 @@ def save_dlp_policy(payload: DlpPolicy, db: Session = Depends(get_db)):
     return row.value
 
 
+class EgressPolicy(BaseModel):
+    """Manual overrides for the IP-based egress verdict.
+
+    Whitelist wins over blacklist; both win over the static region table, and a
+    destination that hits neither the lists nor the table stays "未识别" instead
+    of being reported as clean. Invalid addresses are rejected, not stored.
+    """
+
+    whitelist: list[str] = Field(default_factory=list, max_length=512)
+    blacklist: list[str] = Field(default_factory=list, max_length=512)
+    internal_cidrs: list[str] = Field(default_factory=list, max_length=512)
+
+
+@router.get('/egress/policy')
+def egress_policy(db: Session = Depends(get_db)):
+    from app.services import egress_regions
+    payload = egress_regions.policy(db)
+    payload['region_table_present'] = egress_regions.table_present()
+    payload['table_path'] = str(egress_regions.EGRESS_TABLE_PATH)
+    return payload
+
+
+@router.post('/egress/policy')
+def save_egress_policy(payload: EgressPolicy, db: Session = Depends(get_db)):
+    from app.services import egress_regions
+    try:
+        clean = egress_regions.normalize_policy(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    row = db.scalar(
+        select(SystemSetting).where(SystemSetting.key == egress_regions.EGRESS_POLICY_KEY))
+    if not row:
+        row = SystemSetting(key=egress_regions.EGRESS_POLICY_KEY)
+        db.add(row)
+    row.value = clean
+    db.commit()
+    return clean
+
+
 @router.get('/dlp/transfers')
 def dlp_transfers(pcap_id: int | None = None, db: Session = Depends(get_db)):
     query = select(AnalysisResult, Task).join(Task, AnalysisResult.task_id == Task.id).where(AnalysisResult.module == 'dlp')

@@ -10,4 +10,4 @@ services:
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
       - ./backend/scripts:/app/scripts
-      - backend_data:/app/data
+      - ${DATA_ROOT:-./deploy-data}/backend:/app/data

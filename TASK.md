@@ -1,5 +1,34 @@
 # 当前任务：资产与数据安全增强
 
+## 第三十三批：菜单收敛与数据安全评估（2026-09-21，进行中）
+
+用户目标：菜单从 11 项收敛到 6 项（资产中心 / 任务中心 / 数据资产 / 数据流动与防护 / 文件证据 / 策略中心），
+数据安全评估作为「数据资产」下的一个 Tab（不再单独成页）；检测规则库归「策略中心」并支持策略分组，下发任务时勾选
+策略组；采集来源等下发必要项归「任务中心」；出境管理只在「数据流动与防护」出现一次；所有展示只出现一遍。
+非文本数据（Word/PDF/Excel/图片/数据库/压缩包）要有内容检查方法，**OCR 放服务端**（需 OCR 的字节上传到平台分析，
+减轻探针负担）；压缩包做有界递归解压，加密/无法解析的报告「无法解析」。
+
+用户已定：策略分组用**数据库表**保存；数据库等重要数据**映射到本地持久化目录**，避免重建后丢失。
+
+**已完成（第三十三批 批次 1：后端策略分组 + Docker 本地持久化）**
+- `backend/app/models.py` 新增 `PolicyGroup`（策略组：规则 id + 类别/关键词/阈值 + 适用范围 file/network/database）。
+- `backend/alembic/versions/0018_policy_groups.py`（`down_revision=0017_file_sources`，幂等、不改历史迁移）。
+- `backend/app/services/policy_groups.py`（validate/serialize/apply_values，未知字段与越界值一律拒绝）。
+- `backend/app/api/policy_groups.py` + `v1.py` 注册一次：`GET/POST /policy-groups`、`GET/PATCH/DELETE /policy-groups/{id}`；
+  删除守卫：仍未完成的任务若快照引用了该组则 409。
+- `backend/tests/test_policy_group_boundaries.py`（路由面冻结、只注册一次、无重复路径、服务不重定义规则）。
+- `docker-compose.yml` / `docker-compose.dev.yml`：命名卷改为本地绑定目录 `${DATA_ROOT:-./deploy-data}/{postgres,redis,backend}`，
+  删除顶层 `volumes:`；`.gitignore` 忽略 `deploy-data/`；`docs/数据安全工具箱作业指导书.md`、`docs/部署与运行手册.md`
+  补「本地持久化 + 从旧命名卷一次性迁移」说明。
+
+**验证**：`ruff check` 新文件仅剩与既有 `profiles.py` 同款的 B008（历史存量写法）；`python3 -m ast.parse` 全部通过；
+`docker compose config -q` 在 base / +prod+dev / +integrations 三种合并下均 exit 0，绑定路径解析到 `deploy-data/*`。
+未跑 pytest（host 无 py3.11 且无 venv，需重建后端镜像后在容器内跑）。
+
+**待办（后续批次）**：前端导航/路由收敛与页面搬迁；`api/assessments.py`+`services/assessments/` 只读聚合；
+评估 Tab 五段式（结论条→KPI 带分母→主视图→明细→口径缺口）；出境判定（IP + 黑白名单 + 地区表 + 降级）；
+服务端 OCR 与非文本抽取（docx/doc/xls/pdf/图片/归档有界解压，加密/无法解析如实标注）。
+
 ## 第三十二批：探针自带运行时（探针 3.7.0，2026-09-21）
 
 用户要求：继续完成对探针的修改。承接 2026-09-21 上午已改到工作树的探针 3.7.0 自带运行时（分发包自带
