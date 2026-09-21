@@ -137,8 +137,18 @@ onMounted(load)
         <el-form-item label="规则 ID"><el-input v-model="draft.rules" type="textarea" :rows="4" placeholder="每行一个规则 ID（来自规则库）" /></el-form-item>
         <el-form-item label="敏感类别"><el-input v-model="draft.categories" type="textarea" :rows="2" placeholder="每行一个类别，例如 ID_CARD" /></el-form-item>
         <el-form-item label="关键词"><el-input v-model="draft.keywords" type="textarea" :rows="2" placeholder="每行一个关键词" /></el-form-item>
-        <el-form-item label="最低置信度"><el-input-number v-model="draft.min_confidence" :min="0" :max="1" :step="0.05" :precision="2" /></el-form-item>
-        <el-form-item label="最少命中"><el-input-number v-model="draft.min_matches" :min="1" :max="10000" /></el-form-item>
+        <el-form-item label="最低置信度">
+          <el-select v-model="draft.min_confidence" style="width: 220px">
+            <el-option v-for="item in [{ l: '宽松 0.50', v: 0.5 }, { l: '默认 0.60', v: 0.6 }, { l: '较严 0.70', v: 0.7 }, { l: '严格 0.80', v: 0.8 }, { l: '最严 0.90', v: 0.9 }]"
+                       :key="item.v" :label="item.l" :value="item.v" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="最少命中">
+          <el-select v-model="draft.min_matches" style="width: 220px">
+            <el-option v-for="item in [{ l: '1 次', v: 1 }, { l: '2 次', v: 2 }, { l: '3 次', v: 3 }, { l: '5 次', v: 5 }, { l: '10 次', v: 10 }]"
+                       :key="item.v" :label="item.l" :value="item.v" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="启用"><el-switch v-model="draft.enabled" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="dialog = false">取消</el-button><el-button type="primary" :loading="busy" @click="save">保存</el-button></template>

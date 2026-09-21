@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import StateBox from '../../components/common/StateBox.vue'
 import { apiGet, apiPatch, apiPost } from '../../api/client'
@@ -18,6 +18,9 @@ const rules = ref<Rule[]>([])
 const busy = ref(false)
 const dialog = ref(false)
 const draft = reactive({ name: '', entity: '', pattern: '', enabled: true })
+/** Categories already in use, so a new rule can reuse one instead of inventing a
+ *  near-duplicate spelling. Free text stays possible. */
+const entities = computed(() => [...new Set(rules.value.map((rule) => rule.entity).filter(Boolean))].sort())
 
 async function load(): Promise<void> {
   loading.value = true
@@ -106,7 +109,12 @@ onMounted(load)
     <el-dialog v-model="dialog" title="添加规则" width="640px">
       <el-form label-width="100px">
         <el-form-item label="规则名称"><el-input v-model="draft.name" maxlength="200" /></el-form-item>
-        <el-form-item label="敏感类别"><el-input v-model="draft.entity" placeholder="例如：INTERNAL_DOCUMENT" /></el-form-item>
+        <el-form-item label="敏感类别">
+          <el-select v-model="draft.entity" filterable allow-create default-first-option
+                     placeholder="选择已用类别，或输入新的类别名" style="width: 320px">
+            <el-option v-for="entity in entities" :key="entity" :label="entity" :value="entity" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="正则表达式"><el-input v-model="draft.pattern" type="textarea" :rows="5" placeholder="例如：内部编号：[A-Z]{2}-[0-9]{6}" /></el-form-item>
         <el-form-item label="立即启用"><el-switch v-model="draft.enabled" /></el-form-item>
       </el-form>

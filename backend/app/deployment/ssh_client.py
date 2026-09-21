@@ -207,6 +207,11 @@ class SshClient:
             return entries
         except SshError:
             raise
+        except UnicodeDecodeError as exc:
+            # paramiko decodes names strictly as UTF-8; one name that is not
+            # valid UTF-8 fails the whole listing. Reported as a directory-level
+            # error so a caller can mark it unreadable and carry on.
+            raise SshError("NAME_ENCODING", f"{path} 中存在非 UTF-8 文件名，无法列目录") from exc
         except OSError as exc:
             raise SshError("PATH_ERROR", f"无法读取目录 {path}: {exc}") from exc
         finally:

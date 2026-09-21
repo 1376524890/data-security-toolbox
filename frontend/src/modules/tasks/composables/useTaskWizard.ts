@@ -16,6 +16,9 @@ import { saveFileSource, runFileSource } from '../../../api/fileSources'
 import { listPolicyGroups, type PolicyGroup } from '../../../api/policyGroups'
 
 export interface TreeRow { path: string; name: string; type: string; size: number; depth: number; reason?: string }
+/** A node of the lazy scope tree: directories expand, files are leaves and can
+ *  only be shown, never ticked. */
+export interface TreeNode extends TreeRow { leaf: boolean; disabled: boolean }
 
 export interface WizardHost {
   key: number
@@ -27,10 +30,12 @@ export interface WizardHost {
   privateKey: string
   keyPassphrase: string
   mode: 'probe' | 'direct'
+  /** Transport used when mode is 'direct' (no probe): the platform speaks it
+   *  itself. */
+  protocol: 'sftp' | 'ftp' | 'ftps'
   test: { ok: boolean; error?: string; message?: string } | null
   hostKey: string
   root: string
-  rows: TreeRow[]
   selected: string[]
   busy: boolean
   error: string
@@ -39,8 +44,9 @@ export interface WizardHost {
 let nextKey = 1
 function blankHost(): WizardHost {
   return { key: nextKey++, host: '', port: 22, username: 'root', authType: 'password',
-    password: '', privateKey: '', keyPassphrase: '', mode: 'probe', test: null, hostKey: '',
-    root: '/', rows: [], selected: [], busy: false, error: '' }
+    password: '', privateKey: '', keyPassphrase: '', mode: 'probe', protocol: 'sftp',
+    test: null, hostKey: '',
+    root: '/', selected: [], busy: false, error: '' }
 }
 
 export function useTaskWizard() {
@@ -86,25 +92,30 @@ export function useTaskWizard() {
     }
   }
 
-  async function browseHost(host: WizardHost): Promise<void> {
-    host.busy = true
-    host.error = ''
+  /** el-tree lazy loader: one level per expansion, so a deep tree is browsed on
+   *  demand instead of in one bounded sweep. */
+  async function loadNode(host: WizardHost, node: { level: number; data?: TreeNode },
+                          resolve: (rows: TreeNode[]) => void): Promise<void> {
+    const path = node.level === 0 ? (host.root || '/') : String(node.data?.path || '/')
     try {
       const result = await apiPost<{ rows: TreeRow[]; truncated: boolean; reason: string }>(
-        '/targets/browse', { ...spec(host), roots: [host.root || '/'], max_depth: 3, max_entries: 500 })
-      host.rows = result.rows
-      if (result.truncated) ElMessage.warning(`目录树被截断（${result.reason}），请缩小根目录`)
+        '/targets/browse', { ...spec(host), roots: [path], max_depth: 1, max_entries: 500 })
+      if (result.truncated) ElMessage.warning(`目录过大，已截断（${result.reason}）`)
+      resolve(result.rows.map((row) => ({
+        ...row, leaf: row.type !== 'dir', disabled: row.type !== 'dir',
+      })))
     } catch (err) {
       host.error = String(err)
-    } finally {
-      host.busy = false
+      ElMessage.warning(`无法列出 ${path}：${String(err)}`)
+      resolve([])
     }
   }
 
-  function toggle(host: WizardHost, path: string): void {
-    host.selected = host.selected.includes(path)
-      ? host.selected.filter((item) => item !== path)
-      : [...host.selected, path]
+  /** Cascading check: a ticked directory means "this whole subtree", so the
+   *  scope is the checked keys only (the tree reports parents that are fully
+   *  checked, not every descendant). */
+  function onCheck(host: WizardHost, keys: string[]): void {
+    host.selected = keys.filter(Boolean)
   }
 
   async function loadGroups(): Promise<void> {
@@ -118,8 +129,9 @@ export function useTaskWizard() {
     try {
       for (const host of hosts.value) {
         try {
-          const dirs = host.selected.filter((path) => (host.rows.find((row) => row.path === path)?.type || 'dir') === 'dir')
-          const paths = dirs.length ? dirs : host.selected
+          // Only directories are tickable, so the selection is already the scope.
+          const paths = host.selected
+          if (!paths.length) throw new Error('请至少勾选一个检测目录')
           if (host.mode === 'probe') {
             await preflight({
               host: host.host, port: host.port, username: host.username, auth_type: host.authType,
@@ -144,7 +156,7 @@ export function useTaskWizard() {
             })
           } else {
             const source = await saveFileSource(null, {
-              name: `${host.host} 直连采集`, protocol: 'sftp', host: host.host, port: host.port,
+              name: `${host.host} 直连采集`, protocol: host.protocol, host: host.host, port: host.port,
               username: host.username, password: host.password, root_path: paths[0] || host.root,
               host_key_sha256: host.hostKey, enabled: true, limits: {},
               interval_minutes: taskMode.value === 'scheduled' ? Math.max(1, Math.round(intervalSeconds.value / 60)) : 0,
@@ -175,5 +187,5 @@ export function useTaskWizard() {
   }
 
   return { step, hosts, groups, policyGroupIds, taskMode, intervalSeconds, capture, busy, ready,
-    addHost, removeHost, testHost, browseHost, toggle, loadGroups, submit, reset }
+    addHost, removeHost, testHost, loadNode, onCheck, loadGroups, submit, reset }
 }

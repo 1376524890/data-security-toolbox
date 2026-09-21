@@ -4,6 +4,7 @@ import ftplib
 import hashlib
 import posixpath
 import re
+import shlex
 import socket
 import ssl
 import stat
@@ -126,6 +127,58 @@ class Remote:
                 raise SourceError(category(exc)) from exc
             rows = self.unix_list(path, check, limit)
         yield from rows
+
+    def entries_raw(self, path, check, limit=2000):
+        """Fallback listing for a directory the SFTP name decoder rejected.
+
+        The SFTP client decodes names strictly as UTF-8, so a single file whose
+        name is not valid UTF-8 fails the *entire* listing. Asking the host
+        directly (``ls -1a`` over the exec channel) returns bytes we can decode
+        ourselves: names that do decode are stat'ed normally, and the undecodable
+        ones are reported as ``skip`` — counted and explained, never dropped in
+        silence and never presented as content that was read.
+        """
+        if not self.sftp:
+            raise SourceError('protocol_error')
+        # Remote wraps an SFTPClient, so the exec channel is opened from its
+        # transport rather than from an SSHClient helper.
+        session = self.client.get_channel().get_transport().open_session()
+        session.settimeout(30)
+        session.set_combine_stderr(True)
+        session.exec_command('ls -1a -- ' + shlex.quote(path))
+        output = b''
+        while True:
+            chunk = session.recv(65536)
+            if not chunk:
+                break
+            output += chunk
+        code = session.recv_exit_status()
+        session.close()
+        if code != 0:
+            raise SourceError('path_error')
+        rows = []
+        for line in output.split(b'\n'):
+            raw = line.rstrip(b'\r')
+            if not raw or raw in {b'.', b'..'}:
+                continue
+            if len(rows) >= limit:
+                raise SourceError('directory_entry_budget')
+            check()
+            try:
+                name = raw.decode('utf-8')
+            except UnicodeDecodeError:
+                rows.append((posixpath.join(path, raw.decode('utf-8', 'replace')), 'skip', 0))
+                continue
+            child = child_path(path, name)
+            try:
+                info = self.client.stat(child)
+            except OSError:
+                rows.append((child, 'skip', 0))
+                continue
+            mode = info.st_mode or 0
+            kind = ('dir' if stat.S_ISDIR(mode) else 'file' if stat.S_ISREG(mode) else 'skip')
+            rows.append((child, kind, int(info.st_size or 0)))
+        return rows
 
     def mlsd(self, path, check, limit):
         rows = []

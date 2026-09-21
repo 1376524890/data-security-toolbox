@@ -21,6 +21,12 @@ const detail = ref<Task | null>(null)
 const wizardOpen = ref(false)
 const wizard = useTaskWizard()
 
+// el-tree hands the handler its own node object; the wizard only needs the
+// checked keys, so the binding is built per host instead of in the template.
+const checkFor = (host: { key: number } & Record<string, unknown>) =>
+  (_node: unknown, state: { checkedKeys: string[] }): void =>
+    wizard.onCheck(host as never, state.checkedKeys)
+
 const KINDS = ['probe_scan', 'data_asset_scan', 'network_scan', 'file_source_scan', 'database_scan']
 
 async function load(): Promise<void> {
@@ -167,7 +173,21 @@ onMounted(load)
                 <el-radio-button value="direct">不走探针（远程协议）</el-radio-button>
               </el-radio-group>
             </el-form-item>
-            <el-form-item label="用户名"><el-input v-model="host.username" style="width: 260px" /></el-form-item>
+            <el-form-item label="用户名">
+              <el-select v-model="host.username" filterable allow-create default-first-option
+                         placeholder="选择或输入用户名" style="width: 260px">
+                <el-option v-for="user in ['root', 'admin', 'administrator', 'dstprobe']" :key="user"
+                           :label="user" :value="user" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="host.mode === 'direct'" label="远程协议">
+              <el-select v-model="host.protocol" style="width: 240px"
+                         @change="(value: string) => { if (value !== 'sftp') host.port = 21 }">
+                <el-option label="SFTP（SSH，端口 22）" value="sftp" />
+                <el-option label="FTPS（显式 TLS，端口 21）" value="ftps" />
+                <el-option label="FTP（明文，端口 21）" value="ftp" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="认证方式">
               <el-radio-group v-model="host.authType">
                 <el-radio-button value="password">密码</el-radio-button>
@@ -202,26 +222,27 @@ onMounted(load)
         <el-button style="margin-top: 8px" @click="wizard.hosts.value.forEach((h) => wizard.testHost(h))">全部测试</el-button>
       </template>
 
-      <!-- 4. 目录树 + 勾选范围 -->
+      <!-- 4. 目录树（可展开）+ 级联勾选范围 -->
       <template v-else-if="wizard.step.value === 3">
         <div v-for="host in wizard.hosts.value" :key="host.key" class="host-block">
-          <div class="host-title">{{ host.host }}：选择监测/检测范围（勾选目录）</div>
+          <div class="host-title">{{ host.host }}：展开目录树并勾选检测范围</div>
           <div class="toolbar">
-            <el-input v-model="host.root" placeholder="根目录，例如 /srv" style="width: 260px" />
-            <el-button :loading="host.busy" @click="wizard.browseHost(host)">扫描目录树</el-button>
+            <el-select v-model="host.root" filterable allow-create default-first-option
+                       placeholder="选择或输入根目录" style="width: 260px">
+              <el-option v-for="root in ['/', '/home', '/srv', '/data', '/var', '/opt', '/etc']"
+                         :key="root" :label="root" :value="root" />
+            </el-select>
             <span class="muted">已选 {{ host.selected.length }} 个目录</span>
+            <div class="toolbar-spacer" />
+            <el-button size="small" @click="wizard.onCheck(host, [])">清空选择</el-button>
           </div>
-          <el-table v-if="host.rows.length" :data="host.rows" size="small" max-height="240">
-            <el-table-column width="50"><template #default="{ row }">
-              <el-checkbox :model-value="host.selected.includes(row.path)" :disabled="row.type !== 'dir'"
-                           @change="() => wizard.toggle(host, row.path)" />
-            </template></el-table-column>
-            <el-table-column label="路径" min-width="320">
-              <template #default="{ row }"><span :style="{ paddingLeft: `${row.depth * 14}px` }">{{ row.name }}</span></template>
-            </el-table-column>
-            <el-table-column prop="type" label="类型" width="90" />
-            <el-table-column prop="size" label="字节" width="100" />
-          </el-table>
+          <!-- Lazy tree: ticking a directory takes its whole subtree; children
+               load on expand, and files are shown but not tickable. -->
+          <el-tree :key="`${host.key}-${host.root}`" lazy show-checkbox node-key="path"
+                   :props="{ label: 'name', isLeaf: 'leaf', disabled: 'disabled' }"
+                   :load="(node: any, resolve: any) => wizard.loadNode(host, node, resolve)"
+                   @check="checkFor(host)"
+                   style="max-height: 260px; overflow: auto" />
         </div>
       </template>
 
@@ -239,8 +260,11 @@ onMounted(load)
               <el-radio-button value="scheduled">定时持续监测</el-radio-button>
             </el-radio-group>
           </el-form-item>
-          <el-form-item v-if="wizard.taskMode.value === 'scheduled'" label="间隔（秒）">
-            <el-input-number v-model="wizard.intervalSeconds.value" :min="60" :max="2592000" :step="600" />
+          <el-form-item v-if="wizard.taskMode.value === 'scheduled'" label="间隔">
+            <el-select v-model="wizard.intervalSeconds.value" style="width: 200px">
+              <el-option v-for="item in [{ l: '每 5 分钟', v: 300 }, { l: '每 30 分钟', v: 1800 }, { l: '每小时', v: 3600 }, { l: '每 6 小时', v: 21600 }, { l: '每天', v: 86400 }]"
+                         :key="item.v" :label="item.l" :value="item.v" />
+            </el-select>
           </el-form-item>
           <el-form-item label="流量监控抓包">
             <el-switch v-model="wizard.capture.value" />

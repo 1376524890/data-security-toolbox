@@ -24,6 +24,9 @@ def run(db, task_id):
     start = time.monotonic()
     last_check = 0.0
     ids, errors, seen = [], [], set()
+    # Directories and files that could not be read are listed explicitly: a scan
+    # that silently dropped them would look clean while having skipped content.
+    unreadable: list[dict[str, str]] = []
     total_bytes = new = changed = sensitive = skipped = dirs = 0
     complete, reason = True, 'complete'
 
@@ -51,7 +54,25 @@ def run(db, task_id):
                         dirs += 1
                         if dirs > 500:
                             raise adapters.SourceError('directory_budget')
-                        for path, kind, size in remote.entries(directory, check):
+                        try:
+                            entries = list(remote.entries(directory, check))
+                        except UnicodeDecodeError:
+                            # A name that is not valid UTF-8 makes the SFTP
+                            # listing itself raise. Retry once with a raw listing
+                            # so one bad name does not lose the whole directory.
+                            try:
+                                entries = list(remote.entries_raw(directory, check))
+                            except Exception as exc:  # noqa: BLE001 - reported below
+                                unreadable.append({'path': directory,
+                                                   'reason': type(exc).__name__})
+                                skipped += 1
+                                continue
+                        except Exception as exc:  # noqa: BLE001 - one bad directory
+                            unreadable.append({'path': directory,
+                                               'reason': type(exc).__name__})
+                            skipped += 1
+                            continue
+                        for path, kind, size in entries:
                             check()
                             if kind == 'dir':
                                 if depth < limits['max_depth']:
@@ -90,6 +111,16 @@ def run(db, task_id):
                                         scan.update(coverage='partial', reason='file_changed_during_read')
                                     if scan['coverage'] != 'complete':
                                         complete, reason = False, scan['reason']
+                                except Exception as exc:  # noqa: BLE001 - one bad file
+                                    # A file we could not read is recorded as failed
+                                    # rather than dropped: an unreadable asset must
+                                    # never look like a clean one.
+                                    scan = {'counts': {}, 'hits': [], 'rows': 0,
+                                            'coverage': 'failed',
+                                            'reason': type(exc).__name__}
+                                    unreadable.append({'path': path,
+                                                       'reason': type(exc).__name__})
+                                    complete, reason = False, type(exc).__name__
                                 finally:
                                     local.unlink(missing_ok=True)
                             instance, added, modified = ingest.store(db, source, task, path, size,
@@ -130,8 +161,14 @@ def run(db, task_id):
     task.result = {'assets': len(ids), 'asset_instance_ids': ids, 'new': new, 'changed': changed,
                    'sensitive': sensitive, 'not_observed': retired, 'skipped': skipped,
                    'bytes_read': total_bytes, 'complete_scope': complete, 'termination_reason': reason,
+                   # Named explicitly so a partial scan can never read as a clean
+                   # one: these are the directories/files that were not read.
+                   'unreadable': unreadable[:200], 'unreadable_count': len(unreadable),
                    'source_id': source.id, 'source_name': source.name, 'operation': task.payload.get('operation')}
-    source.last_status, source.last_error = status, task.error
+    source.last_status = status
+    if unreadable and not task.error:
+        task.error = f'{len(unreadable)} 个目录/文件未能读取（{reason}）'
+    source.last_error = task.error
     if task.payload.get('operation') != 'test':
         source.last_scan_at = task.finished_at
     db.commit()
