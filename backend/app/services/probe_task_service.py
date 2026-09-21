@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Probe, Task
+from app.models import PolicyGroup, Probe, Task
 
 PROBE_TASK_KINDS = ("probe_scan", "data_asset_scan")
 TERMINAL = ("Success", "Failed", "Partial", "Cancelled")
@@ -14,6 +14,30 @@ TERMINAL = ("Success", "Failed", "Partial", "Cancelled")
 
 def visible_tasks():
     return Task.payload["deleted"].as_boolean().is_not(True)
+
+
+def _validated_policy_group_ids(db: Session, ids: list[int] | None) -> list[int]:
+    """The detection items a task should enforce; unknown ids are rejected.
+
+    The ids are recorded on the task so the group's delete guard can see that a
+    pending job still depends on it, and so a completed job says which policy it
+    was dispatched under.
+    """
+    cleaned: list[int] = []
+    for value in ids or []:
+        try:
+            group_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if group_id not in cleaned:
+            cleaned.append(group_id)
+    if cleaned:
+        known = set(db.scalars(select(PolicyGroup.id).where(PolicyGroup.id.in_(cleaned))).all())
+        missing = [group_id for group_id in cleaned if group_id not in known]
+        if missing:
+            raise ProbeTaskNotFound(
+                f"策略组不存在: {', '.join(str(item) for item in missing)}")
+    return cleaned
 
 
 def expire_probe_tasks(db):
@@ -79,13 +103,15 @@ def queue_probe_scan(db: Session, probe_id: int, config: dict) -> Task:
     return task
 
 
-def queue_probe_data_asset_job(db: Session, probe_id: int, config: dict, *, profile=None) -> Task:
+def queue_probe_data_asset_job(db: Session, probe_id: int, config: dict, *, profile=None,
+                               policy_group_ids: list[int] | None = None) -> Task:
     """Queue one bounded data-asset job, optionally from a versioned ScanProfile.
 
     The resolved configuration is copied into the task payload. That copy is the
     authoritative scope: editing the profile afterwards cannot change what a probe
     was already asked to do.
     """
+    group_ids = _validated_policy_group_ids(db, policy_group_ids)
     probe = db.get(Probe, probe_id)
     if not probe:
         raise ProbeTaskNotFound("probe not found")
@@ -110,7 +136,8 @@ def queue_probe_data_asset_job(db: Session, probe_id: int, config: dict, *, prof
     )
     if active:
         raise ProbeTaskConflict("Probe already has an active data asset job")
-    task_payload: dict = {"probe_id": probe_id, "config": config}
+    task_payload: dict = {"probe_id": probe_id, "config": config,
+                          "policy_group_ids": group_ids}
     if profile is not None:
         # profile_id stays a top-level key so it is queryable for the reference guard.
         task_payload["profile_id"] = profile.id

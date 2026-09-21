@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, nextTick, type App } from 'vue'
 import { ElMessage } from 'element-plus'
-import { useDatabaseConnections } from '../modules/data-security/composables/useDatabaseConnections'
+import { useDatabaseConnections } from '../modules/collection/composables/useDatabaseConnections'
 import type { ConnectionDetail, DatabaseConnection, ScanSummary } from '../api/databaseConnections'
 import * as api from '../api/databaseConnections'
 

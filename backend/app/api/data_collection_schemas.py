@@ -21,6 +21,9 @@ class DataAssetScanConfig(BaseModel):
     #: Optional versioned profile. When set, its snapshot supplies the config and
     #: the fields above act as explicit overrides.
     profile_id: int | None = Field(default=None, ge=1)
+    #: Policy groups (detection items) this task should enforce. Recorded on the
+    #: task so a group cannot be deleted while a pending task still references it.
+    policy_group_ids: list[int] = Field(default_factory=list, max_length=64)
 
     @field_validator("paths")
     @classmethod

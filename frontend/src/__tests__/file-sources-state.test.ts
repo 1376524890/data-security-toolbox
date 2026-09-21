@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, nextTick, type App } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useFileSources } from '../modules/data-security/composables/useFileSources'
+import { useFileSources } from '../modules/collection/composables/useFileSources'
 import type { FileSource } from '../api/fileSources'
 import * as api from '../api/fileSources'
 

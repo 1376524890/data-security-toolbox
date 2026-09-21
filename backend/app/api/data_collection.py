@@ -61,8 +61,9 @@ def queue_data_asset_scan(
         if not config.get("paths"):
             raise HTTPException(400, "扫描配置未设置 include_paths，探针没有可扫描的目录")
     else:
-        config = payload.model_dump(exclude={"profile_id"})
-    task = queue_probe_data_asset_job(db, probe_id, config, profile=profile)
+        config = payload.model_dump(exclude={"profile_id", "policy_group_ids"})
+    task = queue_probe_data_asset_job(db, probe_id, config, profile=profile,
+                                      policy_group_ids=payload.policy_group_ids)
     return {"id": task.id, "status": task.status, "location": "probe"}
 
 

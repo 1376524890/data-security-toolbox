@@ -2,19 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { createApp, defineComponent, nextTick, type App } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useNetworkDlp } from '../modules/data-security/composables/useNetworkDlp'
-import { useSensitiveDiscovery } from '../modules/data-security/composables/useSensitiveDiscovery'
-import type { SensitiveFindings } from '../api/dataAssets'
 import * as api from '../api/client'
-import * as dataAssets from '../api/dataAssets'
 
 vi.mock('../api/client', () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiUpload: vi.fn(), downloadUrl: vi.fn(),
 }))
-vi.mock('../api/dataAssets', () => ({ getSensitiveFindings: vi.fn() }))
 vi.mock('element-plus', () => ({ ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn() } }))
 
 const mocked = api as unknown as { apiGet: Mock; apiPost: Mock; apiPatch: Mock }
-const assets = dataAssets as unknown as { getSensitiveFindings: Mock }
 
 const policy = {
   enabled: true, categories: ['id_card', 'bank_card'], keywords: ['机密', '内部'], fingerprints: ['ab'.repeat(32)],
@@ -31,18 +26,6 @@ const dlpRule = (overrides: Record<string, unknown> = {}) => ({
   id: 'bank_card', name: '银行卡', entity: 'bank_card', pattern: '\\d{16}', source: 'builtin',
   enabled: false, confidence: 0.9, sensitive: true, ...overrides,
 })
-
-const findings = (overrides: Partial<SensitiveFindings> = {}): SensitiveFindings => ({
-  categories: [{ category: 'id_card', count: 3, severity: 'High', risk_score: 80 }],
-  entities: [{ category: 'id_card', count: 12 }, { category: 'unknown_thing', count: 1 }],
-  details: [],
-  sources: [{ source: 'probe-1', kind: 'probe', count: 4 }],
-  totals: { findings: 4, categories: 1, entities: 2, objects: 3, instances: 5, detections: 6, data_assets: 2 },
-  pagination: { page: 1, page_size: 50, total: 4, pages: 1 },
-  note: '只统计已上报的发现',
-  data_assets: { total: 2, by_sensitivity: { High: 1, Medium: 1 }, observed: { total: 2, by_sensitivity: {} } },
-  ...overrides,
-} as SensitiveFindings)
 
 let app: App | undefined
 let host: HTMLElement | undefined
@@ -80,7 +63,6 @@ beforeEach(() => {
   })
   mocked.apiPost.mockResolvedValue({})
   mocked.apiPatch.mockResolvedValue({})
-  assets.getSensitiveFindings.mockResolvedValue(findings())
 })
 
 afterEach(() => {
@@ -229,37 +211,5 @@ describe('network DLP console state', () => {
     const state = await mount(() => useNetworkDlp())
     expect(state.error.value).toContain('DLP 服务不可用')
     expect(state.busy.value).toBe(false)
-  })
-})
-
-describe('sensitive discovery view state', () => {
-  it('loads the findings and projects them with the category labels', async () => {
-    const state = await mount(() => useSensitiveDiscovery())
-    expect(assets.getSensitiveFindings).toHaveBeenCalledWith({ page: 1, page_size: 50 })
-    expect(state.sensitive.value?.totals.findings).toBe(4)
-    expect(state.totals.value?.data_assets).toBe(2)
-    expect(state.entityData.value).toEqual([
-      { name: '身份证', value: 12 }, { name: 'unknown_thing', value: 1 },
-    ])
-    expect(state.sensitivityData.value).toEqual([{ name: 'High', value: 1 }, { name: 'Medium', value: 1 }])
-    expect(state.sources.value.map((item) => item.source)).toEqual(['probe-1'])
-    expect(state.loading.value).toBe(false)
-  })
-
-  it('moves the pager and re-queries that page', async () => {
-    const state = await mount(() => useSensitiveDiscovery())
-    assets.getSensitiveFindings.mockClear()
-    state.onPageChange(3)
-    await flushing()
-    expect(state.page.value).toBe(3)
-    expect(assets.getSensitiveFindings).toHaveBeenCalledWith({ page: 3, page_size: 50 })
-  })
-
-  it('keeps a failed load in the page state', async () => {
-    assets.getSensitiveFindings.mockRejectedValue(new Error('发现接口不可用'))
-    const state = await mount(() => useSensitiveDiscovery())
-    expect(state.error.value).toBe('发现接口不可用')
-    expect(state.loading.value).toBe(false)
-    expect(state.sensitive.value).toBeNull()
   })
 })

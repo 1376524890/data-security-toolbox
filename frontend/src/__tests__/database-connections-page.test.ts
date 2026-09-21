@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 import ElementPlus from 'element-plus'
-import DatabaseConnections from '../modules/data-security/DatabaseConnections.vue'
+import DatabaseConnections from '../modules/collection/DatabaseConnections.vue'
 import type { ConnectionDetail, ConnectionList, DatabaseConnection, ScanSummary } from '../api/databaseConnections'
 import * as api from '../api/databaseConnections'
 

@@ -30,8 +30,8 @@ const routes: RouteRecordRaw[] = [
   { path: '/tasks', component: () => import('../modules/tasks/TaskCenter.vue'), meta: { title: '任务中心', group: 'Asset & Data Security' } },
   // 数据资产: one hub with the object model, the inventory and the assessment tabs.
   { path: '/data-assets', component: () => import('../modules/data-security/DataAssetHub.vue'), meta: { title: '数据资产', group: 'Asset & Data Security' } },
-  // 策略中心 owns every rule surface plus the dispatch-time policy groups.
-  { path: '/policies', component: () => import('../modules/policies/PolicyCenter.vue'), meta: { title: '策略中心', group: 'Asset & Data Security' } },
+  // 采集与规则 owns sources, scan config, collection jobs and all rule management.
+  { path: '/collection-rules', component: () => import('../modules/collection/CollectionRules.vue'), meta: { title: '采集与规则', group: 'Asset & Data Security' } },
   { path: '/files', component: () => import('../modules/data-security/FileAnalysis.vue'), meta: { title: '文件证据', group: 'Asset & Data Security' } },
   { path: '/data-types/:category', component: () => import('../modules/data-security/DataTypeDetail.vue'), meta: { title: 'DataType Detail', group: 'Asset & Data Security' } },
   { path: '/data-objects/:id', component: () => import('../modules/data-security/DataObjectDetail.vue'), meta: { title: 'DataObject Detail', group: 'Asset & Data Security' } },
@@ -43,11 +43,11 @@ const routes: RouteRecordRaw[] = [
   { path: '/asset-inventory', redirect: { path: '/data-assets', query: { view: 'inventory' } } },
   { path: '/data-types', redirect: { path: '/data-assets', query: { view: 'types' } } },
   { path: '/sensitive', redirect: { path: '/data-assets', query: { view: 'assessment' } } },
-  { path: '/data-asset-jobs', redirect: { path: '/tasks', query: { view: 'jobs' } } },
-  { path: '/source-management', redirect: { path: '/tasks', query: { view: 'sources' } } },
-  { path: '/database-connections', redirect: { path: '/tasks', query: { view: 'sources' } } },
-  { path: '/scan-profiles', redirect: { path: '/tasks', query: { view: 'profiles' } } },
-  { path: '/rule-versions', redirect: { path: '/policies', query: { view: 'versions' } } },
+  { path: '/data-asset-jobs', redirect: { path: '/collection-rules', query: { view: 'jobs' } } },
+  { path: '/source-management', redirect: { path: '/collection-rules', query: { view: 'sources' } } },
+  { path: '/database-connections', redirect: { path: '/collection-rules', query: { view: 'sources' } } },
+  { path: '/scan-profiles', redirect: { path: '/collection-rules', query: { view: 'profiles' } } },
+  { path: '/rule-versions', redirect: { path: '/collection-rules', query: { view: 'versions' } } },
   // Threat Intelligence
   { path: '/threat/ioc', component: () => import('../modules/threat/IocCenter.vue'), meta: { title: 'IOC', group: 'Threat Intelligence' } },
   { path: '/threat/cve', component: () => import('../modules/threat/CveCenter.vue'), meta: { title: 'CVE', group: 'Threat Intelligence' } },

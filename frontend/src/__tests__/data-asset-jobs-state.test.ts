@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, nextTick, type App } from 'vue'
 import { ElMessage } from 'element-plus'
-import { useDataAssetJobs } from '../modules/data-security/composables/useDataAssetJobs'
+import { useDataAssetJobs } from '../modules/collection/composables/useDataAssetJobs'
 import type { Probe } from '../api/probes'
 import type { ScanProfile } from '../api/scanProfiles'
 import type { Task } from '../types/task'

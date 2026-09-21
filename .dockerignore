@@ -28,6 +28,8 @@ dist-offline
 dist-deploy
 dist-deploy.zip
 dist-deploy.tar
+# Persistent runtime data root (DB/Redis/storage); never part of a build context.
+deploy-data
 offline
 local
 probe_packages

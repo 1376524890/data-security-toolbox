@@ -23,7 +23,7 @@ export const menuGroups: MenuNode[] = [
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },
     { path: '/network/dlp', title: '数据流动与防护', icon: 'Lock' },
     { path: '/files', title: '文件证据', icon: 'Document' },
-    { path: '/policies', title: '策略中心', icon: 'Tickets' },
+    { path: '/collection-rules', title: '采集与规则', icon: 'Tickets' },
   ]},
   { group: '威胁情报', items: [
     { path: '/threat/ioc', title: 'IOC 情报', icon: 'Aim' },
