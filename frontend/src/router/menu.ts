@@ -19,16 +19,11 @@ export const menuGroups: MenuNode[] = [
   ]},
   { group: '资产与数据安全', items: [
     { path: '/assets', title: '资产中心', icon: 'Monitor' },
-    { path: '/asset-inventory', title: '资产目录', icon: 'Grid' },
-    { path: '/source-management', title: '来源管理', icon: 'DataLine' },
+    { path: '/tasks', title: '任务中心', icon: 'Upload' },
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },
-    { path: '/data-types', title: '数据类型中心', icon: 'Grid' },
-    { path: '/scan-profiles', title: '扫描配置', icon: 'Setting' },
-    { path: '/data-asset-jobs', title: '采集任务', icon: 'Upload' },
-    { path: '/sensitive', title: '敏感发现', icon: 'Search' },
-    { path: '/network/dlp', title: '网络防泄密', icon: 'Lock' },
-    { path: '/files', title: '文件分析', icon: 'Document' },
-    { path: '/rule-versions', title: '规则版本', icon: 'Tickets' },
+    { path: '/network/dlp', title: '数据流动与防护', icon: 'Lock' },
+    { path: '/files', title: '文件证据', icon: 'Document' },
+    { path: '/policies', title: '策略中心', icon: 'Tickets' },
   ]},
   { group: '威胁情报', items: [
     { path: '/threat/ioc', title: 'IOC 情报', icon: 'Aim' },
@@ -45,7 +40,6 @@ export const menuGroups: MenuNode[] = [
   { group: '运维管理', items: [
     { path: '/probes', title: '探针管理', icon: 'Connection' },
     { path: '/probe-deployments', title: '探针部署', icon: 'Position' },
-    { path: '/tasks', title: '任务中心', icon: 'List' },
     { path: '/health', title: '健康状态', icon: 'Odometer' },
     { path: '/reports', title: '报告中心', icon: 'Document' },
   ]},

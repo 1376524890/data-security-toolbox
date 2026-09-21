@@ -26,26 +26,29 @@ const routes: RouteRecordRaw[] = [
   { path: '/network/protocols', component: () => import('../modules/network/protocol/ProtocolAnalysis.vue'), meta: { title: 'Protocol Analysis', group: 'Network Analysis' } },
   // Asset & Data Security
   { path: '/assets', component: () => import('../modules/asset/AssetCenter.vue'), meta: { title: 'Asset Center', group: 'Asset & Data Security' } },
-  { path: '/data-assets', component: () => import('../modules/data-security/DataAsset.vue'), meta: { title: 'Data Asset', group: 'Asset & Data Security' } },
-  { path: '/sensitive', component: () => import('../modules/data-security/SensitiveDiscovery.vue'), meta: { title: 'Sensitive Discovery', group: 'Asset & Data Security' } },
-  { path: '/files', component: () => import('../modules/data-security/FileAnalysis.vue'), meta: { title: 'File Analysis', group: 'Asset & Data Security' } },
-  { path: '/rule-versions', component: () => import('../modules/data-security/RuleVersions.vue'), meta: { title: 'Rule Versions', group: 'Asset & Data Security' } },
-  // Data-type-centric P0 view: the object model, not the legacy projection.
-  { path: '/data-types', component: () => import('../modules/data-security/DataTypeCenter.vue'), meta: { title: 'DataType Center', group: 'Asset & Data Security' } },
+  // 任务中心 owns dispatch + progress + sources + scan config.
+  { path: '/tasks', component: () => import('../modules/tasks/TaskCenter.vue'), meta: { title: '任务中心', group: 'Asset & Data Security' } },
+  // 数据资产: one hub with the object model, the inventory and the assessment tabs.
+  { path: '/data-assets', component: () => import('../modules/data-security/DataAssetHub.vue'), meta: { title: '数据资产', group: 'Asset & Data Security' } },
+  // 策略中心 owns every rule surface plus the dispatch-time policy groups.
+  { path: '/policies', component: () => import('../modules/policies/PolicyCenter.vue'), meta: { title: '策略中心', group: 'Asset & Data Security' } },
+  { path: '/files', component: () => import('../modules/data-security/FileAnalysis.vue'), meta: { title: '文件证据', group: 'Asset & Data Security' } },
   { path: '/data-types/:category', component: () => import('../modules/data-security/DataTypeDetail.vue'), meta: { title: 'DataType Detail', group: 'Asset & Data Security' } },
   { path: '/data-objects/:id', component: () => import('../modules/data-security/DataObjectDetail.vue'), meta: { title: 'DataObject Detail', group: 'Asset & Data Security' } },
   { path: '/asset-instances/:id', component: () => import('../modules/data-security/AssetInstanceDetail.vue'), meta: { title: 'AssetInstance Detail', group: 'Asset & Data Security' } },
-  { path: '/scan-profiles', component: () => import('../modules/data-security/ScanProfiles.vue'), meta: { title: 'Scan Profiles', group: 'Asset & Data Security' } },
-  { path: '/data-asset-jobs', component: () => import('../modules/data-security/DataAssetJobs.vue'), meta: { title: 'Data Asset Jobs', group: 'Asset & Data Security' } },
-  // Target databases are collected by the platform itself, not by a probe.
-  { path: '/database-connections', component: () => import('../modules/data-security/DatabaseConnections.vue'), meta: { title: 'Database Connections', group: 'Asset & Data Security' } },
-  // One page for every source the platform collects by itself: shared files
-  // (FTP/FTPS/SFTP) and target databases, plus pointers to the probe and upload
-  // paths. The per-protocol pages stay reachable so old links keep working.
-  { path: '/source-management', component: () => import('../modules/data-security/SourceManagement.vue'), meta: { title: 'Source Management', group: 'Asset & Data Security' } },
-  { path: '/asset-inventory', component: () => import('../modules/data-security/AssetInventory.vue'), meta: { title: 'Asset Inventory', group: 'Asset & Data Security' } },
+  // 数据流动与防护 keeps only results and the egress verdict.
+  { path: '/network/dlp', component: () => import('../modules/data-security/flow/DataFlowProtection.vue'), meta: { title: '数据流动与防护', group: 'Asset & Data Security' } },
+  // Old top-level routes are gone from the menu; these redirects keep deep links
+  // and any bookmark working without re-introducing a second navigation entry.
+  { path: '/asset-inventory', redirect: { path: '/data-assets', query: { view: 'inventory' } } },
+  { path: '/data-types', redirect: { path: '/data-assets', query: { view: 'types' } } },
+  { path: '/sensitive', redirect: { path: '/data-assets', query: { view: 'assessment' } } },
+  { path: '/data-asset-jobs', redirect: { path: '/tasks', query: { view: 'jobs' } } },
+  { path: '/source-management', redirect: { path: '/tasks', query: { view: 'sources' } } },
+  { path: '/database-connections', redirect: { path: '/tasks', query: { view: 'sources' } } },
+  { path: '/scan-profiles', redirect: { path: '/tasks', query: { view: 'profiles' } } },
+  { path: '/rule-versions', redirect: { path: '/policies', query: { view: 'versions' } } },
   // Threat Intelligence
-  { path: '/network/dlp', component: () => import('../modules/data-security/NetworkDlp.vue'), meta: { title: '网络防泄密', group: 'Asset & Data Security' } },
   { path: '/threat/ioc', component: () => import('../modules/threat/IocCenter.vue'), meta: { title: 'IOC', group: 'Threat Intelligence' } },
   { path: '/threat/cve', component: () => import('../modules/threat/CveCenter.vue'), meta: { title: 'CVE', group: 'Threat Intelligence' } },
   { path: '/threat/rules', component: () => import('../modules/threat/RulesCenter.vue'), meta: { title: 'Rules', group: 'Threat Intelligence' } },
@@ -56,7 +59,6 @@ const routes: RouteRecordRaw[] = [
   // Operations
   { path: '/probes', component: () => import('../modules/operations-admin/ProbeCenter.vue'), meta: { title: 'Probe', group: 'Operations' } },
   { path: '/probe-deployments', component: () => import('../modules/operations-admin/ProbeDeployment.vue'), meta: { title: 'Probe Deployment', group: 'Operations' } },
-  { path: '/tasks', component: () => import('../modules/operations-admin/TaskCenter.vue'), meta: { title: 'Tasks', group: 'Operations' } },
   { path: '/health', component: () => import('../modules/operations-admin/HealthCenter.vue'), meta: { title: 'Health', group: 'Operations' } },
   { path: '/reports', component: () => import('../modules/operations-admin/ReportCenter.vue'), meta: { title: 'Reports', group: 'Operations' } },
   // Tools
