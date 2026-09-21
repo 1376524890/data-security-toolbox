@@ -41,6 +41,11 @@ deploy-data/
 !backend/app/rules/data/
 !backend/app/rules/data/*.yar
 
+# Third-party binaries fetched once per build host (see backend/third_party/nuclei/README.md).
+backend/third_party/nuclei/*.zip
+backend/third_party/nuclei/nuclei_amd64
+backend/third_party/nuclei/nuclei_arm64
+
 # Offline CIDR→country table (a source asset, rebuilt by scripts/build_egress_regions.py).
 !backend/app/services/data/
 !backend/app/services/data/*.json

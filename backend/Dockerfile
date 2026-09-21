@@ -65,7 +65,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends tshark suricata nmap ffmpeg curl unzip && \
     rm -rf /var/lib/apt/lists/*
 # Install nuclei (active vulnerability scanner) for the network-scan pipeline.
-# Uses the daemon HTTP proxy when direct GitHub is blocked.
+# The archive ships in the build context (backend/third_party/nuclei) so a build
+# never reaches GitHub; see that directory's README and scripts/fetch_third_party.py.
+COPY backend/third_party/nuclei /tmp/nuclei-src
 ARG NUCLEI_VERSION=v3.11.1
 RUN arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
@@ -73,7 +75,16 @@ RUN arch="$(dpkg --print-architecture)"; \
         arm64) narch=arm64 ;; \
         *) echo "unsupported nuclei architecture: $arch" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/nuclei.zip "https://github.com/projectdiscovery/nuclei/releases/download/${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION#v}_linux_${narch}.zip" && \
-    unzip -o /tmp/nuclei.zip -d /usr/local/bin/ && rm -f /tmp/nuclei.zip && chmod +x /usr/local/bin/nuclei
+    zip="/tmp/nuclei-src/nuclei_${NUCLEI_VERSION#v}_linux_${narch}.zip"; \
+    bin="/tmp/nuclei-src/nuclei_${narch}"; \
+    if [ -f "$zip" ] && unzip -tq "$zip" >/dev/null 2>&1; then \
+        unzip -o "$zip" -d /usr/local/bin/ nuclei; \
+    elif [ -f "$bin" ]; then \
+        install -m 0755 "$bin" /usr/local/bin/nuclei; \
+    else \
+        echo "missing $zip (or $bin) — run 'python scripts/fetch_third_party.py' on the build host" >&2; \
+        exit 1; \
+    fi; \
+    chmod 0755 /usr/local/bin/nuclei && rm -rf /tmp/nuclei-src && /usr/local/bin/nuclei -version
 USER appuser
 CMD ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
