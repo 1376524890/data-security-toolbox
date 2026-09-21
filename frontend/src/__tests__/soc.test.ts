@@ -44,10 +44,13 @@ describe('navigation menu', () => {
     expect(flat.some((m) => m.path === '/engines')).toBe(true)
     expect(flat.some((m) => m.path.startsWith('/engines/'))).toBe(false)
   })
-  it('defines security operations group', () => {
-    const groups = menuGroups.filter((g) => 'group' in g).map((g) => (g as any).group)
-    expect(groups).toContain('安全运营')
-    expect(groups).toContain('网络分析')
-    expect(groups).toContain('资产与数据安全')
+  it('has exactly the six data-security sections', () => {
+    expect(menuGroups.map((g) => g.group)).toEqual([
+      '资产中心', '任务中心', '数据资产', '数据流动与防护', '文件证据', '采集与规则',
+    ])
+  })
+
+  it('never leaves a sub-item without a home section', () => {
+    expect(menuGroups.every((section) => section.items.length > 0)).toBe(true)
   })
 })

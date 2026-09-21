@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import OpsTaskCenter from '../operations-admin/TaskCenter.vue'
 import { useTaskDispatch, type TargetKind } from './composables/useTaskDispatch'
 
@@ -7,7 +8,13 @@ import { useTaskDispatch, type TargetKind } from './composables/useTaskDispatch'
 // and how it is reached (probe / no probe), the file scope, which policy groups
 // apply, and whether the task is one-shot or scheduled. Rules live in 采集与规则.
 const { targetKind, draft, targets, groups, busy, load, submit } = useTaskDispatch()
-const active = ref('dispatch')
+const route = useRoute()
+const router = useRouter()
+const active = ref(String(route.query.view || 'dispatch'))
+watch(() => route.query.view, (value) => { if (value) active.value = String(value) })
+function onChange(name: string): void {
+  router.replace({ query: { ...route.query, view: name === 'dispatch' ? undefined : name } })
+}
 
 const KINDS: { value: TargetKind; label: string; hint: string }[] = [
   { value: 'probe', label: '探针', hint: '在目标主机上由探针采集' },
@@ -19,7 +26,7 @@ const KINDS: { value: TargetKind; label: string; hint: string }[] = [
 <template>
   <div>
     <div class="hub-title">任务中心</div>
-    <el-tabs v-model="active">
+    <el-tabs :model-value="active" @tab-change="(name: string | number) => onChange(String(name))">
       <el-tab-pane label="任务下发" name="dispatch">
         <div class="soc-card">
           <el-form label-width="130px" style="max-width: 760px">

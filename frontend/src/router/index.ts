@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import { flatMenu } from './menu'
+import { activeMenuEntry } from './menu'
 import { useAuthStore } from '../stores/auth'
 
 const routes: RouteRecordRaw[] = [
@@ -51,7 +51,8 @@ const routes: RouteRecordRaw[] = [
   // Threat Intelligence
   { path: '/threat/ioc', component: () => import('../modules/threat/IocCenter.vue'), meta: { title: 'IOC', group: 'Threat Intelligence' } },
   { path: '/threat/cve', component: () => import('../modules/threat/CveCenter.vue'), meta: { title: 'CVE', group: 'Threat Intelligence' } },
-  { path: '/threat/rules', component: () => import('../modules/threat/RulesCenter.vue'), meta: { title: 'Rules', group: 'Threat Intelligence' } },
+  // The detection-rule library is a tab of 采集与规则 now; keep the old URL alive.
+  { path: '/threat/rules', redirect: { path: '/collection-rules', query: { view: 'library' } } },
   { path: '/threat/offline', component: () => import('../modules/threat/OfflineResource.vue'), meta: { title: 'Offline Resource', group: 'Threat Intelligence' } },
   // Security Engines
   { path: '/engines', component: () => import('../modules/engines/EnginesOverview.vue'), meta: { title: 'Engines', group: 'Security Engines' } },
@@ -76,8 +77,7 @@ router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (!auth.loaded) await auth.load()
   if (!auth.user) return { path: '/login', query: { redirect: to.fullPath } }
-  const flat = flatMenu()
-  const match = flat.find((m) => m.path === to.path)
+  const match = activeMenuEntry(to.path, to.query)
   if (match) to.meta.title = match.title
   return true
 })

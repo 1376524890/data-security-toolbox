@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
-import { menuGroups } from './router/menu'
+import { activeMenuEntry, activeMenuIndex, menuGroups, menuIndex } from './router/menu'
 import { useAuthStore } from './stores/auth'
 import { useSystemStore } from './stores/system'
 import { importTestData, clearTestData, getTestStatus, markTestImported, consumeTestImported, type TestStatus } from './api/test'
@@ -19,7 +19,14 @@ const testStatus = ref<TestStatus | null>(null)
 const testBusy = ref(false)
 
 const currentTitle = computed(() => String(route.meta.title || 'Dashboard'))
-const currentGroup = computed(() => String(route.meta.group || ''))
+// The six sections are the top level of the sidebar, so the header reads the
+// section straight from the menu entry rather than from per-route metadata.
+const currentGroup = computed(() =>
+  activeMenuEntry(route.path, route.query as Record<string, unknown>)?.group ||
+  String(route.meta.group || ''))
+// Two sub-items can share a route and differ only by their ``view`` query, so the
+// highlighted entry is resolved from path + query, never path alone.
+const activeKey = computed(() => activeMenuIndex(route.path, route.query as Record<string, unknown>))
 const healthyIntegrations = computed(() => system.integrations.filter((item: IntegrationStatus) => item.healthy).length)
 const unhandledAlerts = computed(() => system.alertSummary?.unhandled_critical_high || 0)
 const healthStatus = computed(() => system.health?.status || 'checking')
@@ -107,18 +114,12 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <nav class="side-menu">
-          <template v-for="node in menuGroups" :key="'group' in node ? node.group : node.path">
-            <div v-if="'group' in node" class="menu-group-title">{{ collapsed ? '···' : node.group }}</div>
-            <el-menu :default-active="route.path" router :collapse="collapsed" :collapse-transition="false">
-              <template v-if="'group' in node">
-                <el-menu-item v-for="item in node.items" :key="item.path" :index="item.path">
-                  <el-icon><component :is="item.icon" /></el-icon>
-                  <template #title>{{ item.title }}</template>
-                </el-menu-item>
-              </template>
-              <el-menu-item v-else :index="node.path">
-                <el-icon><component :is="node.icon" /></el-icon>
-                <template #title>{{ node.title }}</template>
+          <template v-for="section in menuGroups" :key="section.group">
+            <div class="menu-group-title">{{ collapsed ? '···' : section.group }}</div>
+            <el-menu :default-active="activeKey" router :collapse="collapsed" :collapse-transition="false">
+              <el-menu-item v-for="item in section.items" :key="menuIndex(item)" :index="menuIndex(item)">
+                <el-icon><component :is="item.icon" /></el-icon>
+                <template #title>{{ item.title }}</template>
               </el-menu-item>
             </el-menu>
           </template>
