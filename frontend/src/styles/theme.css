@@ -55,6 +55,26 @@ html.dark {
   color-scheme: dark;
 }
 
+/* Light theme: the same tokens with light surfaces. Element Plus keeps its own
+ * light defaults, because its dark overrides live under html.dark. */
+html.light {
+  color-scheme: light;
+  --soc-bg: #f3f5f9;
+  --soc-bg-2: #eef1f6;
+  --soc-panel: #ffffff;
+  --soc-panel-2: #f8fafc;
+  --soc-panel-hover: #eef2f7;
+  --soc-border: #e2e8f0;
+  --soc-border-2: #d7dee8;
+  --soc-text: #1f2937;
+  --soc-text-strong: #0f172a;
+  --soc-text-muted: #64748b;
+  --soc-text-dim: #94a3b8;
+  --soc-primary-dim: rgba(14, 165, 233, 0.12);
+  --soc-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  --soc-shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
 /* Element Plus dark theme variable overrides */
 html.dark {
   --el-bg-color: var(--soc-panel);

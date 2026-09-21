@@ -17,6 +17,8 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}
 
   redis:
     image: redis:7.4-alpine
@@ -29,8 +31,11 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}
 
   backend:
+    image: ${BACKEND_IMAGE:-source-backend:latest}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -108,8 +113,11 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}
 
   worker:
+    image: ${WORKER_IMAGE:-source-worker:latest}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -175,12 +183,12 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}
 
   beat:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-      target: analysis-worker
+    # Same image the worker builds - no second (third) compilation of it.
+    image: ${WORKER_IMAGE:-source-worker:latest}
     command: ["celery", "-A", "app.workers.celery_app.celery_app", "beat", "--loglevel=info"]
     environment:
       APP_ENV: ${APP_ENV:-production}
@@ -218,12 +226,12 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}
 
   deployment-worker:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-      target: analysis-worker
+    # Same image the worker builds - no second (third) compilation of it.
+    image: ${WORKER_IMAGE:-source-worker:latest}
     command: ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "-Q", "deployment", "--concurrency=2"]
     environment:
       APP_ENV: ${APP_ENV:-production}
@@ -260,8 +268,11 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}
 
   frontend:
+    image: ${FRONTEND_IMAGE:-source-frontend:latest}
     build:
       context: ./frontend
     ports:
@@ -269,6 +280,8 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}
 
   flower:
     image: mher/flower:2.0.1
@@ -278,3 +291,5 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}

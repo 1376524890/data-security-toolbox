@@ -10,9 +10,10 @@ class DataAssetScanConfig(BaseModel):
         default_factory=list, max_length=32, description="目标服务器上要采集的目录"
     )
     max_files: int = Field(default=10000, ge=1, le=100000)
-    max_depth: int = Field(default=3, ge=0, le=8)
+    max_depth: int = Field(default=32, ge=0, le=64)
     include_databases: bool = True
-    timeout_seconds: int = Field(default=120, ge=5, le=1800)
+    # 0 = no wall-clock limit.
+    timeout_seconds: int = Field(default=0, ge=0, le=31536000)
     #: Scope filters. A bare name filters that directory anywhere below a root; an
     #: absolute path excludes exactly that subtree. ``file_types`` is an extension
     #: allow-list, and an empty one keeps every type in scope.
@@ -127,7 +128,7 @@ class DataAssetReport(BaseModel):
     assets: list[ProbeDataAsset] = Field(default_factory=list, max_length=4096)
     databases: list[ProbeDataAsset] = Field(default_factory=list, max_length=256)
     scanned_paths: list[str] = Field(default_factory=list, max_length=64)
-    max_depth: int | None = Field(default=None, ge=0, le=8)
+    max_depth: int | None = Field(default=None, ge=0, le=64)
     complete: bool = True
     completed_scope: bool | None = None
     error: str = Field(default="", max_length=500)

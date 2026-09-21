@@ -13,6 +13,15 @@ const router = useRouter()
 const auth = useAuthStore()
 const system = useSystemStore()
 const collapsed = ref(false)
+const theme = ref<'dark' | 'light'>(
+  document.documentElement.classList.contains('light') ? 'light' : 'dark')
+
+function toggleTheme(): void {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark'
+  document.documentElement.classList.toggle('dark', theme.value === 'dark')
+  document.documentElement.classList.toggle('light', theme.value === 'light')
+  localStorage.setItem('dst-theme', theme.value)
+}
 const now = ref(new Date())
 let clock = 0
 const testStatus = ref<TestStatus | null>(null)
@@ -144,6 +153,10 @@ onBeforeUnmount(() => {
           <el-badge :value="unhandledAlerts" :hidden="!unhandledAlerts" :max="99">
             <el-button size="small" text @click="openAlerts"><el-icon><Bell /></el-icon></el-button>
           </el-badge>
+          <el-button size="small" text :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
+                     @click="toggleTheme">
+            <el-icon><component :is="theme === 'dark' ? 'Sunny' : 'Moon'" /></el-icon>
+          </el-button>
           <span class="header-clock mono">{{ now.toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
           <el-dropdown v-if="testDataImportEnabled" trigger="click" @command="(cmd: string) => { if (cmd === 'import') onImportTest(); if (cmd === 'clear') onClearTest() }">
             <el-button size="small" text :loading="testBusy">

@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import StateBox from '../../components/common/StateBox.vue'
+import StatCard from '../../components/common/StatCard.vue'
 import StatusBadge from '../../components/security/StatusBadge.vue'
 import { deleteTask, getTask, listTasks, stopTask } from '../../api/tasks'
 import type { Task } from '../../types/task'
@@ -26,6 +27,19 @@ const wizard = useTaskWizard()
 const checkFor = (host: { key: number } & Record<string, unknown>) =>
   (_node: unknown, state: { checkedKeys: string[] }): void =>
     wizard.onCheck(host as never, state.checkedKeys)
+
+// Each host owns an el-tree; keeping the instance lets "清空选择" reset the
+// checkboxes themselves instead of only the stored keys (the two drifted apart).
+const trees = new Map<number, { setCheckedKeys: (keys: string[]) => void }>()
+function registerTree(key: number, instance: unknown): void {
+  if (instance && typeof (instance as { setCheckedKeys?: unknown }).setCheckedKeys === 'function') {
+    trees.set(key, instance as { setCheckedKeys: (keys: string[]) => void })
+  }
+}
+function clearHostSelection(host: { key: number } & Record<string, unknown>): void {
+  trees.get(host.key)?.setCheckedKeys([])
+  wizard.onCheck(host as never, [])
+}
 
 const KINDS = ['probe_scan', 'data_asset_scan', 'network_scan', 'file_source_scan', 'database_scan']
 
@@ -110,16 +124,6 @@ onMounted(load)
 
     <StateBox :loading="loading" :error="error" :empty="!rows.length" empty-text="还没有任务" @retry="load">
       <el-table :data="rows" size="small" @row-click="open">
-        <el-table-column type="expand">
-          <template #default="{ row }">
-            <div class="detail">
-              <div><b>阶段</b>：{{ row.current_stage || '—' }}</div>
-              <div v-if="row.error"><b>问题</b>：{{ row.error }}</div>
-              <div v-if="Object.keys(row.result || {}).length"><b>结果摘要</b>：{{ JSON.stringify(row.result).slice(0, 400) }}</div>
-              <div v-if="row.log"><b>日志</b>：{{ String(row.log).slice(-400) }}</div>
-            </div>
-          </template>
-        </el-table-column>
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column prop="kind" label="类型" width="150" />
         <el-table-column label="状态" width="110"><template #default="{ row }"><StatusBadge :value="row.status" /></template></el-table-column>
@@ -142,6 +146,34 @@ onMounted(load)
                      :current-page="filters.page" style="margin-top: 10px"
                      @current-change="(p: number) => { filters.page = p; load() }" />
     </StateBox>
+
+    <!-- Task detail: rendered in a window rather than an expandable row, so the
+         progress, the health summary and the problem report read as one view. -->
+    <el-dialog :model-value="detail !== null" :title="detail ? `任务 #${detail.id}` : ''"
+               width="820px" top="8vh" @update:model-value="(v: boolean) => { if (!v) detail = null }">
+      <template v-if="detail">
+        <div class="stat-grid cols-3">
+          <StatCard label="状态" :value="detail.status" :sub="detail.current_stage || '—'"
+                    :tone="detail.status === 'Failed' ? 'danger' : detail.status === 'Success' ? 'success' : 'warning'" />
+          <StatCard label="完成度" :value="`${detail.progress}%`" :sub="`类型 ${detail.kind}`" />
+          <StatCard label="健康度" :value="health(detail).label" :sub="`耗时 ${duration(detail)}`"
+                    :tone="health(detail).tone as never" />
+        </div>
+        <el-progress :percentage="Math.max(0, Math.min(100, detail.progress || 0))" style="margin-top: 12px" />
+        <div v-if="detail.error" class="section-title">问题</div>
+        <el-alert v-if="detail.error" type="error" :closable="false" :title="detail.error" />
+        <div class="section-title">结果</div>
+        <el-descriptions v-if="Object.keys(detail.result || {}).length" :column="2" border size="small">
+          <el-descriptions-item v-for="(value, key) in detail.result" :key="key" :label="String(key)">
+            <span class="wrap">{{ Array.isArray(value) ? `${value.length} 项` : String(value ?? '—') }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+        <el-empty v-else description="该任务暂无结果" :image-size="60" />
+        <div v-if="detail.log" class="section-title">日志</div>
+        <pre v-if="detail.log" class="log">{{ String(detail.log).slice(-4000) }}</pre>
+      </template>
+      <template #footer><el-button @click="detail = null">关闭</el-button></template>
+    </el-dialog>
 
     <el-dialog v-model="wizardOpen" title="新建任务" width="980px" top="6vh">
       <el-steps :active="wizard.step.value" simple finish-status="success" style="margin-bottom: 14px">
@@ -234,11 +266,12 @@ onMounted(load)
             </el-select>
             <span class="muted">已选 {{ host.selected.length }} 个目录</span>
             <div class="toolbar-spacer" />
-            <el-button size="small" @click="wizard.onCheck(host, [])">清空选择</el-button>
+            <el-button size="small" @click="clearHostSelection(host)">清空选择</el-button>
           </div>
           <!-- Lazy tree: ticking a directory takes its whole subtree; children
                load on expand, and files are shown but not tickable. -->
-          <el-tree :key="`${host.key}-${host.root}`" lazy show-checkbox node-key="path"
+          <el-tree :key="`${host.key}-${host.root}`" :ref="(el: unknown) => registerTree(host.key, el)"
+                   lazy show-checkbox node-key="path"
                    :props="{ label: 'name', isLeaf: 'leaf', disabled: 'disabled' }"
                    :load="(node: any, resolve: any) => wizard.loadNode(host, node, resolve)"
                    @check="checkFor(host)"
@@ -289,5 +322,9 @@ onMounted(load)
 .host-block { border: 1px solid var(--soc-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .host-title { font-weight: 600; margin-bottom: 8px; }
 .detail { padding: 6px 12px; font-size: 12px; line-height: 1.8; color: var(--soc-text-dim); word-break: break-all; }
+.section-title { font-weight: 600; margin: 14px 0 8px; }
+.wrap { overflow-wrap: anywhere; }
+.log { background: var(--soc-panel-2); border: 1px solid var(--soc-border); border-radius: 6px;
+       padding: 10px; font-size: 12px; max-height: 260px; overflow: auto; white-space: pre-wrap; }
 :deep(.el-table__row) { cursor: pointer; }
 </style>

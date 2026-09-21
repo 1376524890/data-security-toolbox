@@ -11,10 +11,11 @@ from .adapters import SourceError
 
 FIELDS = ('name', 'protocol', 'host', 'port', 'username', 'root_path', 'host_key_sha256',
           'enabled', 'limits', 'interval_minutes')
-DEFAULT_LIMITS = {'max_files': 10000, 'max_depth': 3, 'max_bytes': 67108864,
-                  'max_file_bytes': 8388608, 'max_seconds': 120}
-CEILINGS = {'max_files': 100000, 'max_depth': 8, 'max_bytes': 536870912,
-            'max_file_bytes': 33554432, 'max_seconds': 900}
+#: 0 seconds means "no time limit" - the run is bounded by bytes and files.
+DEFAULT_LIMITS = {'max_files': 10000, 'max_depth': 32, 'max_bytes': 100 * 1024 ** 3,
+                  'max_file_bytes': 10 * 1024 ** 3, 'max_seconds': 0}
+CEILINGS = {'max_files': 100000, 'max_depth': 64, 'max_bytes': 100 * 1024 ** 3,
+            'max_file_bytes': 10 * 1024 ** 3, 'max_seconds': 31536000}
 
 
 def serialize(row):

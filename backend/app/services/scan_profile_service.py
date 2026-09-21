@@ -37,11 +37,12 @@ NUMERIC_BOUNDS: dict[str, tuple[type, float, float]] = {
     "max_files": (int, 1, DEFAULT_LIMITS["max_files_ceiling"]),
     "max_dirs": (int, 1, 100_000),
     "max_depth": (int, 0, DEFAULT_LIMITS["max_depth_ceiling"]),
-    "max_runtime_seconds": (int, 5, DEFAULT_LIMITS["max_runtime_ceiling"]),
-    "max_bytes_read": (int, 1024, 16 * 1024 * 1024 * 1024),
-    "max_single_file_size": (int, 1024, 1024 * 1024 * 1024),
-    # Full hashing is expensive, so the ceiling is deliberately far below "any size".
-    "max_full_hash_size": (int, 0, 128 * 1024 * 1024),
+    # 0 seconds = no time limit; a timed profile is clamped by its ceiling.
+    "max_runtime_seconds": (int, 0, 31536000),
+    "max_bytes_read": (int, 1024, 100 * 1024 ** 3),
+    "max_single_file_size": (int, 1024, 10 * 1024 ** 3),
+    # Full hashing is expensive, so the ceiling stays below the read budget.
+    "max_full_hash_size": (int, 0, 10 * 1024 ** 3),
     "sample_block_size": (int, 4096, 8 * 1024 * 1024),
     "max_sample_rows": (int, 1, 1000),
     "max_cpu_seconds": (float, 0, 86_400),

@@ -107,7 +107,8 @@ DEFAULT_CONFIG = {
         "max_hosts": 256,
         "concurrency": 32,
         "connect_timeout": 0.5,
-        "timeout_seconds": 120,
+        # 0 = no wall-clock limit; the run is bounded by bytes and files.
+        "timeout_seconds": 0,
         "allow_remote": False,
         "poll_seconds": 30,
     },

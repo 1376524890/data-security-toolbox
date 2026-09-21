@@ -8,8 +8,10 @@ import App from './App.vue'
 import router from './router'
 import { createPinia } from 'pinia'
 
-// Enable dark SOC theme
-document.documentElement.classList.add('dark')
+// Theme: dark is the default SOC look, light is available from the header
+// toggle. The choice is remembered per browser.
+const savedTheme = localStorage.getItem('dst-theme') === 'light' ? 'light' : 'dark'
+document.documentElement.classList.add(savedTheme)
 
 const app = createApp(App)
 app.use(createPinia())

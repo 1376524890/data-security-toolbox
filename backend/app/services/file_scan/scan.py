@@ -41,7 +41,8 @@ def run(db, task_id):
 
     def check():
         nonlocal last_check
-        if time.monotonic() - start > limits['max_seconds']:
+        # 0 seconds = no time limit; bytes and files still bound the run.
+        if limits['max_seconds'] and time.monotonic() - start > limits['max_seconds']:
             raise adapters.SourceError('time_budget')
         if time.monotonic() - last_check > 1:
             db.refresh(task)

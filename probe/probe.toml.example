@@ -45,7 +45,8 @@ exclude_paths = []
 file_types = []
 # Register locally listening database services (mysql/postgres/redis/...) as assets.
 include_databases = true
-timeout_seconds = 120
+# 0 = no wall-clock limit; the run is bounded by bytes read and file count.
+timeout_seconds = 0
 # Allow an administrator to trigger a collection from the platform.
 allow_remote = false
 poll_seconds = 30
@@ -56,14 +57,14 @@ poll_seconds = 30
 #
 # Files/directories visited, and how deep the walk goes below each root.
 max_files = 10000
-max_depth = 3
-max_dirs = 500
+max_depth = 32
+max_dirs = 50000
 # Total bytes read across the whole run, and per file.
-max_bytes_read = 536870912
-max_single_file_size = 2097152
+max_bytes_read = 107374182400
+max_single_file_size = 10737418240
 # Files up to this size get a FULL_SHA256; larger ones get a versioned partial
 # fingerprint (size + HEAD/25%/50%/75%/TAIL blocks) and are marked as candidates.
-max_full_hash_size = 8388608
+max_full_hash_size = 536870912
 sample_block_size = 65536
 max_sample_rows = 25
 # 0 disables the corresponding resource guard (CPU seconds / peak RSS MiB).

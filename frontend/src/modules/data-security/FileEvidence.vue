@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import FileAnalysis from './FileAnalysis.vue'
+import RiskFiles from './evidence/RiskFiles.vue'
 import PcapWorkbench from '../network/pcap/PcapWorkbench.vue'
 
 // 文件证据 shows the two kinds of evidence a data review actually needs: the
@@ -21,10 +21,10 @@ function onChange(name: string): void {
     <div class="hub-title">文件证据</div>
     <el-tabs :model-value="active" @tab-change="(name: string | number) => onChange(String(name))">
       <el-tab-pane label="风险文件" name="files">
-        <FileAnalysis v-if="active === 'files'" />
+        <RiskFiles v-if="active === 'files'" />
       </el-tab-pane>
       <el-tab-pane label="风险 PCAP" name="pcaps">
-        <PcapWorkbench v-if="active === 'pcaps'" />
+        <PcapWorkbench v-if="active === 'pcaps'" hide-upload />
       </el-tab-pane>
     </el-tabs>
   </div>

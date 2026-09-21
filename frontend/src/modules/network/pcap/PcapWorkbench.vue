@@ -12,6 +12,11 @@ import JsonViewer from '../../../components/evidence/JsonViewer.vue'
 import { formatBytes, formatDateTime, formatDuration } from '../../../utils/format'
 import { usePcapWorkbench } from './composables/usePcapWorkbench'
 
+// 文件证据 mounts this as the "risk captures" view, where a capture is produced
+// by a monitoring task rather than uploaded by hand — so the upload control is
+// hidden there and only the parsing/display is reused.
+withDefaults(defineProps<{ hideUpload?: boolean }>(), { hideUpload: false })
+
 // The page state and the API orchestration live in the composable; this view
 // only binds them into the template below.
 const {
@@ -31,7 +36,7 @@ const {
     <!-- Pcap selector / list -->
     <div v-if="!selected" class="wb-list">
       <div class="toolbar">
-        <el-upload accept=".pcap,.pcapng,.cap" :auto-upload="false" :show-file-list="false" :disabled="uploadProgress !== null" :on-change="(file: any) => handleUpload(file.raw as File)">
+        <el-upload v-if="!hideUpload" accept=".pcap,.pcapng,.cap" :auto-upload="false" :show-file-list="false" :disabled="uploadProgress !== null" :on-change="(file: any) => handleUpload(file.raw as File)">
           <el-button type="primary" :loading="uploadProgress !== null">{{ uploadProgress === null ? '上传 PCAP/PCAPNG' : uploadProgress === 100 ? '服务器接收中' : `上传中 ${uploadProgress}%` }}</el-button>
         </el-upload>
         <el-input v-model="filters.search" placeholder="搜索文件名" clearable @keyup.enter="reset" />

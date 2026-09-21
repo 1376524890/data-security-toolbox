@@ -44,14 +44,15 @@ CONTENT_TRUNCATION_REASONS = frozenset({TERMINATION_ROWS, TERMINATION_FILE_SIZE}
 DEFAULT_LIMITS: dict[str, Any] = {
     "max_files": 10000,
     "max_files_ceiling": 100000,
-    "max_depth": 3,
-    "max_depth_ceiling": 8,
-    "max_dirs": 500,
-    "max_runtime_seconds": 120,
-    "max_runtime_ceiling": 1800,
-    "max_bytes_read": 512 * 1024 * 1024,
-    "max_single_file_size": 2 * 1024 * 1024,
-    "max_full_hash_size": 8 * 1024 * 1024,
+    "max_depth": 32,
+    "max_depth_ceiling": 64,
+    "max_dirs": 50000,
+    #: 0 means "no time limit": the run is bounded by bytes/files instead.
+    "max_runtime_seconds": 0,
+    "max_runtime_ceiling": 0,
+    "max_bytes_read": 100 * 1024 ** 3,
+    "max_single_file_size": 10 * 1024 ** 3,
+    "max_full_hash_size": 512 * 1024 * 1024,
     "large_file_sampling": True,
     "sample_block_size": 64 * 1024,
     "max_sample_rows": 25,
@@ -110,8 +111,11 @@ class ScanBudget:
         self.max_files = min(max(int(merged["max_files"]), 1), int(merged["max_files_ceiling"]))
         self.max_depth = min(max(int(merged["max_depth"]), 0), int(merged["max_depth_ceiling"]))
         self.max_dirs = max(int(merged["max_dirs"]), 1)
-        self.max_runtime = min(max(float(merged["max_runtime_seconds"]), 1.0),
-                               float(merged["max_runtime_ceiling"]))
+        # 0 (the default) or a 0 ceiling means "no time limit"; anything else is
+        # clamped to the ceiling. A timed run still stops on bytes/files.
+        runtime = float(merged["max_runtime_seconds"] or 0)
+        ceiling = float(merged.get("max_runtime_ceiling") or 0)
+        self.max_runtime = 0.0 if (runtime <= 0 or ceiling <= 0) else min(runtime, ceiling)
         self.max_bytes = max(int(merged["max_bytes_read"]), 1)
         self.max_single_file = max(int(merged["max_single_file_size"]), 1)
         self.max_full_hash = max(int(merged["max_full_hash_size"]), 0)
@@ -119,7 +123,7 @@ class ScanBudget:
         self.max_rows = max(int(merged["max_sample_rows"]), 1)
         self.max_cpu = max(float(merged.get("max_cpu_seconds") or 0), 0.0)
         self.max_rss_mb = max(float(merged.get("max_rss_mb") or 0), 0.0)
-        self.deadline = self.started_at + self.max_runtime
+        self.deadline = self.started_at + self.max_runtime if self.max_runtime else None
 
     # -- limits -------------------------------------------------------------
     def limit(self, name: str, fallback: Any = 0) -> Any:
@@ -140,6 +144,8 @@ class ScanBudget:
         return time.monotonic() - self.started_at
 
     def remaining_seconds(self) -> float:
+        if self.deadline is None:
+            return float("inf")
         return max(self.deadline - time.monotonic(), 0.0)
 
     def check(self) -> None:
@@ -153,7 +159,7 @@ class ScanBudget:
         if self.cancelled():
             self.stop(TERMINATION_CANCELLED, "stop requested")
             raise BudgetExceeded(TERMINATION_CANCELLED, "stop requested")
-        if time.monotonic() >= self.deadline:
+        if self.deadline is not None and time.monotonic() >= self.deadline:
             self.stop(TERMINATION_TIMEOUT, f"{self.max_runtime:.0f}s")
             raise BudgetExceeded(TERMINATION_TIMEOUT, f"{self.max_runtime:.0f}s")
         if self.bytes_read >= self.max_bytes:
