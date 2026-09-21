@@ -36,8 +36,7 @@ export const menuGroups: MenuGroup[] = [
     { path: '/audit', title: '安全审计', icon: 'DocumentChecked' },
   ]},
   { group: '任务中心', items: [
-    { path: '/tasks', title: '任务下发', icon: 'Upload' },
-    { path: '/tasks', title: '进度监控', icon: 'List', query: { view: 'monitor' } },
+    { path: '/tasks', title: '任务监控', icon: 'List' },
   ]},
   { group: '数据资产', items: [
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },

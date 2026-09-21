@@ -212,6 +212,25 @@ class SshClient:
         finally:
             sftp.close()
 
+    def host_key_sha256(self) -> str:
+        """The remote server key's SHA256, in the ``SHA256:...`` form.
+
+        The wizard echoes this into a pinned-key file source so a direct
+        (probe-less) target keeps the same host-key verification the SFTP
+        adapter already enforces.
+        """
+        if not self._client:
+            raise SshError("CONNECT_FAILED", "not connected")
+        transport = self._client.get_transport()
+        key = transport.get_remote_server_key() if transport else None
+        if key is None:
+            raise SshError("CONNECT_FAILED", "no remote host key")
+        import base64
+        import hashlib
+
+        digest = hashlib.sha256(key.asbytes()).digest()
+        return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
     def close(self) -> None:
         if self._client:
             self._client.close()

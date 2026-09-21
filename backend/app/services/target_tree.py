@@ -51,7 +51,10 @@ def test_ssh(spec: dict[str, Any]) -> dict[str, Any]:
     ssh = _ssh_client(spec)
     try:
         ssh.connect()
-        return {"ok": True, "protocol": "ssh", "error": ""}
+        # The fingerprint lets a direct (probe-less) target be saved as a
+        # pinned-key file source without a second, unverified connection.
+        return {"ok": True, "protocol": "ssh", "error": "",
+                "host_key_sha256": ssh.host_key_sha256()}
     except SshError as exc:
         return {"ok": False, "protocol": "ssh", "error": exc.code, "message": exc.message}
     finally:
