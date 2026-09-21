@@ -14,6 +14,8 @@ import requests
 
 from app.core.config import settings
 
+from app.services.masking import masked
+
 
 # Entities that describe infrastructure metadata instead of protected data.
 # They stay useful as transfer evidence but can never make a stream sensitive:
@@ -67,6 +69,46 @@ def sensitive_entity(rule):
     return str(rule.get('entity') or rule.get('name') or '').upper() not in STRUCTURAL_ENTITIES
 
 
+# The console's rule store is the only place analyst rules live. The closed set
+# of provenance names a rule pack accepts is defined once here, so the platform
+# engine and the rule-set working copy cannot disagree about where a rule came
+# from.
+SOURCE_BY_STORE = {'manual': 'manual', 'presidio': 'presidio_static', 'builtin': 'builtin'}
+
+
+def rule_source(rule):
+    """Provenance of one store rule, mapped onto the names a rule pack accepts."""
+    return SOURCE_BY_STORE.get(str(rule.get('source') or 'manual').strip().lower(), 'manual')
+
+
+def stored_rule(rule):
+    """One stored rule in the shared rule (rule pack) format -- the only mapping.
+
+    The platform engine and the rule-set working copy both build their rules
+    from here. They used to map the store separately, so an imported rule
+    reached a probe without the shape check the platform applied and the same
+    rule matched differently on the two sides.
+
+    ``description`` falls back to the recognizer because the rule pack has
+    always carried the Presidio recognizer name there; a republish must not
+    rewrite rules an operator already published.
+    """
+    rule_id = str(rule.get('id') or '').strip()
+    return {
+        'rule_id': rule_id,
+        'name': str(rule.get('name') or rule_id),
+        'entity': str(rule.get('entity') or rule.get('name') or rule_id),
+        'pattern': str(rule.get('pattern') or ''),
+        'keywords': [str(item) for item in (rule.get('keywords') or [])],
+        'field_hints': [str(item) for item in (rule.get('field_hints') or [])],
+        'confidence': rule_confidence(rule),
+        'enabled': bool(rule.get('enabled', True)),
+        'rule_source': rule_source(rule),
+        'recognizer': str(rule.get('recognizer') or ''),
+        'description': str(rule.get('description') or rule.get('recognizer') or ''),
+    }
+
+
 def atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
@@ -94,9 +136,26 @@ def validate_rule(value):
             'confidence': rule_confidence({'confidence': value.get('confidence'), 'name': name})}
 
 
+STORE_DIRECTORY = 'dlp_rules'
+
+
+def rule_store_directory() -> Path:
+    return settings.integration_dir / STORE_DIRECTORY
+
+
+def rule_store_files() -> list[Path]:
+    """Every file the rule store holds, in a stable order.
+
+    The layout is known here and nowhere else: the engine's refresh signature,
+    the rule-library listing and an enable/disable write all have to see the
+    same set of files, and each of them used to glob the directory itself.
+    """
+    return sorted(rule_store_directory().glob('*.json'))
+
+
 def managed_rules():
     result = []
-    for path in sorted((settings.integration_dir / 'dlp_rules').glob('*.json')):
+    for path in rule_store_files():
         result.extend(json.loads(path.read_text(encoding='utf-8'))['rules'])
     return result
 
@@ -104,8 +163,26 @@ def managed_rules():
 def save_manual_rule(value):
     rule = validate_rule(value)
     rule['id'] = 'manual-' + uuid.uuid4().hex
-    atomic_json(settings.integration_dir / 'dlp_rules' / (rule['id'] + '.json'), {'rules': [rule]})
+    atomic_json(rule_store_directory() / (rule['id'] + '.json'), {'rules': [rule]})
     return rule
+
+
+def set_rule_enabled(rule_id, enabled):
+    """Enable or disable one stored rule in place.
+
+    Returns the updated rule, or ``None`` when the store does not hold it. The
+    store writes its own files: the API used to glob, parse and rewrite them,
+    and a second reader of the layout is how a second implementation starts.
+    """
+    for path in rule_store_files():
+        document = json.loads(path.read_text(encoding='utf-8'))
+        for rule in document.get('rules', []):
+            if rule.get('id') != rule_id:
+                continue
+            rule['enabled'] = bool(enabled)
+            atomic_json(path, document)
+            return rule
+    return None
 
 
 def import_presidio_wheel(content, version):
@@ -146,7 +223,7 @@ def import_presidio_wheel(content, version):
         raise ValueError('未找到可导入的 Presidio 正则规则')
     document = {'rules': rules, 'version': version, 'skipped': skipped, 'source': 'https://pypi.org/project/presidio-analyzer/',
                 'scope': 'Presidio 静态正则模式；不包含 NLP 模型、上下文评分或 Python 校验器'}
-    atomic_json(settings.integration_dir / 'dlp_rules' / 'presidio.json', document)
+    atomic_json(rule_store_directory() / 'presidio.json', document)
     return {'imported': len(rules), 'skipped': skipped, 'version': version, 'scope': document['scope']}
 
 
@@ -165,7 +242,6 @@ def update_presidio():
 
 
 def scan_managed(text, rules, minimum=1, errors=None):
-    from app.services.dlp_service import masked
     hits = []
     for rule in rules:
         if not rule.get('enabled', True):

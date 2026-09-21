@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -312,6 +313,16 @@ class RemovalService(DeploymentRecord):
         try:
             delete_probe_record(self.db, probe_id)
             self._event(deployment, "REMOVED", "platform probe record deleted")
+        except SQLAlchemyError:
+            # Remote uninstall is already committed. Recover the session before
+            # recording a platform-only failure or destroying its SSH credential.
+            self.db.rollback()
+            deployment = self._load()
+            deployment.result = {**(deployment.result or {}),
+                                 "platform_record_deleted": False,
+                                 "platform_record_error": "database_error"}
+            self._event(deployment, "REMOVED",
+                        "host removed; platform record deletion failed; retry platform deletion")
         except (ProbeNotFoundError, ProbeInUseError) as exc:
             # The host is stripped either way; the record has to stay only
             # because something was still using it, which is a console problem.

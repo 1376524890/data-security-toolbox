@@ -8,6 +8,8 @@ import type { Task } from '../types/task'
 import * as probes from '../api/probes'
 import * as scanProfiles from '../api/scanProfiles'
 import * as tasks from '../api/tasks'
+import * as catalog from '../api/dataCatalog'
+vi.mock('../api/dataCatalog', () => ({ listAssetInstances: vi.fn() }))
 
 vi.mock('../api/probes', () => ({ listProbes: vi.fn() }))
 vi.mock('../api/scanProfiles', () => ({ listScanProfiles: vi.fn(), queueDataAssetJob: vi.fn() }))
@@ -96,6 +98,22 @@ describe('data asset job state', () => {
     expect(state.partial.value).toBe(2)
   })
 
+  it('words a finished walk with a short file sample differently from an unwalked scope', async () => {
+    await mountJobs()
+    expect(state.coverageNote(job(1, 'Success', {}))).toBe('')
+    expect(state.coverageNote(job(2, 'Partial', { coverage: {
+      complete_scope: false, enumeration_complete: true, content_complete: false,
+      termination_reason: 'row_budget' } })))
+      .toBe('· 目录已完整枚举，部分文件内容按上限截断')
+    expect(state.coverageNote(job(3, 'Partial', { coverage: {
+      complete_scope: false, enumeration_complete: false, content_complete: false,
+      termination_reason: 'file_budget' } })))
+      .toBe('· 范围未完整覆盖')
+    // An older report carries neither flag: it keeps the cautious wording.
+    expect(state.coverageNote(job(4, 'Partial', { coverage: { complete_scope: false } })))
+      .toBe('· 范围未完整覆盖')
+  })
+
   it('lets explicit paths win over the profile and refreshes the list after dispatch', async () => {
     await mountJobs()
     vi.mocked(tasks.listTasks).mockClear()
@@ -174,5 +192,30 @@ describe('data asset job state', () => {
 
     await vi.advanceTimersByTimeAsync(15000)
     expect(tasks.listTasks).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('task asset drawer', () => {
+  it('queries the selected task and paginates within that task', async () => {
+    vi.mocked(catalog.listAssetInstances).mockResolvedValue({ items: [], total: 72, page: 1, page_size: 50, association: 'recorded_membership' })
+    await mountJobs()
+    await state.openAssets(job(44, 'Partial'))
+    expect(catalog.listAssetInstances).toHaveBeenLastCalledWith({ task_id: 44, page: 1, page_size: 50 })
+    expect(state.assetTotal.value).toBe(72)
+    await state.loadAssets(2)
+    expect(catalog.listAssetInstances).toHaveBeenLastCalledWith({ task_id: 44, page: 2, page_size: 50 })
+  })
+
+  it('ignores a response after the drawer closes', async () => {
+    let resolve!: (value: any) => void
+    vi.mocked(catalog.listAssetInstances).mockReturnValue(new Promise((done) => { resolve = done }))
+    await mountJobs()
+    const pending = state.openAssets(job(44, 'Success'))
+    state.closeAssets()
+    resolve({ items: [{ id: 10 }], total: 1 })
+    await pending
+    expect(state.assetJob.value).toBeNull()
+    expect(state.assetRows.value).toEqual([])
   })
 })

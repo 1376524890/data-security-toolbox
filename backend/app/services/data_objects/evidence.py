@@ -12,6 +12,12 @@ from app.models import AssetInstance, DataObject, Detection, DetectionEvidence
 from app.services.data_objects.persistence import _get_or_create
 from app.services.data_objects.values import _float, _int, _newest, _text, category_name
 
+#: Mirrors the probe's engine caps: the platform stores what the report carried
+#: and never widens it.
+MAX_RETURNED_MATCHES = 3
+MAX_MATCH_CHARS = 120
+MAX_CONTEXT_CHARS = 240
+
 
 def evidence_key(entry: dict[str, Any]) -> str:
     parts = (
@@ -52,8 +58,30 @@ def _evidence_rows(asset: dict[str, Any]) -> list[dict[str, Any]]:
                     else None,
                     "confidence": _float(item.get("confidence")),
                     "hit_count": max(_int(hit.get("count")), 0),
+                    "matches": _returned_matches(hit),
                 }
             )
+    return rows
+
+
+def _returned_matches(hit: dict[str, Any]) -> list[dict[str, str]]:
+    """The原文 the probe returned for one hit, re-bounded and shape-checked.
+
+    The report is data from a host, so the bounds are enforced here as well:
+    a payload that carried more, or longer, strings than the engine emits is
+    trimmed to the documented shape instead of being stored as-is.
+    """
+    items = hit.get("matches")
+    if not isinstance(items, list):
+        return []
+    rows: list[dict[str, str]] = []
+    for item in items[:MAX_RETURNED_MATCHES]:
+        if not isinstance(item, dict):
+            continue
+        value = _text(item.get("value"), MAX_MATCH_CHARS)
+        if not value:
+            continue
+        rows.append({"value": value, "context": _text(item.get("context"), MAX_CONTEXT_CHARS)})
     return rows
 
 
@@ -77,6 +105,10 @@ def _merge_evidence(
         # erase proof that was already collected for this object.
         existing.confidence = max(_float(existing.confidence), row["confidence"])
         existing.hit_count = max(_int(existing.hit_count), row["hit_count"])
+        if row["matches"]:
+            # 原文 belongs to the scan that produced it: keep the newest set, but
+            # never let an empty one erase text that was already returned.
+            existing.extra = {**(existing.extra or {}), "matches": row["matches"]}
         return
     db.add(
         DetectionEvidence(
@@ -94,6 +126,7 @@ def _merge_evidence(
             hit_count=row["hit_count"],
             engine_version=engine_version,
             ruleset_version=ruleset_version,
+            extra={"matches": row["matches"]} if row["matches"] else {},
         )
     )
 
@@ -103,7 +136,9 @@ def _merge_detection(
     *,
     instance: AssetInstance,
     obj: DataObject,
-    probe_id: int,
+    #: NULL for a database-sourced finding: that path has no probe.
+    probe_id: int | None,
+    source_kind: str = "file",
     scan_id: str,
     category: str,
     counts: dict[str, Any],
@@ -124,6 +159,7 @@ def _merge_detection(
         {"instance_id": instance.id, "category": category, "object_id": obj.id},
         {
             "probe_id": probe_id,
+            "source_kind": source_kind,
             "scan_id": scan_id,
             "sensitivity_level": level,
             "severity": severity,
@@ -152,6 +188,9 @@ def _merge_detection(
             _int(history.get("hit_count_history")), _int(detection.hit_count), current_count
         )
         detection.confidence = confidence
+        # A row created before this column existed reads as "file"; a database
+        # finding corrects itself on its next write instead of staying wrong.
+        detection.source_kind = source_kind
         detection.sensitivity_level = level
         detection.severity = severity
         detection.sample_size = sample_size

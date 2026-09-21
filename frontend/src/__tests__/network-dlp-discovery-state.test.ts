@@ -146,10 +146,13 @@ describe('network DLP console state', () => {
     const state = await mount(() => useNetworkDlp())
     state.ruleDialog.value = true
     Object.assign(state.newRule, { name: '工号', entity: 'employee_id', pattern: 'EMP\\d+' })
+    mocked.apiPost.mockResolvedValueOnce({ working_copy: { added: 1, updated: 0 } })
     await state.addRule()
     expect(mocked.apiPost).toHaveBeenCalledWith('/dlp/rules', state.newRule)
     expect(state.ruleDialog.value).toBe(false)
-    expect(ElMessage.success).toHaveBeenCalledWith('规则已添加，对新分析任务生效')
+    // The rule is enforced by the platform engines at once and only reaches the
+    // probes after a publish, so the message names both.
+    expect(ElMessage.success).toHaveBeenCalledWith('规则已添加，对后续分析（文件、数据库、网络防泄密）生效，已同步到规则集工作副本（发布后下发给探针）')
 
     mocked.apiPost.mockRejectedValue(new Error('正则不合法'))
     state.ruleDialog.value = true
@@ -200,6 +203,25 @@ describe('network DLP console state', () => {
     expect(state.alertableHit({ kind: 'id_card', count: 1, samples: [], confidence: 0.9 })).toBe(true)
     expect(state.alertableHit({ kind: 'ip', count: 1, samples: [], sensitive: false })).toBe(false)
     expect(state.alertableHit({ kind: 'id_card', count: 1, samples: [], confidence: 0.2 })).toBe(false)
+  })
+
+  it('projects the matched原文 of a transfer for the evidence drawer', async () => {
+    const state = await mount(() => useNetworkDlp())
+    const row = transfer({ matches: [
+      { kind: '测试', count: 2, samples: [], rule_id: 'manual-1', rule_source: 'manual',
+        matches: [{ value: '张三', context: '姓名=张三' }, { value: '张三', context: '联系人=张三' }] },
+      { kind: 'phone', count: 1, samples: [], rule_ids: ['SD_PHONE_001'], rule_sources: ['builtin'], matches: [] },
+      { kind: 'keyword', count: 1, samples: ['***'], rule_source: 'policy_keyword',
+        matches: [{ value: '内部机密' }] },
+    ] })
+    expect(state.hasMatchedText(row as never)).toBe(true)
+    expect(state.matchedText(row as never)).toEqual([
+      { kind: '测试', count: 2, ruleId: 'manual-1', source: 'manual', value: '张三', context: '姓名=张三' },
+      { kind: '测试', count: 2, ruleId: 'manual-1', source: 'manual', value: '张三', context: '联系人=张三' },
+      { kind: 'keyword', count: 1, ruleId: '', source: 'policy_keyword', value: '内部机密', context: '' },
+    ])
+    // A hit without原文 (old analysis, or a field-name-only rule) is honest.
+    expect(state.hasMatchedText(transfer() as never)).toBe(false)
   })
 
   it('keeps a failed load in the page state', async () => {

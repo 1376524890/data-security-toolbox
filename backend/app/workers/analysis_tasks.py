@@ -42,6 +42,8 @@ from app.services.alert_service import (
     publish_alert,
 )
 from app.services.asset_service import classify_assets
+from app.services.database_scan.adapters import DatabaseError
+from app.services.database_scan.scan import run_scan
 from app.services.metadata_service import extract_metadata
 from app.services.nuclei_service import run_nuclei_scan, templates_dir
 from app.services.protocol_service import parse_pcap
@@ -54,10 +56,11 @@ from app.workers.task_names import (
     ANALYZE_ASSETS,
     ANALYZE_METADATA,
     ANALYZE_PCAP,
+    DATABASE_SCAN,
     DELIVER_ALERT,
     NETWORK_SCAN,
 )
-from app.workers.task_runtime import _finish, task_guard
+from app.workers.task_runtime import _finish, _mark_running, task_guard
 
 
 def _supersede_file_derivations(db, file_id: int, task_id: int, file_name: str) -> int:
@@ -656,3 +659,93 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
         return summary
     _finish(task_id, result=summary)
     return summary
+
+
+@celery_app.task(name=DATABASE_SCAN)
+@task_guard
+def database_scan_task(connection_id: int, task_id: int) -> dict[str, Any] | None:
+    """Collect one configured target database and store its findings.
+
+    The task owns its transaction: the objects, instances, detections and the
+    analysis row land together. A stop request is honoured between tables, so a
+    cancelled scan keeps everything it had already read and retires nothing.
+    """
+    _mark_running(task_id, 5, "准备连接目标数据库")
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        if task is None:
+            return None
+        if str(task.status or "") == "Cancelled":
+            return None
+        snapshot_id = int((task.payload or {}).get("connection_id") or 0)
+        if snapshot_id != int(connection_id):
+            _finish(
+                task_id,
+                error="任务载荷与调度的连接不一致，已拒绝执行",
+                result={"error": "connection_mismatch", "connection_id": connection_id},
+            )
+            return None
+        _mark_running(task_id, 10, "连接目标数据库")
+        try:
+            summary = run_scan(db, task)
+        except DatabaseError as exc:
+            db.rollback()
+            status = str(getattr(exc, "status", "error"))
+            _finish(
+                task_id, error=str(exc),
+                result={"error": status, "message": str(exc),
+                        "connection_id": connection_id,
+                        "stage": "connect" if status in {"unreachable", "auth_error"} else "scan"},
+            )
+            return {"status": "failed", "error": status, "message": str(exc)}
+        db.add(
+            AnalysisResult(
+                task_id=task_id,
+                module="database_scan",
+                content=summary,
+                risk_level="High" if summary.get("detections") else "Low",
+            )
+        )
+        db.commit()
+    final = "Success"
+    if summary.get("cancelled"):
+        final = "Cancelled"
+    elif not summary.get("complete_scope"):
+        final = "Partial"
+    _finish(task_id, result=summary, status=final)
+    return summary
+
+
+from app.workers.task_names import FILE_SOURCE_SCAN, FILE_SOURCE_SCHEDULE
+
+@celery_app.task(name=FILE_SOURCE_SCAN)
+@task_guard
+def file_source_scan_task(source_id: int, task_id: int):
+    from app.services.file_scan.scan import run
+    with SessionLocal() as db:
+        return run(db, task_id)
+
+@celery_app.task(name=FILE_SOURCE_SCHEDULE)
+def file_source_schedule_task():
+    from datetime import UTC, datetime, timedelta
+    from sqlalchemy import select
+    from app.models import FileSource
+    from app.services.file_scan import service
+    from app.services.task_dispatch import enqueue
+    with SessionLocal() as db:
+        rows = db.scalars(select(FileSource).where(FileSource.enabled.is_(True),
+            FileSource.interval_minutes > 0, FileSource.next_scan_at <= datetime.now(UTC))
+            .with_for_update(skip_locked=True)).all()
+        pending = []
+        for row in rows:
+            if service.active(db, row.id):
+                row.next_scan_at = datetime.now(UTC) + timedelta(minutes=row.interval_minutes)
+                continue
+            task = service.queue(db, row)
+            pending.append((row.id, task.id))
+        db.commit()
+    for source_id, task_id in pending:
+        try:
+            enqueue(FILE_SOURCE_SCAN, source_id, task_id)
+        except Exception:
+            _finish(task_id, error='queue_unavailable')

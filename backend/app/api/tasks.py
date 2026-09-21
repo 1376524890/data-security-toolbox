@@ -30,6 +30,10 @@ from app.services.probe_task_service import (
 )
 from app.services.task_service import create_task
 
+#: Tasks the stop endpoint may cancel. A database scan runs in this platform's
+#: worker, which observes the Cancelled status between tables.
+STOPPABLE_TASK_KINDS = (*PROBE_TASK_KINDS, "database_scan", "file_source_scan")
+
 router = APIRouter()
 
 
@@ -48,7 +52,7 @@ def list_tasks(
     if status:
         query = query.where(Task.status == status)
     if kind:
-        query = query.where(Task.kind == kind)
+        query = query.where(Task.kind.in_(["data_asset_scan", "database_scan", "file_source_scan"])) if kind == "collection" else query.where(Task.kind == kind)
     if search:
         query = query.where(
             or_(
@@ -82,8 +86,8 @@ def stop_task(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
     if not task or task.payload.get("deleted"):
         raise HTTPException(404, "任务不存在")
-    if task.kind not in PROBE_TASK_KINDS:
-        raise HTTPException(409, "当前仅支持停止探针扫描和数据资产采集任务")
+    if task.kind not in STOPPABLE_TASK_KINDS:
+        raise HTTPException(409, "当前仅支持停止探针扫描、数据资产采集和数据库采集任务")
     if task.status not in TERMINAL:
         task.status, task.current_stage = "Cancelled", "已停止；已领取任务由探针检查后退出"
         task.finished_at = datetime.now(UTC)

@@ -16,6 +16,8 @@ from app.workers.task_names import (  # noqa: F401  re-exported for dispatch cal
     ANALYZE_ASSETS,
     ANALYZE_METADATA,
     ANALYZE_PCAP,
+    DATABASE_SCAN,
+    FILE_SOURCE_SCAN,
     DELIVER_ALERT,
     EXPIRE_PROBE_TASKS,
     NETWORK_SCAN,

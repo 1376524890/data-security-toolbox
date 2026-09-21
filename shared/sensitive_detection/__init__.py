@@ -9,7 +9,7 @@ from .context import SensitiveDetectionContext
 from .entities import canonical_entity, legacy_name, level_of, severity_of
 from .confidence import CONFIDENCE_VERSION
 from .result import DetectionHit, Evidence
-from .engine import SensitiveDetectionEngine, build_engine, ENGINE_VERSION
+from .engine import SensitiveDetectionEngine, build_engine, text_matches, ENGINE_VERSION
 
 __all__ = [
     "SensitiveDetectionContext",
@@ -17,6 +17,7 @@ __all__ = [
     "DetectionHit",
     "Evidence",
     "build_engine",
+    "text_matches",
     "canonical_entity",
     "legacy_name",
     "level_of",

@@ -18,6 +18,22 @@ from app.services.data_objects.definitions import (
 from app.services.data_objects.values import _float, _iso
 
 
+def owner_key_of(probe_id: Any, owner_key: Any) -> str:
+    """Who observed this copy: ``probe:<id>`` for files, ``db:<id>`` for a table.
+
+    A database-sourced instance carries no ``probe_id``, so counting that column
+    alone crashed on the NULL and, worse, would have merged every configured
+    target database into one nameless host. ``owner_key`` decides; the probe
+    fallback keeps rows written before the column existed - and SQLite test
+    databases, where it defaults to an empty string - attributing to the probe
+    that actually observed them.
+    """
+    key = str(owner_key or "").strip()
+    if key:
+        return key
+    return f"probe:{int(probe_id)}" if probe_id is not None else ""
+
+
 def data_type_rows(
     db: Session, *, mapping: dict[str, str] | None = None, probe_id: int | None = None
 ) -> list[dict[str, Any]]:
@@ -76,6 +92,7 @@ def _type_scope(db: Session, probe_id: int | None) -> dict[str, Any]:
             DataObject.active_instance_count,
             Detection.instance_id,
             AssetInstance.probe_id,
+            AssetInstance.owner_key,
         )
         .join(DataObject, DataObject.id == Detection.object_id)
         .join(AssetInstance, AssetInstance.id == Detection.instance_id)
@@ -92,7 +109,7 @@ def _type_scope(db: Session, probe_id: int | None) -> dict[str, Any]:
         joined = joined.where(AssetInstance.probe_id == probe_id)
     objects: dict[str, set[int]] = {}
     instances: dict[str, set[int]] = {}
-    hosts: dict[str, set[int]] = {}
+    hosts: dict[str, set[str]] = {}
     full: dict[str, set[int]] = {}
     partial: dict[str, set[int]] = {}
     object_ids: set[int] = set()
@@ -105,7 +122,13 @@ def _type_scope(db: Session, probe_id: int | None) -> dict[str, Any]:
         obj_id = int(row[1])
         objects.setdefault(category, set()).add(obj_id)
         instances.setdefault(category, set()).add(int(row[4]))
-        hosts.setdefault(category, set()).add(int(row[5]))
+        # ``host_count`` counts where a copy was observed, which is not always a
+        # probe: a database table has no ``probe_id`` at all. Counting the column
+        # directly both crashed on the NULL and would have merged every target
+        # database into one nameless host, so the owner key decides.
+        owner = owner_key_of(row[5], row[6])
+        if owner:
+            hosts.setdefault(category, set()).add(owner)
         object_ids.add(obj_id)
         hash_by_object[obj_id] = str(row[2])
         if row[2] == HASH_FULL:
@@ -167,7 +190,7 @@ def data_type_summary(db: Session, *, probe_id: int | None = None) -> dict[str, 
         for obj_id in object_ids
         if scope["hash_by_object"][obj_id] == HASH_FULL
     ]
-    all_hosts: set[int] = set()
+    all_hosts: set[str] = set()
     for host_ids in scope["hosts"].values():
         all_hosts |= host_ids
     return {
@@ -220,14 +243,23 @@ def instance_detail(db: Session, instance_id: int) -> dict[str, Any] | None:
     instance = db.get(AssetInstance, instance_id)
     if instance is None:
         return None
-    probe = db.get(Probe, instance.probe_id)
+    probe = db.get(Probe, instance.probe_id) if instance.probe_id is not None else None
     obj = db.get(DataObject, instance.object_id)
     mapping = sensitivity_map.overrides(db)
+    extra = dict(instance.extra or {})
+    # A shared-file or database instance has no probe row, so the collector that
+    # did observe it is named from the evidence it wrote: showing an empty source
+    # would read as "came from nowhere" on the very page that answers "来自哪里".
+    source_name = extra.get("source_name") or (probe.name if probe else "")
+    host = (probe.ip_address or probe.hostname) if probe else extra.get("host", "")
     return {
         "id": instance.id,
         "probe_id": instance.probe_id,
         "probe_name": probe.name if probe else "",
-        "host": (probe.ip_address or probe.hostname) if probe else "",
+        "host": host,
+        "owner_key": instance.owner_key or (f"probe:{instance.probe_id}" if probe else ""),
+        "source_kind": instance.source_kind or "file",
+        "source_name": source_name,
         "path": instance.path,
         "name": instance.name,
         "instance_type": instance.instance_type,
@@ -263,5 +295,5 @@ def instance_detail(db: Session, instance_id: int) -> dict[str, Any] | None:
         "first_seen_at": _iso(instance.first_seen_at),
         "last_seen_at": _iso(instance.last_seen_at),
         "last_scan_at": _iso(instance.last_scan_at),
-        "extra": dict(instance.extra or {}),
+        "extra": extra,
     }

@@ -32,6 +32,12 @@ TERMINATION_UNREADABLE = "unreadable"
 #: Nothing was configured to scan; this is not a completed scope either.
 TERMINATION_UNCONFIGURED = "unconfigured"
 
+#: Reasons that only say one file's *content* was sampled incompletely. The file
+#: itself was still listed, so the walk must keep going: a single long file used
+#: to end the whole inventory (one /var/backups dump stopped the /var scan).
+#: They still make the report incomplete, so nothing unseen gets retired.
+CONTENT_TRUNCATION_REASONS = frozenset({TERMINATION_ROWS, TERMINATION_FILE_SIZE})
+
 # Documented defaults. These preserve the shipped 3.3.1 behaviour: 200 files
 # (max 2000), depth 3 (max 8), 500 directories, 2 MiB content sample,
 # 25 rows, 120 s task budget, 8 MiB full-hash ceiling.
@@ -88,8 +94,13 @@ class ScanBudget:
     #: Last path the walker touched; reported with progress so a stalled scan is
     #: visibly stalled instead of just slow.
     current_path: str = ""
-    _reason: str = TERMINATION_COMPLETE
-    _detail: str = ""
+    #: Enumeration and content sampling are tracked apart: a file whose content
+    #: was sampled past the row limit says nothing about whether the rest of the
+    #: tree was listed, so it must not end the walk.
+    _enumeration_reason: str = ""
+    _enumeration_detail: str = ""
+    _content_reason: str = ""
+    _content_detail: str = ""
     _stop_event: Any = None
 
     def __post_init__(self) -> None:
@@ -208,10 +219,18 @@ class ScanBudget:
         self.skipped += 1
 
     def stop(self, reason: str, detail: str = "") -> None:
-        """Record the first reason the scan did not finish completely."""
-        if self._reason == TERMINATION_COMPLETE and reason != TERMINATION_COMPLETE:
-            self._reason = reason
-            self._detail = detail
+        """Record the first reason the scan did not finish completely.
+
+        The first reason of each kind is kept, so a later, coarser limit cannot
+        overwrite the specific one an operator needs.
+        """
+        if reason == TERMINATION_COMPLETE:
+            return
+        if reason in CONTENT_TRUNCATION_REASONS:
+            if not self._content_reason:
+                self._content_reason, self._content_detail = reason, detail
+        elif not self._enumeration_reason:
+            self._enumeration_reason, self._enumeration_detail = reason, detail
 
     def mark_truncated(self, name: str) -> None:
         if len(self.truncated_files) < 32 and name not in self.truncated_files:
@@ -220,11 +239,35 @@ class ScanBudget:
     # -- reporting ----------------------------------------------------------
     @property
     def termination_reason(self) -> str:
-        return self._reason
+        """Why the scope is not fully covered; an enumeration stop is named first.
+
+        A walk that ended early is the stronger statement: it is the one that
+        decides what was never looked at, so it outranks content truncation.
+        """
+        if self._enumeration_reason:
+            return self._enumeration_reason
+        return self._content_reason or TERMINATION_COMPLETE
+
+    @property
+    def termination_detail(self) -> str:
+        if self._enumeration_reason:
+            return self._enumeration_detail
+        return self._content_detail
 
     @property
     def complete(self) -> bool:
-        return self._reason == TERMINATION_COMPLETE
+        """True only when the walk finished *and* every file was read in full."""
+        return not self._enumeration_reason and not self._content_reason
+
+    @property
+    def enumeration_complete(self) -> bool:
+        """True when the walk reached the end of the configured scope."""
+        return not self._enumeration_reason
+
+    @property
+    def content_complete(self) -> bool:
+        """True when every listed file was read within the content limits."""
+        return not self._content_reason
 
     def coverage(self) -> dict[str, Any]:
         return {
@@ -241,8 +284,12 @@ class ScanBudget:
             "detections": self.detections,
             "elapsed_seconds": round(self.elapsed(), 3),
             "complete_scope": self.complete,
+            # Two honest answers instead of one ambiguous one: the tree may be
+            # fully listed while individual files were only partly read.
+            "enumeration_complete": self.enumeration_complete,
+            "content_complete": self.content_complete,
             "termination_reason": self.termination_reason,
-            "termination_detail": self._detail,
+            "termination_detail": self.termination_detail,
             "truncated_files": list(self.truncated_files),
             "current_path": self.current_path,
         }

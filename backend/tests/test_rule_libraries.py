@@ -66,6 +66,30 @@ def test_manual_dlp_rule_is_used_and_can_be_disabled(environment):
     assert client.post('/api/v1/dlp/rules', json={'name': 'empty', 'pattern': '.*'}).status_code == 422
 
 
+def test_console_rule_reaches_the_pack_a_probe_downloads(environment):
+    """Adding a rule in the console also refreshes the working copy, in step."""
+    from app.services import ruleset_service
+
+    client, db = environment
+    created = client.post('/api/v1/dlp/rules', json={
+        'name': '内部人员姓名', 'entity': 'INTERNAL_NAME', 'pattern': '张三'}).json()
+    assert created['working_copy'] == {'added': 1, 'updated': 0}
+    rule_set = ruleset_service.get_or_create_rule_set(db)
+
+    published = ruleset_service.publish(db, rule_set, version='console-1', published_by='test',
+                                        changelog='手工规则进入下发包')
+    packed = {rule['rule_id']: rule
+              for rule in json.loads(published.package.decode('utf-8'))['rules']}
+    assert packed[created['id']]['pattern'] == '张三'
+    assert packed[created['id']]['rule_source'] == 'manual'
+
+    # Disabling it in the console must not leave a stale enable flag behind for
+    # the next publish to hand to a probe.
+    client.patch('/api/v1/dlp/rules/' + created['id'], json={'enabled': False})
+    working = {rule['rule_id']: rule for rule in ruleset_service.collect_rules(db, rule_set.id)}
+    assert working[created['id']]['enabled'] is False
+
+
 def test_presidio_import_does_not_execute_code_and_preserves_manual(environment):
     client, _ = environment
     client.post('/api/v1/dlp/rules', json={'name': 'local', 'pattern': 'local-secret'})
@@ -168,7 +192,7 @@ def test_all_interface_capture_runs_managed_dlp(environment, tmp_path):
     import dpkt
     import socket
     import struct
-    from app.services.dlp_service import analyze_capture
+    from app.services.dlp import analyze_capture
     client, _ = environment
     client.post('/api/v1/dlp/rules', json={'name': 'company document', 'entity': 'COMPANY', 'pattern': 'INTERNAL-SECRET'})
     body = b'INTERNAL-SECRET'
@@ -184,4 +208,8 @@ def test_all_interface_capture_runs_managed_dlp(environment, tmp_path):
     result, _, findings = analyze_capture(path, {'categories': [], 'min_matches': 1})
     assert findings and findings[0]['evidence']['matches'][0]['kind'] == 'COMPANY'
     assert not result['coverage']['rule_timeouts']
-    assert 'INTERNAL-SECRET' not in json.dumps(result)
+    # A rule the console holds is matched by the network DLP stage and the原文
+    # travels with the hit, bounded, so an operator can verify the transfer.
+    match = findings[0]['evidence']['matches'][0]
+    assert [item['value'] for item in match['matches']] == ['INTERNAL-SECRET']
+    assert match['matches'][0]['context'] == 'INTERNAL-SECRET'

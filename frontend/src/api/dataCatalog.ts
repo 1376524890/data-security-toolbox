@@ -5,8 +5,9 @@ import type { PageResult } from '../types/common'
  * Typed access to the data-type-centric query APIs.
  *
  * Every value here comes from the object model (data_objects / asset_instances /
- * detections / detection_evidence). Nothing in these responses is a matched
- * value: evidence carries rule, recogniser, field and count only.
+ * detections / detection_evidence). Evidence carries rule, recogniser, field and
+ * count, plus the bounded matched原文 the probe returned for that hit so a
+ * reviewer can verify the finding. No response ever carries file content.
  */
 
 export type IdentityKind = 'confirmed' | 'candidate' | 'scoped'
@@ -81,6 +82,10 @@ export interface AssetInstanceRow {
   id: number
   object_id: number
   probe_id: number
+  /** file | database | file_share: which collector observed this copy. */
+  source_kind: string
+  /** probe:<id> | db:<connection id> | file-source:<id>: the exact collector. */
+  owner_key: string
   probe_name: string
   host: string
   path: string
@@ -112,6 +117,7 @@ export interface DetectionRow {
   object_id: number
   instance_id: number
   probe_id: number
+  source_kind: string
   scan_id: string
   category: string
   subcategory: string
@@ -125,6 +131,12 @@ export interface DetectionRow {
   ruleset_version: string
   first_seen_at: string
   last_seen_at: string
+}
+
+/** One matched原文 the probe returned: the value and the line it sits on. */
+export interface MatchText {
+  value: string
+  context: string
 }
 
 export interface EvidenceRow {
@@ -141,16 +153,21 @@ export interface EvidenceRow {
   hit_count: number
   engine_version: string
   ruleset_version: string
+  /** Bounded by the probe (a few strings per hit, each length-capped). */
+  matches: MatchText[]
 }
 
 export interface EvidenceResponse {
   detection: DetectionRow
   items: EvidenceRow[]
   count: number
+  matches_returned: number
   note: string
 }
 
 export interface InstanceDetail extends AssetInstanceRow {
+  /** The collector's display name: a probe name, a connection or a share. */
+  source_name: string
   inode: number | null
   device: number | null
   mtime_ns: number | null
@@ -210,7 +227,7 @@ export function listObjectDetections(id: number, query: { page: number; page_siz
   return apiGet(`/data-objects/${id}/detections`, query)
 }
 
-export function listAssetInstances(query: Record<string, unknown>): Promise<PageResult<AssetInstanceRow>> {
+export function listAssetInstances(query: Record<string, unknown>): Promise<PageResult<AssetInstanceRow> & { association?: string }> {
   return apiGet('/asset-instances', query)
 }
 

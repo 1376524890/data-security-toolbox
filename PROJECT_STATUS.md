@@ -1,18 +1,160 @@
 # 项目状态
 
-更新时间：2026-09-20。当前任务见 TASK.md；稳定约束见 AGENTS.md；模块关系见 docs/architecture.md。
+2026-09-21 第三十二批（工作树未提交）：**探针自带运行时（探针 3.7.0）**。分发包自带私有 CPython 3.11、
+全部 Python 依赖、`dumpcap`/`tcpdump` 与 ELF 库闭包、私有加载器与 CA 证书；平台预检
+（`app/deployment/{preflight,runtime}.py`）改用同一运行时探测目标机，不再要求主机 `python3 >= 3.11` 或
+预装抓包工具。`install.sh` 先验证再原子替换 runtime，保留 `probe.toml`/`probe.token`/spool/rules/cache，
+因此重跑即升级、换旧包重跑即回退；采集身份不变（`dstprobe` + 3 个 capability，不改 root）。
+本轮补完探针 README、单元模板与文档口径，用 legacy builder 重建 `source-backend`/`source-worker`/
+`source-frontend`（前端上次重建早于第三十一批的页面解耦，一并纳入）并切换 5 个应用容器
+（`/api/v1/health` 全绿、`openapi.json` 2.14.0、迁移 `0017_file_sources (head)`、管理台 8088 返回 200），
+前端容器 `assets/`（218 个）与本地生产构建逐字节一致。**「下发后不依赖目标环境」已落实并验证**：
+`probe/run-probe.sh` 只用 shell 内建命令定位自身目录（不依赖 `dirname`），自设 `PATH` 并固定
+`PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`（systemd 下 `LANG` 未设置会退回 C 语言环境、stdio 按 ASCII 处理，
+中文日志会报错），随包单元模板与 `install.sh` 生成的单元都写死这两个变量；`install.sh` 先一次性检查
+主机工具（`tar`/`systemctl`/`useradd`/`id`/`chown`/`find`/`dirname`/`mktemp`，缺失即列出全部后退出）；
+`runtime_check.py` 另校验运行时布局完整性并断言解释器来自包内 `python/`。新增静态回归
+`backend/tests/deployment/test_probe_self_contained.py` 5 项，`tests/deployment` 63 项全通过。
+**验收证据**：amd64 包在 `--network none`、无 python3/pip 的 `ubuntu:22.04` 里跑通完整冒烟（含真实
+`dumpcap` 抓包、`/proc/self/maps` 无 runtime 外 .so、空环境 + `LANG=C` 启动器可用、UTF-8 中文落盘、76 个
+自带扩展模块全部可导入）；同一份 arm64 包在 qemu 下除抓包外全部通过（qemu-user 不能翻译 libpcap 的
+socket ioctl，`dumpcap -D` 都失败——模拟器限制，冒烟脚本显式 `SKIP`，不再误报）。平台 `README.md`、
+`docs/{offline-package,部署与运行手册,architecture,user-guide,数据安全工具箱作业指导书,probe-removal}.md`、
+`probe/README.md` 与包内交付 README 里与「自带运行时」矛盾的探针前置条件（需要 Python 3.11+、
+`requests`/`psutil`/`dumpcap`、改 `ExecStart`、`setcap`、「退化为 Lite 模式」、「`deploy.sh r2`」）已全部改正；
+`docs/offline-package.md` 的重打包命令也修掉了多余的 `..\` 前缀（脚本在工作区根目录下）。按该文档约定把
+`DEPLOY_REV` 依次加到 r4、本批再进 **r5** 后重出交付包（不重新 `docker save`，镜像归档不变）：最终
+`dst-toolbox-2.14.0-linux-x86_64.tar.gz` = **1 439 181 476 B**，sha256 `42adc92d…`，`deploy.sh` sha256
+`8ac151e8…`（自报 r5），`verify_bundle.py` PASS（1005/1005 校验和、0 个非法 UTF-8 名、0 个缺可执行位），
+先前 `6ebd6215…`/`adfc083d…`/`b4c8a9db…`/`0eb7fa15…` 作废；包内探针包 `probe-3.7.0-amd64.tar.gz` sha256
+`0ac9fe87…`、`probe-3.7.0-arm64.tar.gz` sha256 `027ad503…` 与工作树 `probe_packages/` 逐字节一致
+（`runtime.tar.gz` 仍为 `b7a5f3ab…`，运行时未重建）。上午打的 `dst-toolbox/*:2.14.0-probe3.7.0` 补丁标签已
+改指本批验证过的镜像，旧构建与悬空镜像已清理（`docker image prune -f` 回收 2.9 GB）。**未做**：真机
+（192.168.191.130）就地升级探针 3.7.0（待用户确认窗口），arm64 原生抓包未验证（本机只有 qemu），
+探针 `/tmp` 的 `PrivateTmp` 隔离仍未处理。详情见 TASK.md「第三十二批」。
+
+2026-09-21 第三十一批（工作树未提交）：数据库连接页完成状态与视图解耦。
+`useDatabaseConnections.ts` 331 → 120 行，独立 `useDatabaseConnectionForm`（草稿/保存）、
+`useDatabaseScope`（库表范围/派发）、`useDatabaseScans`（详情/任务/轮询）；旧入口保持兼容。
+`DatabaseConnections.vue` 323 → 186 行，表单与详情抽屉拆成展示组件，API 与口令规则不变。
+本轮 typecheck、定向 22 项、全量 vitest 31 文件 / 277 项与生产构建通过（DEMO 关闭，既有大 chunk 提示）；
+未提交、未重建镜像/离线包、未真机复验。
+详情见 TASK.md「第三十一批」。
+
+2026-09-20：版本整理为 **2.14.0（探针 3.6.0）**，并产出 x86_64 Linux 离线一键部署包
+`dst-toolbox-2.14.0-linux-x86_64.tar.gz`（已核对银河麒麟桌面操作系统 V10 SP1 与 Ubuntu 22.04 LTS；
+含 8 个镜像 2689.1 MB、探针分发包与离线 wheel、Compose v2 插件、源码快照与 `CHECKSUMS.sha256`；
+`deploy.sh` 全程不构建、不拉取）。探针分发包已重建为
+`probe-3.6.0` 并覆盖同名旧包，但**未升级任何真实主机**。打包由工作区（仓库外）`dist-linux-build/` 的
+`make_bundle.py` → `save_images.py` → `finalize_bundle.py` 三步完成，`make_bundle.py` 现在保留
+`images/` 可反复重跑。本机已复验：`docker compose -f docker-compose.yml -f docker-compose.offline.yml
+config -q` 通过且 8 个服务全部指向包内镜像标签；运行栈 `/api/v1/health` 全绿、`openapi.json` 2.14.0、
+`alembic current` = `0017_file_sources (head)`。**Ubuntu 22.04 LTS 真机部署已完成**：目标 `192.168.110.90`
+（Docker Engine 29.2.1 + compose 插件 5.0.2）以 `--port 18088 --api-port 8001` 部署成功——后端健康 → 迁移
+`0017_file_sources (head)` → seed，`/api/v1/health` 200、`openapi.json` 2.14.0、管理台与 `/docs` 均 200，
+幂等重跑 exit 0 且端口保持；另在**独立 compose 项目**上真机复验了自动选端口（8080 与 8000 都被占 →
+自动改用 18080/18000，UI 与 API 均 200，测试后原实例不受影响）。真机共暴露三个缺陷，均已修复并重新出包：
+①「包内脚本无可执行位」——Windows 上
+`chmod` 不产生 POSIX 权限位、`tar` 把条目写成 `0666`，解包后为 `0644`，已改为用 Python `tarfile` 显式写入
+权限（`*.sh` 与 `tools/` 为 `0755`）并在打包与校验两侧加断言，此前校验和只覆盖内容、不覆盖权限所以逃过
+所有检查；②「8080/8000 被占但脚本不避让」——目标机 8080 被主机进程 `console-gateway`、8000 被另一产品的
+容器 `llmsec-protected` 占用，旧包固定端口且只在首次生成 `.env` 时接受 `--port`，于是 `up` 抛
+`address already in use`、容器停在 `Created`，已起的 backend 因**容器网络端点没建起来**反复重启（表现为
+解析不到 `postgres`，**根因是端口不是 DNS**）；现在 `deploy.sh`（修订号 `r2`）**默认端口被占用时自动改用
+空闲端口**（管理台试 18080–18120、API 试 18000–18040），自己占用不算冲突、重跑沿用 `.env` 端口，显式
+`--port`/`--api-port` 冲突即报错，`up` 失败与健康检查超时都先打印 `ps` 与 backend 日志再退出；
+③「现场拿到的是旧包」——目标机 `deploy.sh` 仅 4737 B、无端口逻辑（修复 19:25 才进包，从未到达现场），
+现在 `VERSION` 与脚本启动日志都打印 `deploy_rev`，README 要求部署前先核对修订号。最终交付物
+`dst-toolbox-2.14.0-linux-x86_64.tar.gz` = 2 848 039 111 字节（2.65 GB），sha256
+`e42e7c84f7083a2cecba37b95cf91c310e099907f1b6c54d4f23748358af1ee3`，`verify_bundle.py` 端到端 PASS
+（939/939 校验和、0 个非法 UTF-8 名、0 个缺可执行位、8 个镜像标签齐全）；旧指纹 `d00f9c62…`（以及更早的
+`a022e1bf…`/`61880f71…`/`3c6a2e7a…`/`ecee8492…`）全部作废，请以本条为准。**尚未做**：麒麟真机部署、
+探针升级到 3.6.0（未升级任何真实主机）、浏览器点选验收。打包与重建说明见 `docs/offline-package.md`，
+版本细节见 `docs/releases/v2.14.0.md`。
+交付包只接受 Compose v2（compose 文件无顶层 `version:` 键，Ubuntu 上 `apt` 的 v1 解析不了）；
+探针要求 Python 3.11+，Ubuntu 22.04 默认 3.10，需另装 `python3.11` + `python3.11-venv`（**本条只描述当时的 3.6.0 包**：3.7.0 起探针自带运行时，目标机不再需要 Python，见本条上方）。
+
+2026-09-20 第三十批（工作树未提交）：**规则源与网络 DLP 域解耦**。460 行的
+`backend/app/services/dlp_service.py` 拆成 `backend/app/services/dlp/{constants,policy,self_traffic,capture,detect}`
+（32/51/101/173/169 行），旧模块只剩 63 行兼容重导出；`masked()` 移到中立的 `services/masking.py`，
+打断「规则库 ↔ 网络 DLP」互相 import。规则库到引擎与规则包的映射收敛到 `rule_library.stored_rule()`，
+由 `sensitive_engine.analyst_rules()` 与 `ruleset_service.import_working_rules()` 共用——顺带修掉一处
+口径漂移：此前下发给探针的工作副本**漏了平台侧的 `email_shape` 校验器**，同一条导入规则在两侧命中不同。
+规则库目录收敛到 `rule_store_directory()` / `rule_store_files()` / `set_rule_enabled()`（引擎刷新签名、
+规则来源清单、启停写入不再各自 glob 该目录）。边界由 `backend/tests/test_dlp_boundaries.py`（7 项）锁定。
+后端全量 850 项 / 6 项失败 / 0 错误 / 1 跳过，与本轮开始前的同环境基线（843 项 / 同 6 项失败）逐项一致，
+新增 7 项全部通过（本机跑全量需 `SECRET_KEY`，否则会多出 20 项凭据相关失败）。**未做**：前端未改动、
+`models.py` 未包化、探针未模块化、镜像与离线包未重建、真机未复验；规则包要等人工发布才到探针。
+见 TASK.md「第三十批」与 docs/architecture.md「网络 DLP 域分层与规则源单一映射」。
+
+2026-09-20 深夜：规则源已统一，「一条规则、三处命中、带原文」在真机跑通。控制台加的手写规则现在与探针内置规则
+跑**同一个敏感引擎**（`services/sensitive_engine.py`：`analyst_rules()` 读规则库、`scan_engine()` 按
+mtime+size 签名重建、`scan_all()` 一次扫描），文件扫描、数据库扫描、DataEngine 与网络防泄密四个消费方全部改走它；
+网络防泄密的传输对象、DLP finding 与告警证据都带 `matches`（原文 value + 所在行 context，≤3 条 / value ≤120 /
+context ≤240，两侧各自重裁）。真机证据：手写规则 `规则测试`/`pattern=张三`（`manual-97d1c75a…`）在
+①文件来源（实例 791 `/srv/dst-e2e/客户名单.csv`，检测 #146 证据带 `value="张三"`）、
+②真实 tcpdump 明文 HTTP 抓包（pcap #5151 对象带 `rule_sources=['manual']`、`value='张三'`）、
+③探针端到端外发（pcap #5158 → finding #4452 → 告警 #606；复现后 #610 实时推送 `alert.created`）
+三条链路都命中并显示原文。**需要用户决策**：目的地址是内网时曝光度 2.0 → `risk=51 < high_finding_min_risk=60`，
+不产生告警（只有网络防泄密页可见命中）；是否对人工规则命中单独放行或下调阈值未擅自改动。详情见 TASK.md 最后一节。
+
+2026-09-20 共享文件来源已落地并部署：平台可只读采集 FTP/FTPS/SFTP 共享目录，真实目标 `192.168.191.130`（vsFTPd 3.0.5，用户给定账号 `kali`）
+共享目录现在可随时修改（原先与协议/地址/端口一起被锁死）；新增删除来源（只删配置，已采集资产与证据保留，
+采集中的来源不可删）。真实环境已复验：新建来源 → 改目录 → 连通性测试 → 删除，全部成功。
+界面新增「来源管理」「资产目录」入口，全部由真实数据验证。该 FTP 不支持 `MLSD`，适配层已补 `LIST` 回退。
+后端 829 passed / 6 failed（与基线逐项一致）、前端 vue-tsc 通过 / vitest 31 文件 267 项通过，镜像已重建部署，
+迁移 head `0017_file_sources`。仍待处理：探针 `/tmp` 的 PrivateTmp 问题、平台删除探针记录的真机验证
+（源码与镜像已就绪，未对真实探针执行删除）、浏览器点击验证（本机无法自动化浏览器）。详情见 TASK.md 最后两节。
+
+本轮新增采集任务“查看资产”入口：按任务分页，新报告持久化实例成员关系，旧任务提示历史关联不完整。真实 file 投影 2171 条中有 1491 条抓包同名历史记录，尚未清理。相关后端 62 项与前端 251 项回归通过；详情见 TASK.md 本轮记录。
+
+## 进行中整改（2026-09-20）
+
+PCAP 错误资产登记止增、采集失败/预算提示、目录诊断、预算截断语义、用户要求的「命中原文回传」，以及 P2
+「平台直连目标数据库盘点 + 规则匹配」都已改完、通过回归并部署（`/api/v1/health` 全绿、迁移 `0016_database_connections (head)`）。
+**新增能力**：平台可用只读会话直连 MySQL/MariaDB（PyMySQL）与 PostgreSQL（psycopg2）目标，枚举库/表、
+按列复用探针同一份敏感引擎做规则匹配，把表登记为 `source_kind=database` 的资产与检测证据，支持库表选择、
+按预算采样、可停止任务、采集历史与按表明细；口令 AES-GCM 加密落库、只写不读，凭据与目标名绑定。
+已用用户给的测试库（`192.168.191.130`，MariaDB 11.8.6 / `dst_demo`，只读账号 `dst_ro`）真机验证：
+9/9 表、命中 11、检测 9、`read_only=True`、`complete_scope=True`，负对照 `clean_notes` 零命中，
+取回 43 条命中原文，27 个响应体均不含口令，目标库本身未被修改。
+**契约变更**：检测证据不再承诺「不含匹配值」——`DetectionHit.matches` / `DetectionEvidence.extra['matches']`
+会保存探针回传的命中原文（每条命中 ≤3 条、value ≤120、context ≤240 字符，两侧各自重裁），
+其余字段仍严格不含值；旧证据行没有该字段，前端显示「没有回传原文」。
+**未验证项**：① 部署后尚无新的真实抓包经过分析，「止增」只有运行时合成上下文 + 部署前候选数 1457→1491 的对照；
+② 在线探针仍是旧版本，因此来自探针的证据仍没有 `matches`（来自数据库直连的已有真机原文）；
+③ 探针侧（目录诊断、截断语义、原文回传）只改了源码，需出包并在明确目标上升级后才生效；
+④ PostgreSQL 直连走同一适配层但**没有真实 PG 目标**，只有隔离测试，不能宣称已验证。
+**数据类型中心 500（2026-09-20 夜，已修复并部署）**：类型中心/类型详情报 500，根因是数据库来源实例
+`probe_id IS NULL` 而 `host_count` 仍按 `probe_id` 计数（`int(None)` 抛 `TypeError`）。现已改为按
+`owner_key`（`probe:<id>` / `db:<连接 id>`）识别观测来源，对象详情同口径；新增回归
+`test_the_type_centre_counts_a_connection_as_a_host`，后端全量 809 passed / 6 failed（与基线一致）、
+vitest 29 文件 249 项通过，部署后 `/api/v1/data-types` 与 `/data-types/{category}` 均 200。
+**口径变化**：「主机数」= 不同观测来源数（探针 1 个、数据库连接 1 个），前端文案与 `dedup_rules` 已同步。
+细节见 TASK.md「数据类型中心 500 修复（2026-09-20 夜，P2 收尾）」。
+**镜像/磁盘**：三轮都按用户要求重建并清理，删除了悬空镜像、遗留测试容器、构建缓存与全部旧回退标签
+（`pre-capture-asset-fix-20260920`、`pre-v2.13.0-20260920`、`pre-database-scan-20260920`）；
+当前 Docker 镜像计账 39.02GB（其中 13.74GB 可回收属于其他项目 opendlp/openaev，未触碰），
+悬空镜像 0、构建缓存 0B、遗留容器 0；C: 可用 43.67 GiB。
+**仓库里已没有可回退镜像**，回退需从 git 提交重建。
+历史错误投影只读审计已完成（现 1491 条候选）、尚未清理；root 运行（用户要求暂不执行）与真机探针升级、
+完整 P1 验收尚待实施。最新交接、部署与验证证据见 TASK.md 的「目标数据库直连盘点与规则匹配
+（2026-09-20 夜，P2）实施与验证」与「数据类型中心 500 修复（2026-09-20 夜，P2 收尾）」两节，
+本文件以下为发布基线记录。
+
+更新时间：2026-09-21。当前任务见 TASK.md；稳定约束见 AGENTS.md；模块关系见 docs/architecture.md。
 历史时点数字与旧问题讨论已移至 [本批前完整状态](docs/history/project_status-before-data-asset-refactor-2026-09-19.md)。
 
 ## 版本与工作分支
 
 | 项目 | 当前值 |
 | --- | --- |
-| 最近发布 | Git 注释标签 v2.13.0（2026-09-20），发布提交 a6ec580，已推送到 origin/develop；记录见 docs/releases/v2.13.0.md |
-| 源码内平台版本 | 2.13.0（`backend/app/main.py`、`frontend/package.json` 与 `package-lock.json`） |
-| 探针源码版本 | 3.5.0；本版未改探针或分发包 |
-| 本批基线 / 分支 | v2.13.0：`refactor/data-asset-boundaries` 的 30 个提交自 5c5b1d4（develop）合并发布 |
-| 数据库迁移 | 0015_alert_hits；本版无模型/表结构变更 |
-| 本批范围 | v2.13.0 发布：结构与状态解耦（后端 15 批域拆分 + 前端 15 批页面状态解耦）；逐批记录见 TASK.md，汇总见 CHANGELOG.md |
+| 最近发布 | Git 注释标签 v2.13.0（2026-09-20）；2.14.0 与探针 3.7.0 的记录见 docs/releases/v2.14.0.md（v2.14.0 未打标签） |
+| 源码内平台版本 | 2.14.0（`backend/app/main.py`、`frontend/package.json` 与 `package-lock.json`） |
+| 探针源码版本 | 3.7.0（自带运行时：私有 CPython 3.11 + 依赖 + dumpcap/tcpdump + 库闭包；`probe/probe.py::AGENT_VERSION`） |
+| 本批基线 / 分支 | a51bffe（develop）；本批与前面几批改动仍在工作树、未提交 |
+| 数据库迁移 | 0017_file_sources (head)；本批无模型/表结构变更 |
+| 本批范围 | 资产与数据安全增强（统一规则源与命中原文、共享文件来源、数据库直连盘点、探针自带运行时 3.7.0）；逐批记录见 TASK.md，汇总见 CHANGELOG.md |
 
 ## 本批已落地结构
 

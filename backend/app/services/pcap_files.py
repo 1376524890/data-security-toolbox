@@ -14,7 +14,7 @@ from urllib.parse import unquote
 import dpkt
 
 from app.core.config import settings
-from app.services.dlp_service import MAX_PACKETS, http_objects, reassemble
+from app.services.dlp.capture import MAX_PACKETS, http_objects, reassemble
 
 MAX_FILES = 500
 MAX_FILE_BYTES = 32 * 1024 * 1024

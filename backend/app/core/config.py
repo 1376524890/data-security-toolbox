@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     deployment_secret_key: str = ""
     deployment_key_id: str = "k1"
     deployment_package_dir: Path = Path("./probe_packages")
+    #: At-rest encryption for target-database passwords. Kept separate from the
+    #: deployment (SSH) key: different lifetime, different AAD. When unset the
+    #: key is derived from SECRET_KEY with its own domain-separation label, so a
+    #: missing value degrades the separation instead of breaking the stack.
+    database_credential_key: str = ""
+    database_credential_key_id: str = "dbc1"
+    #: Bounds for one server-side database scan. A scan never reads a whole
+    #: table: it takes a bounded sample per column and reports what it skipped.
+    database_scan_sample_rows: int = 50
+    database_scan_value_chars: int = 256
+    database_scan_max_tables: int = 200
+    database_scan_max_seconds: int = 600
+    database_scan_connect_timeout: int = 8
     deployment_backend_url: str = ""
     deployment_ca_file: str = ""
     deployment_known_hosts: str = ""
@@ -56,7 +69,7 @@ class Settings(BaseSettings):
     deployment_allow_password: bool = True
     deployment_default_profile: str = "standard"
     deployment_verify_host_key: bool = True
-    probe_agent_version: str = "3.5.0"
+    probe_agent_version: str = "3.7.0"
     pcap_index_limit: int = 10000
     pcap_retention_days: int = 7
     pcap_storage_max_gb: int = 100

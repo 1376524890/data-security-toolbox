@@ -1,8 +1,11 @@
 """Detection results.
 
-Neither :class:`Evidence` nor :class:`DetectionHit` can hold a matched value:
-there is no field for one, so "the report carries no raw value" is enforced by
-the data structure rather than by remembering to mask a string.
+:class:`Evidence` carries no matched value: there is no field for one, so the
+*reason* a hit exists can never smuggle the data it fired on. The matched原文
+travels separately, in :attr:`DetectionHit.matches`, which the engine fills with a
+bounded number of capped strings - the operator asked to see what was found, and
+a finding nobody can verify is not evidence. Anything that must stay value-free
+(the network DLP policy path) maps hits through ``to_legacy_hits`` instead.
 """
 from __future__ import annotations
 
@@ -53,6 +56,9 @@ class DetectionHit:
     confidence: float = 0.0
     evidence: list[Evidence] = field(default_factory=list)
     context_evidence: bool = False
+    #: Matched原文: the value itself plus the line it sits on, both capped by the
+    #: engine. Empty for field-name/keyword-only hits, which matched no value.
+    matches: list[dict[str, str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.entity = canonical_entity(self.entity)
@@ -117,4 +123,5 @@ class DetectionHit:
             "level": self.level,
             "severity": self.severity,
             "evidence": [item.to_dict() for item in self.evidence],
+            "matches": [dict(item) for item in self.matches],
         }

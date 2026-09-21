@@ -8,6 +8,12 @@ Two independent duties, both run on the probe *and* on the platform:
 * :func:`sanitize_report` - defensive redaction. Any string that itself contains
   a high-precision sensitive value is replaced with a placeholder and counted.
 
+One exception, by operator requirement (2026-09-20): the matched原文 a scan
+returns under ``matches`` is *not* redacted - it is the point of that field. It
+stays bounded (a few strings per hit, each length-capped) and everything else in
+the payload keeps the redaction rule, including paths and names that happen to
+contain a value.
+
 Scope note: this guards **data-asset reports** only. Probe authentication headers
 (``X-Probe-Token``), login payloads and other business bodies are deliberately
 out of scope, so a legitimate ``token``/``password`` field in an unrelated
@@ -65,6 +71,9 @@ MAX_STRING_CHARS = 1024
 MAX_FREE_STRING_CHARS = 256
 MAX_LIST_ITEMS = 20000
 MAX_FREE_LIST_ITEMS = 64
+
+#: Subtrees whose strings *are* the matched原文 and must survive redaction.
+RAW_TEXT_KEYS = frozenset({"matches"})
 
 # High-precision detectors used for redaction. Deliberately excludes weak patterns
 # (bare long tokens) so ordinary paths and identifiers are not destroyed.
@@ -170,10 +179,10 @@ def _validate_value(value: Any, path: str, key: str, violations: list[Violation]
 def sanitize_report(payload: Any, audit: SanitizeAudit | None = None) -> tuple[Any, SanitizeAudit]:
     """Return a deep-cleaned copy: forbidden keys dropped, raw values redacted."""
     audit = audit if audit is not None else SanitizeAudit()
-    return _sanitize(payload, "$", audit), audit
+    return _sanitize(payload, "$", audit, raw=False), audit
 
 
-def _sanitize(value: Any, path: str, audit: SanitizeAudit) -> Any:
+def _sanitize(value: Any, path: str, audit: SanitizeAudit, *, raw: bool) -> Any:
     if isinstance(value, dict):
         clean: dict[str, Any] = {}
         for key, item in value.items():
@@ -181,13 +190,16 @@ def _sanitize(value: Any, path: str, audit: SanitizeAudit) -> Any:
             if key in FORBIDDEN_KEYS:
                 audit.dropped_keys.append(child)
                 continue
-            clean[key] = _sanitize(item, child, audit)
+            clean[key] = _sanitize(item, child, audit, raw=raw or key in RAW_TEXT_KEYS)
         return clean
     if isinstance(value, (list, tuple)):
-        return [_sanitize(item, f"{path}[{index}]", audit) for index, item in enumerate(value)]
+        return [
+            _sanitize(item, f"{path}[{index}]", audit, raw=raw)
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, str):
         text = _CONTROL_CHARS.sub("", value)
-        if looks_like_raw_value(text):
+        if not raw and looks_like_raw_value(text):
             audit.redacted_paths.append(path)
             return REDACTION_PLACEHOLDER
         if len(text) > MAX_STRING_CHARS:

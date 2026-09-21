@@ -52,3 +52,50 @@ def progress_stage(coverage: dict, current_path: str) -> str:
     if current_path:
         detail = f"{detail}，当前 {current_path}" if detail else f"当前 {current_path}"
     return (detail or "探针数据资产采集中")[:255]
+
+
+TERMINATION_LABELS = {
+    "row_budget": "达到读取行数上限",
+    "file_budget": "达到文件数量上限",
+    "directory_budget": "达到目录数量上限",
+    "byte_budget": "达到读取字节上限",
+    "timeout": "达到执行时间上限",
+    "cancelled": "采集已取消",
+    "single_file_limit": "达到单文件读取上限",
+    "depth_or_exclude": "达到目录深度或范围限制",
+    "resource_limit": "达到资源使用上限",
+    "unreadable": "存在不可读取的文件或目录",
+    "unconfigured": "未配置采集目录",
+}
+
+#: Reasons that only limit how much of a file was read. The tree was still walked,
+#: so the wording must not read like a directory that was never listed.
+CONTENT_TRUNCATION_LABELS = {
+    "row_budget": "部分文件内容达到读取行数上限",
+    "single_file_limit": "部分文件内容达到单文件读取上限",
+}
+
+
+def collection_outcome(status: str, result: dict, error: str = "") -> tuple[str, str]:
+    """Present old and new reports without rewriting historical facts."""
+    stages = {
+        "Success": "探针数据资产采集成功",
+        "Partial": "探针数据资产采集部分完成",
+        "Failed": "探针数据资产采集失败",
+        "Cancelled": "探针数据资产采集已取消",
+    }
+    coverage = result.get("coverage") or result.get("budget") or {}
+    reason = str(coverage.get("termination_reason") or "")
+    detail = str(coverage.get("termination_detail") or "")
+    message = error or ""
+    if not message and status == "Partial":
+        label = TERMINATION_LABELS.get(reason, reason) if reason != "complete" else ""
+        if reason in CONTENT_TRUNCATION_LABELS and coverage.get("enumeration_complete") is True:
+            # The walk reached the end of the scope; only the content of some
+            # files was sampled past the limit.
+            label = CONTENT_TRUNCATION_LABELS[reason]
+        message = label
+        message = message or "采集范围未完整覆盖"
+        if detail:
+            message += f"：{detail}"
+    return stages.get(status, ""), message

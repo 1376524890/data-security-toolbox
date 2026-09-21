@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.models import LocalCve, OfflineResource, SystemSetting
 from app.rules import library
 from app.rules.catalog import CATALOG
+from app.services.rule_library import rule_store_files
 
 
 def rule_file_entries(
@@ -72,7 +73,7 @@ def rule_file_entries(
     # Operator-imported libraries live under the runtime integration directory.
     for path in sorted((settings.integration_dir / "yara_rules").glob("*.yar")):
         _add(path, "yara", "data_engine")
-    for path in sorted((settings.integration_dir / "dlp_rules").glob("*.json")):
+    for path in rule_store_files():
         _add(path, "dlp", "dlp_engine")
     for path in sorted((settings.integration_dir / "sigma_rules").glob("*.y*ml")):
         _add(path, "sigma", "sigma_log_engine")
@@ -133,7 +134,7 @@ def rule_definition(
     # hide the actual configured policy in an alert.
     if rule_id == "DLP_TRANSFER_001":
         from app.rules.builtin import dlp_rule_definition
-        from app.services.dlp_service import normalize_policy
+        from app.services.dlp import normalize_policy
 
         row = db.scalar(select(SystemSetting).where(SystemSetting.key == "dlp_policy"))
         return {
@@ -232,7 +233,7 @@ def rule_definition(
     policy = None
     if rule_id == "DLP_TRANSFER_001":
         row = db.scalar(select(SystemSetting).where(SystemSetting.key == "dlp_policy"))
-        from app.services.dlp_service import DEFAULT_POLICY, normalize_policy
+        from app.services.dlp import DEFAULT_POLICY, normalize_policy
 
         policy = normalize_policy(row.value if row else DEFAULT_POLICY)
     definition = builtin_rules.dlp_rule_definition(rule_id, policy)

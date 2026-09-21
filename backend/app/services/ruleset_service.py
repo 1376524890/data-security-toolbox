@@ -23,7 +23,6 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models import Rule, RuleSet, RuleSetVersion
 from app.services import sensitive_engine
-from app.services.rule_library import managed_rules
 
 from shared.sensitive_detection.engine import ENGINE_VERSION, SCHEMA_VERSION  # noqa: E402
 from shared.sensitive_detection.entities import canonical_entity, level_of  # noqa: E402
@@ -36,16 +35,9 @@ VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 MAX_PACK_BYTES = 2 * 1024 * 1024
 MAX_RULES_PER_PACK = 2000
 
-# Legacy store source names mapped onto the closed provenance set.
-_SOURCE_BY_LEGACY = {"presidio": "presidio_static", "manual": "manual", "builtin": "builtin"}
-
 
 class RuleSetError(ValueError):
     """The request cannot produce a usable, immutable version."""
-
-
-def _legacy_source(value: object) -> str:
-    return _SOURCE_BY_LEGACY.get(str(value or "").strip().lower(), "manual")
 
 
 def serialize_rule(rule: Rule) -> dict[str, Any]:
@@ -155,19 +147,10 @@ def import_working_rules(db: Session, rule_set: RuleSet) -> int:
     candidates: list[dict[str, Any]] = []
     for rule in sensitive_engine.get_engine().rules:
         candidates.append({**rule, "rule_source": "builtin"})
-    for rule in managed_rules():
-        candidates.append({
-            "rule_id": str(rule.get("id") or ""),
-            "name": rule.get("name") or "",
-            "entity": rule.get("entity") or rule.get("name") or "",
-            "pattern": rule.get("pattern") or "",
-            "confidence": rule.get("confidence"),
-            "field_hints": rule.get("field_hints") or [],
-            "keywords": rule.get("keywords") or [],
-            "enabled": rule.get("enabled", True),
-            "rule_source": _legacy_source(rule.get("source")),
-            "description": rule.get("recognizer") or "",
-        })
+    # The console's rules come from the same mapping the platform engine scans,
+    # so the pack carries the rule the operator wrote -- including its shape
+    # check -- instead of a second reading of the same rule file.
+    candidates.extend(sensitive_engine.analyst_rules())
     for candidate in candidates:
         try:
             payload = rule_payload(candidate, source=str(candidate.get("rule_source") or "builtin"))
@@ -191,6 +174,51 @@ def active_version(db: Session, rule_set: RuleSet) -> RuleSetVersion | None:
     if not rule_set.active_version_id:
         return None
     return db.get(RuleSetVersion, rule_set.active_version_id)
+
+
+def sync_analyst_rules(db: Session, rule_set: RuleSet | None = None) -> dict[str, int]:
+    """Mirror the console's rule store into the working copy of the rule set.
+
+    A rule an operator adds, enables or imports in the DLP console has to reach
+    the pack a probe downloads, otherwise "one rule, everywhere" stops at the
+    platform boundary. Published versions stay immutable - this only refreshes
+    the working copy the next publish takes its rules from, so the operator
+    still decides when probes get the change.
+    """
+    rule_set = rule_set or get_or_create_rule_set(db)
+    rows = {row.rule_id: row for row in db.scalars(select(Rule).where(Rule.rule_set_id == rule_set.id))}
+    result = {"added": 0, "updated": 0}
+    for rule in sensitive_engine.analyst_rules():
+        try:
+            payload = rule_payload(rule, source=str(rule.get("rule_source") or "manual"))
+        except RuleSetError:
+            # An unusable rule is the console's problem to report, not a reason
+            # to leave the rest of the working copy stale.
+            continue
+        row = rows.get(payload["rule_id"])
+        if row is None:
+            db.add(Rule(
+                rule_set_id=rule_set.id, rule_id=payload["rule_id"], name=payload["name"],
+                entity=payload["entity"], pattern=payload["pattern"], confidence=payload["confidence"],
+                validator=payload["validator"], field_hints=payload["field_hints"],
+                keywords=payload["keywords"], enabled=payload["enabled"], source=payload["rule_source"],
+                description=payload["description"],
+            ))
+            result["added"] += 1
+            continue
+        current = (row.name, row.entity, row.pattern, float(row.confidence), row.validator,
+                   list(row.field_hints or []), list(row.keywords or []), bool(row.enabled),
+                   row.source, row.description)
+        wanted = (payload["name"], payload["entity"], payload["pattern"], float(payload["confidence"]),
+                  payload["validator"], list(payload["field_hints"]), list(payload["keywords"]),
+                  bool(payload["enabled"]), payload["rule_source"], payload["description"])
+        if current == wanted:
+            continue
+        (row.name, row.entity, row.pattern, row.confidence, row.validator, row.field_hints,
+         row.keywords, row.enabled, row.source, row.description) = wanted
+        result["updated"] += 1
+    db.flush()
+    return result
 
 
 def publish(db: Session, rule_set: RuleSet, *, version: str, published_by: str = "", changelog: str = "",

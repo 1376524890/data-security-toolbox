@@ -34,7 +34,7 @@
 | `/var/lib/data-security-toolbox/rules`、`cache` | 规则集与扫描缓存 |
 | `/var/lib/data-security-toolbox` | 数据目录根 |
 | `/usr/local/bin/dumpcap`、`/usr/local/bin/tcpdump` | 仅当安装器写下的标记证明是探针自带并安装的；标记指向其他路径时只报告、不删除 |
-| `/opt/data-security-toolbox/venv`、`probe`、`shared` | 运行时代码与虚拟环境 |
+| `/opt/data-security-toolbox/runtime`、`probe`、`shared`、`venv` | 自带运行时（解释器/依赖/抓包工具）与运行时代码；`venv` 仅为 3.6.0 及更早版本的遗留 |
 | `/etc/data-security-toolbox` | `probe.toml`、`probe.token`、`ca.pem` |
 | `/opt/data-security-toolbox` | 应用目录（含安装标记） |
 | `dstprobe` 用户 | 仅在证明由本探针创建，或被 `--remove-user` 强制指定，且没有进程仍属该账号时 |

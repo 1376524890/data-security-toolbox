@@ -22,6 +22,7 @@ from app.workers.analysis_tasks import (  # noqa: F401
     _supersede_file_derivations,
     analyze_pcap_task,
     asset_task,
+    database_scan_task,
     metadata_task,
     network_scan_task,
 )

@@ -4,7 +4,7 @@ set -euo pipefail
 APP_DIR="/opt/data-security-toolbox"
 PROBE_DIR="${APP_DIR}/probe"
 SHARED_DIR="${APP_DIR}/shared"
-VENV_DIR="${APP_DIR}/venv"
+RUNTIME_DIR="${APP_DIR}/runtime"
 CONFIG_DIR="/etc/data-security-toolbox"
 SPOOL_DIR="/var/lib/data-security-toolbox/spool"
 RULES_DIR="/var/lib/data-security-toolbox/rules"
@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
     --install-only) INSTALL_ONLY=1; shift ;;
     --config) CONFIG_SRC="$2"; shift 2 ;;
     --ca) CA_SRC="$2"; shift 2 ;;
-    --skip-deps) SKIP_DEPS=1; shift ;;
+    --skip-deps) echo "self-contained packages cannot skip runtime validation" >&2; exit 2 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -27,7 +27,39 @@ done
 if [[ ${EUID} -ne 0 ]]; then
   echo "run as root" >&2
   exit 1
+
+# The runtime is bundled; these are the only host tools the installer itself
+# needs (tar to unpack it, systemd to run it, shadow/coreutils to set up the
+# service account). Fail once, with the full list, instead of halfway through.
+MISSING_TOOLS=()
+for tool in tar systemctl useradd id chown find dirname mktemp; do
+  command -v "${tool}" >/dev/null 2>&1 || MISSING_TOOLS+=("${tool}")
+done
+if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
+  echo "error: target host is missing required tools: ${MISSING_TOOLS[*]}" >&2
+  echo "       (the probe runtime and its dependencies are bundled; these host tools are not)" >&2
+  exit 1
 fi
+fi
+
+# Validate the complete runtime before replacing a running installation.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+for path in "${APP_DIR}" "${PROBE_DIR}" "${SHARED_DIR}" "${RUNTIME_DIR}" "${CONFIG_DIR}"; do
+  [[ ! -L "${path}" ]] || { echo "refusing symlink install path: ${path}" >&2; exit 1; }
+done
+[[ -f "${SCRIPT_DIR}/runtime.tar.gz" ]] || { echo "missing bundled runtime" >&2; exit 1; }
+mkdir -p "${APP_DIR}"
+RUNTIME_STAGE="$(mktemp -d "${APP_DIR}/.runtime-XXXXXXXX")"
+trap 'rm -rf -- "${RUNTIME_STAGE}"' EXIT
+tar -xzf "${SCRIPT_DIR}/runtime.tar.gz" -C "${RUNTIME_STAGE}"
+"${RUNTIME_STAGE}/runtime/bin/python" -X utf8 -s "${SCRIPT_DIR}/runtime_check.py" --runtime "${RUNTIME_STAGE}/runtime"
+# No pip/apt, host Python or old venv is consulted. Stop the old process before switching libraries.
+if systemctl is-active --quiet "${SERVICE}"; then systemctl stop "${SERVICE}"; fi
+rm -rf -- "${RUNTIME_DIR}"
+mv "${RUNTIME_STAGE}/runtime" "${RUNTIME_DIR}"
+chown -R root:root "${RUNTIME_DIR}"
+cp "${SCRIPT_DIR}/run-probe.sh" "${APP_DIR}/run-probe.sh"
+chmod 0755 "${APP_DIR}/run-probe.sh"
 
 # `uninstall.sh` removes the dstprobe account and a bundled capture tool only
 # when this installer is what created them, so record both decisions on disk.
@@ -73,56 +105,8 @@ chmod 0755 "${PROBE_DIR}/probe.py"
 chown -R dstprobe:dstprobe "${PROBE_DIR}" "${SHARED_DIR}" "${SPOOL_DIR}" "${RULES_DIR}" "${CACHE_DIR}"
 chmod 0700 "${RULES_DIR}" "${CACHE_DIR}"
 
-# Capture tool provisioning: prefer a bundled binary, then a distro package.
-CAPTURE_TOOL=""
-if command -v dumpcap >/dev/null 2>&1; then
-  CAPTURE_TOOL="dumpcap"
-elif command -v tcpdump >/dev/null 2>&1; then
-  CAPTURE_TOOL="tcpdump"
-elif [[ -x "${SCRIPT_DIR}/bin/dumpcap" ]]; then
-  install -m 0755 "${SCRIPT_DIR}/bin/dumpcap" /usr/local/bin/dumpcap
-  echo /usr/local/bin/dumpcap > "${APP_DIR}/.installed-capture-tool"
-  CAPTURE_TOOL="dumpcap"
-elif [[ -x "${SCRIPT_DIR}/bin/tcpdump" ]]; then
-  install -m 0755 "${SCRIPT_DIR}/bin/tcpdump" /usr/local/bin/tcpdump
-  echo /usr/local/bin/tcpdump > "${APP_DIR}/.installed-capture-tool"
-  CAPTURE_TOOL="tcpdump"
-else
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -y >/dev/null 2>&1 || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tcpdump >/dev/null 2>&1 || true
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y tcpdump >/dev/null 2>&1 || true
-  fi
-  if command -v dumpcap >/dev/null 2>&1; then CAPTURE_TOOL="dumpcap"
-  elif command -v tcpdump >/dev/null 2>&1; then CAPTURE_TOOL="tcpdump"
-  fi
-fi
-if [[ -n "${CAPTURE_TOOL}" ]]; then
-  BIN_PATH="$(command -v "${CAPTURE_TOOL}")"
-  setcap cap_net_raw,cap_net_admin+eip "${BIN_PATH}" 2>/dev/null || true
-  echo "capture tool: ${CAPTURE_TOOL} (${BIN_PATH})"
-else
-  echo "warning: no capture tool available; probe will run in Lite mode" >&2
-fi
-
-# Prepare an isolated venv with the required runtime dependencies.
-PYTHON="${PYTHON:-python3}"
-if [[ "${SKIP_DEPS:-0}" -ne 1 ]]; then
-  if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
-    "${PYTHON}" -m venv "${VENV_DIR}"
-  fi
-  "${VENV_DIR}/bin/pip" install --upgrade pip >/dev/null 2>&1 || true
-  if [[ -d "${SCRIPT_DIR}/wheels" ]]; then
-    "${VENV_DIR}/bin/pip" install --no-index --find-links "${SCRIPT_DIR}/wheels" -r "${PROBE_DIR}/requirements.txt" || \
-      "${VENV_DIR}/bin/pip" install -r "${PROBE_DIR}/requirements.txt"
-  else
-    "${VENV_DIR}/bin/pip" install -r "${PROBE_DIR}/requirements.txt"
-  fi
-  chown -R dstprobe:dstprobe "${VENV_DIR}"
-else
-  VENV_DIR=""
-fi
+# Capture binaries and shared libraries live under RUNTIME_DIR, never /usr/local/bin.
+# Legacy .installed-capture-tool markers remain for the unchanged uninstaller.
 
 # Atomically install the config: write to a temp file then move into place.
 if [[ -n "${CONFIG_SRC}" && -f "${CONFIG_SRC}" ]]; then
@@ -174,12 +158,6 @@ if [[ -n "${CA_SRC}" && -f "${CA_SRC}" ]]; then
   chmod 0644 "${CONFIG_DIR}/ca.pem"
 fi
 
-if [[ -n "${VENV_DIR}" ]]; then
-  PY_BIN="${VENV_DIR}/bin/python"
-else
-  PY_BIN="/usr/bin/python3"
-fi
-
 cat > "/etc/systemd/system/${SERVICE}.service" <<EOF
 [Unit]
 Description=Data Security Toolbox Probe
@@ -190,9 +168,11 @@ Wants=network-online.target
 Type=simple
 User=dstprobe
 Group=dstprobe
-ExecStart=${PY_BIN} ${PROBE_DIR}/probe.py --config ${CONFIG_DIR}/probe.toml
+ExecStart=${APP_DIR}/run-probe.sh --config ${CONFIG_DIR}/probe.toml
 Restart=always
 RestartSec=5
+# See run-probe.sh: pin UTF-8 so a C/POSIX host locale cannot break logging.
+Environment=PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 # Read-only inventory access, including administrator-selected private directories.
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_DAC_READ_SEARCH
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_DAC_READ_SEARCH

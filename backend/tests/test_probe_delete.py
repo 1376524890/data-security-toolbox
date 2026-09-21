@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import Asset, Probe, ProbeDeployment, ProbeEnrollment, Task
+from app.models import Alert, AlertHit, DetectionFinding, Asset, Probe, ProbeDeployment, ProbeEnrollment, Task
 
 
 def test_delete_preserves_assets_and_rejects_old_credentials():
@@ -77,3 +77,26 @@ def test_delete_checks_deployment_and_preserves_history():
             enrollment = db.get(ProbeEnrollment, enrollment_id)
             assert enrollment.probe_id is None
             assert enrollment.expires_at.replace(tzinfo=UTC) <= datetime.now(UTC)
+
+
+def test_delete_preserves_alert_hits_and_clears_their_probe_reference():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.execute(text('PRAGMA foreign_keys=ON'))
+            probe = Probe(name='delete-alert-hit')
+            finding = DetectionFinding(target_type='probe', engine='test', rule_id='test', severity='Low')
+            db.add_all([probe, finding])
+            db.flush()
+            alert = Alert(probe_id=probe.id, finding_id=finding.id, fingerprint='delete-hit', title='retained', severity='Low')
+            db.add(alert)
+            db.flush()
+            hit = AlertHit(probe_id=probe.id, alert_id=alert.id, finding_id=finding.id)
+            db.add(hit)
+            db.commit()
+            probe_id, hit_id, alert_id = probe.id, hit.id, alert.id
+        assert client.delete(f'/api/v1/probes/{probe_id}').status_code == 200
+        with SessionLocal() as db:
+            assert db.get(Probe, probe_id) is None
+            assert db.get(AlertHit, hit_id).probe_id is None
+            assert db.get(AlertHit, hit_id).alert_id == alert_id
+            assert db.get(Alert, alert_id) is not None

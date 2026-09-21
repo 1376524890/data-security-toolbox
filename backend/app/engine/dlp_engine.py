@@ -2,7 +2,7 @@
 
 from app.engine.core.base import DetectionEngine
 from app.engine.core.result import DetectionResult
-from app.services.dlp_service import analyze_capture, normalize_policy
+from app.services.dlp import analyze_capture, normalize_policy
 
 
 class DlpEngine(DetectionEngine):

@@ -42,11 +42,20 @@ from shared.sensitive_detection import (  # noqa: E402
     SensitiveDetectionContext,
     SensitiveDetectionEngine,
     build_engine,
+    text_matches,
 )
 from shared.sensitive_detection import entities as shared_entities  # noqa: E402
 from shared.sensitive_detection.matching import REGEX_BACKEND, SUPPORTS_TIMEOUT  # noqa: E402
 
 _ENGINE: SensitiveDetectionEngine | None = None
+
+# The console's own rules (the "手动添加规则" / Presidio ones) live in the rule
+# store as plain JSON, not in the shared builtin pack. They are scanned by the
+# same engine with the same bounds, so one rule means one thing everywhere: a
+# keyword added for the network DLP stage is also found in a file, a database
+# column and a probe report.
+_ANALYST_VALIDATORS = {"EMAIL": "email_shape", "EMAIL_ADDRESS": "email_shape"}
+_SCAN_ENGINE: tuple[tuple, SensitiveDetectionEngine] | None = None
 
 
 def get_engine() -> SensitiveDetectionEngine:
@@ -69,6 +78,71 @@ def engine_metadata() -> dict[str, Any]:
 
 def scan_text(text: str, **context: Any) -> list[Any]:
     return get_engine().scan_text(text, **context)
+
+
+def analyst_rules() -> list[dict[str, Any]]:
+    """The rule store's manual / imported rules in shared rule format.
+
+    The field mapping itself belongs to the store (``rule_library.stored_rule``)
+    so the rule-set working copy a probe downloads is built from the same
+    fields, not from a second reading of the same JSON.
+    """
+    from app.services.rule_library import managed_rules, stored_rule
+
+    rules: list[dict[str, Any]] = []
+    for raw in managed_rules():
+        rule = stored_rule(raw)
+        if not rule["rule_id"] or not rule["pattern"]:
+            # A rule without an id cannot be traced back to its author; a rule
+            # without a pattern is the engine's built-in set's business.
+            continue
+        entity = canonical_entity(rule["entity"])
+        # Upstream packs match the host part of connection strings as an
+        # "email"; the same shape check the builtin email rule uses applies.
+        rules.append({**rule, "entity": entity, "level": level_of(entity),
+                      "validator": _ANALYST_VALIDATORS.get(entity, "")})
+    return rules
+
+
+def analyst_signature() -> tuple:
+    """Cheap identity of the rule store, so a rule edit is picked up at once."""
+    from app.services.rule_library import rule_store_files
+
+    signature: list[tuple[str, int, int]] = []
+    try:
+        paths = rule_store_files()
+    except OSError:
+        return ()
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(signature)
+
+
+def scan_engine() -> SensitiveDetectionEngine:
+    """Builtin pack plus the rule store: what every platform scan runs."""
+    global _SCAN_ENGINE
+    signature = analyst_signature()
+    if _SCAN_ENGINE is not None and _SCAN_ENGINE[0] == signature:
+        return _SCAN_ENGINE[1]
+    engine = SensitiveDetectionEngine(get_engine().rules)
+    for rule in analyst_rules():
+        engine.add_rule(rule)
+    _SCAN_ENGINE = (signature, engine)
+    return engine
+
+
+def scan_all(text: str, **context: Any) -> list[Any]:
+    """Scan with the builtin pack and the analyst rules together."""
+    return scan_engine().scan_text(text, **context)
+
+
+def has_analyst_rule(hit: Any) -> bool:
+    """Whether any evidence behind a hit came from a console-authored rule."""
+    return any(str(source) != "builtin" for source in hit.rule_sources)
 
 
 def legacy_name(entity: object) -> str:
@@ -110,19 +184,29 @@ def compiled_pattern(rule: dict[str, Any]) -> Any:
     return get_engine().rule_pattern(rule)
 
 
-def to_legacy_hits(hits: Iterable[Any], categories: Iterable[str] | None = None) -> list[dict[str, Any]]:
+def to_legacy_hits(hits: Iterable[Any], categories: Iterable[str] | None = None,
+                   *, include_matches: bool = False) -> list[dict[str, Any]]:
     """Shared hits -> the legacy ``{'kind', 'count', 'confidence', ...}`` shape.
 
     ``categories`` filters by legacy lowercase category, matching how the stored
     DLP policy lists the types it cares about.
+
+    ``include_matches`` adds the bounded matched原文 (value plus its line). It is
+    opt-in because most callers only need the count; the network DLP stage asks
+    for it so an operator can read what was actually transmitted.
+
+    A hit keeps the entity an analyst wrote (``COMPANY``, ``测试``) rather than a
+    lower-cased form: a rule the console shows must be recognisable in the
+    result, and only the builtin pack has a legacy lower-case name to fall back
+    on.
     """
     wanted = {str(item).lower() for item in categories} if categories is not None else None
     converted: list[dict[str, Any]] = []
     for hit in hits:
-        name = legacy_name(hit.entity) or str(hit.entity).lower()
-        if wanted is not None and name not in wanted:
+        name = legacy_name(hit.entity) or str(hit.entity)
+        if wanted is not None and name.lower() not in wanted:
             continue
-        converted.append({
+        entry = {
             "kind": name,
             "entity": hit.entity,
             "count": hit.count,
@@ -134,7 +218,10 @@ def to_legacy_hits(hits: Iterable[Any], categories: Iterable[str] | None = None)
             "rule_ids": hit.rule_ids,
             "rule_sources": hit.rule_sources,
             "evidence": [item.to_dict() for item in hit.evidence],
-        })
+        }
+        if include_matches:
+            entry["matches"] = [dict(item) for item in hit.matches]
+        converted.append(entry)
     return converted
 
 
@@ -174,7 +261,12 @@ def max_confidence(hits: Iterable[Any]) -> float:
 
 def text_truncated() -> bool:
     """Whether the last scan had to cut the text before the end."""
-    return bool(get_engine().last_report.text_truncated)
+    return bool(scan_engine().last_report.text_truncated)
+
+
+def scan_timeouts() -> list[str]:
+    """Rule ids whose pattern hit the per-rule time bound during the last scan."""
+    return sorted(set(scan_engine().last_report.timeouts))
 
 
 __all__ = [
@@ -183,6 +275,11 @@ __all__ = [
     "engine_metadata",
     "get_engine",
     "scan_text",
+    "scan_all",
+    "scan_engine",
+    "analyst_rules",
+    "analyst_signature",
+    "has_analyst_rule",
     "to_legacy_hits",
     "count_by_legacy_name",
     "pii_count",
@@ -191,7 +288,9 @@ __all__ = [
     "candidate_hits",
     "max_confidence",
     "text_truncated",
+    "scan_timeouts",
     "legacy_name",
+    "text_matches",
     "level_of",
     "severity_of",
     "severity_of_level",

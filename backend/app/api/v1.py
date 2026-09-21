@@ -21,6 +21,10 @@ from app.api.data_assets import data_asset_detail as data_asset_detail
 from app.api.data_assets import data_assets as data_assets
 from app.api.data_assets import router as data_assets_router
 from app.api.data_assets import sensitive_findings as sensitive_findings
+from app.api.file_sources import router as file_sources_router
+from app.api.database_connections import (
+    router as database_connections_router,
+)
 from app.api.detections import (
     router as detections_router,
 )
@@ -86,4 +90,6 @@ router.include_router(rules_router)
 router.include_router(auth_router)
 router.include_router(health_router)
 router.include_router(network_scan_router)
+router.include_router(database_connections_router)
+router.include_router(file_sources_router)
 router.include_router(test_data_router)

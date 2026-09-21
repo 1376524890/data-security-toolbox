@@ -34,7 +34,7 @@ from app.models import Asset, Probe, Task, IOC, SystemSetting, AnalysisResult
 from app.services.asset_service import classify_service
 from app.services.rule_library import MIN_ALERT_CONFIDENCE
 
-from app.services.dlp_service import DEFAULT_POLICY
+from app.services.dlp import DEFAULT_POLICY
 
 router = APIRouter(prefix='/api/v1')
 
@@ -304,7 +304,7 @@ class DlpPolicy(BaseModel):
 
 @router.get('/dlp/policy')
 def dlp_policy(db: Session = Depends(get_db)):
-    from app.services.dlp_service import normalize_policy
+    from app.services.dlp import normalize_policy
     row = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
     # Stored policies may predate a key; the UI always needs the effective values.
     return normalize_policy(row.value if row else {})

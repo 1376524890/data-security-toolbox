@@ -22,6 +22,8 @@ const keyLabels: Record<string, string> = {
   sha256: 'SHA256', md5: 'MD5', id: '对象 ID', complete: '会话完整',
   matches: '敏感数据命中明细', kind: '匹配类型', entity: '识别实体', confidence: '置信度',
   samples: '命中样本(已脱敏)', sensitive: '判定为敏感',
+  context: '上下文原文', triggered_by: '触发规则类型', rule_ids: '命中规则 ID',
+  rule_source: '规则来源', rule_sources: '命中规则来源', action: '处置动作', mode: '检测模式',
   queries: 'DNS 查询', queried: '查询域名', resp_len: '响应长度', txt: 'TXT 记录',
   matched_iocs: '命中威胁情报', ioc: '情报指标', value: '值', type: '类型',
   tactic: '战术', technique: '技术', technique_id: '技术 ID', record: '记录', risk_model: '风险模型',

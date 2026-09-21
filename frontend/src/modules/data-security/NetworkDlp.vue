@@ -9,7 +9,7 @@ import { useNetworkDlp } from './composables/useNetworkDlp'
 const {
   config, keywords, hashes, cidrs, error, busy, items, coverage, selected, drawer,
   binary, binaryError, binaryLoading, rules, ruleDialog, ruleBusy, newRule,
-  openTransfer, alertableHit, toggleRule, addRule, importPresidio, load, save,
+  openTransfer, alertableHit, matchedText, hasMatchedText, toggleRule, addRule, importPresidio, load, save,
 } = useNetworkDlp()
 </script>
 <template>
@@ -59,7 +59,7 @@ const {
       <el-table-column prop="sha256" label="SHA256（捕获内容）" min-width="200" show-overflow-tooltip />
       <el-table-column prop="size" label="字节数" width="90" />
       <el-table-column label="完整性" width="100"><template #default="{row}">{{row.complete ? '完整' : '部分 / 未确认'}}</template></el-table-column>
-      <el-table-column label="命中"><template #default="{row}"><el-tag v-for="(hit,index) in row.matches" :key="index" :type="alertableHit(hit) ? 'danger' : 'info'" size="small">{{hit.kind}} × {{hit.count}}{{alertableHit(hit) ? '' : '（仅证据）'}}</el-tag><span v-if="!row.matches.length">未命中当前策略</span></template></el-table-column>
+      <el-table-column label="命中" min-width="220"><template #default="{row}"><el-tag v-for="(hit,index) in row.matches" :key="index" :type="alertableHit(hit) ? 'danger' : 'info'" size="small">{{hit.kind}} × {{hit.count}}{{alertableHit(hit) ? '' : '（仅证据）'}}</el-tag><span v-if="hasMatchedText(row)" class="text-dim" style="margin-left:6px">可查看传输原文</span><span v-if="!row.matches.length">未命中当前策略</span></template></el-table-column>
     </el-table>
     <el-empty v-if="!items.length" description="上传并分析 PCAP 后显示传输内容；也可导入演示场景" />
     <el-collapse style="margin-top:16px"><el-collapse-item title="检测覆盖范围与截断信息"><JsonViewer :value="coverage" /></el-collapse-item></el-collapse>
@@ -69,6 +69,19 @@ const {
           <el-descriptions-item label="SHA256"><span style="overflow-wrap:anywhere">{{selected.sha256}}</span></el-descriptions-item>
           <el-descriptions-item label="哈希范围">{{selected.complete ? '完整重组文件' : '已捕获片段，不能作为完整文件哈希'}}</el-descriptions-item>
         </el-descriptions>
+        <div style="margin:16px 0">
+          <b>命中原文</b>
+          <el-alert type="info" :closable="false" style="margin:8px 0" title="命中处的原文（每命中最多 3 条，value ≤120 字符、上下文 ≤240 字符），与敏感发现的证据出口同一上限；仅命中字段名/关键字而没有取值的规则不会给出原文。" />
+          <el-table v-if="matchedText(selected).length" :data="matchedText(selected)" size="small" max-height="260">
+            <el-table-column prop="kind" label="匹配类型" width="130" show-overflow-tooltip />
+            <el-table-column prop="count" label="命中次数" width="90" />
+            <el-table-column prop="ruleId" label="规则 ID" min-width="150" show-overflow-tooltip />
+            <el-table-column prop="source" label="来源" width="120" show-overflow-tooltip />
+            <el-table-column label="命中值" min-width="180"><template #default="{row}"><span class="mono">{{row.value}}</span></template></el-table-column>
+            <el-table-column label="上下文" min-width="240"><template #default="{row}"><span class="mono">{{row.context || '（无上下文）'}}</span></template></el-table-column>
+          </el-table>
+          <div v-else class="text-dim">该传输没有可回传的原文（旧分析，或只命中了字段名/关键字）。</div>
+        </div>
         <div v-if="selected.binary_available" style="margin:16px 0">
           <el-link :href="downloadUrl(`/dlp/transfers/${selected.task_id}/${selected.id}/content?download=true`)" type="primary">下载捕获二进制（{{selected.size}} 字节）</el-link>
           <p>原始字节预览（最多 4096 字节，未脱敏）</p>

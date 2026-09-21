@@ -11,14 +11,16 @@ vi.mock('../api/dataCatalog', () => ({
 }))
 
 const detection = (id: number, category = 'email'): DetectionRow => ({
-  id, object_id: 5, instance_id: 9, probe_id: 1, scan_id: 'scan-1', category, subcategory: '',
+  id, object_id: 5, instance_id: 9, probe_id: 1, source_kind: 'file', scan_id: 'scan-1',
+  category, subcategory: '',
   sensitivity_level: 'L3', severity: 'High', confidence: 0.9, sample_size: 10,
   sample_hit_count: 2, hit_count: 4, engine_version: '1', ruleset_version: '2',
   first_seen_at: '2026-09-18T10:00:00', last_seen_at: '2026-09-19T10:00:00',
 })
 
 const instance = (overrides: Partial<InstanceDetail> = {}): InstanceDetail => ({
-  id: 9, object_id: 5, probe_id: 1, probe_name: 'test123', host: '192.168.191.130',
+  id: 9, object_id: 5, probe_id: 1, source_kind: 'file', owner_key: 'probe:1',
+  probe_name: 'test123', source_name: 'test123', host: '192.168.191.130',
   path: '/srv/data/a.csv', name: 'a.csv', instance_type: 'file', size: 2048,
   content_hash: 'a'.repeat(64), hash_type: 'sha256', status: 'ACTIVE', owner: 'root',
   group: 'root', permission: '644', sensitivity: 'High', level: 'L3',
@@ -42,7 +44,8 @@ const object = (overrides: Partial<ObjectDetail> = {}): ObjectDetail => ({
 })
 
 const evidence: EvidenceResponse = {
-  detection: detection(31), items: [], count: 0, note: '旧版探针只上报计数',
+  detection: detection(31), items: [], count: 0, matches_returned: 0,
+  note: '旧版探针只上报计数',
 }
 
 let app: App | undefined

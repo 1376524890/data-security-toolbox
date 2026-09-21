@@ -5,18 +5,15 @@ refresh and the manual Suricata/YARA import) lives in ``api/rules.py``, and the
 offline vulnerability-library maintenance in ``api/integrations.py``; both used
 to share this module.
 """
-import json
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.models import SystemSetting
-from app.services.rule_library import (atomic_json, managed_rules, rule_confidence, save_manual_rule,
-                                       sensitive_entity, update_presidio)
+from app.services.rule_library import (managed_rules, rule_confidence, save_manual_rule,
+                                       sensitive_entity, set_rule_enabled, update_presidio)
 
 router = APIRouter(prefix='/api/v1', tags=['rule-libraries'])
 
@@ -24,7 +21,7 @@ router = APIRouter(prefix='/api/v1', tags=['rule-libraries'])
 @router.get('/dlp/rules')
 def list_dlp_rules(db: Session = Depends(get_db)):
     from app.services import sensitive_engine
-    from app.services.dlp_service import normalize_policy
+    from app.services.dlp import normalize_policy
     policy = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
     effective = normalize_policy(policy.value if policy else {})
     active, threshold = effective['categories'], effective['min_confidence']
@@ -57,19 +54,29 @@ def list_dlp_rules(db: Session = Depends(get_db)):
 
 
 @router.post('/dlp/rules')
-def add_dlp_rule(payload: dict):
+def add_dlp_rule(payload: dict, db: Session = Depends(get_db)):
     try:
-        return save_manual_rule(payload)
+        rule = save_manual_rule(payload)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    # The working copy of the rule set is what a publish packs for the probes;
+    # without this the rule would only ever be enforced on the platform.
+    from app.services import ruleset_service
+    sync = ruleset_service.sync_analyst_rules(db)
+    db.commit()
+    return {**rule, 'working_copy': sync}
 
 
 @router.post('/dlp/rules/presidio/update')
-def download_presidio():
+def download_presidio(db: Session = Depends(get_db)):
     try:
-        return update_presidio()
+        result = update_presidio()
     except Exception as exc:
         raise HTTPException(400, f'Presidio 导入失败: {exc}') from exc
+    from app.services import ruleset_service
+    sync = ruleset_service.sync_analyst_rules(db)
+    db.commit()
+    return {**result, 'working_copy': sync}
 
 
 class RuleEnabled(BaseModel):
@@ -79,7 +86,7 @@ class RuleEnabled(BaseModel):
 @router.patch('/dlp/rules/{identifier}')
 def set_dlp_rule(identifier: str, payload: RuleEnabled, db: Session = Depends(get_db)):
     from app.engine.data_engine.engine import REGEX_RULES
-    from app.services.dlp_service import DEFAULT_POLICY
+    from app.services.dlp import DEFAULT_POLICY
     if identifier in REGEX_RULES:
         row = db.scalar(select(SystemSetting).where(SystemSetting.key == 'dlp_policy'))
         if not row:
@@ -91,11 +98,12 @@ def set_dlp_rule(identifier: str, payload: RuleEnabled, db: Session = Depends(ge
         row.value = {**policy, 'categories': sorted(categories)}
         db.commit()
         return {'id': identifier, 'enabled': payload.enabled}
-    for path in sorted((settings.integration_dir / 'dlp_rules').glob('*.json')):
-        document = json.loads(path.read_text(encoding='utf-8'))
-        for rule in document['rules']:
-            if rule['id'] == identifier:
-                rule['enabled'] = payload.enabled
-                atomic_json(path, document)
-                return rule
-    raise HTTPException(404, '规则不存在')
+    updated = set_rule_enabled(identifier, payload.enabled)
+    if updated is None:
+        raise HTTPException(404, '规则不存在')
+    # The working copy of the rule set is what a publish packs for the probes;
+    # without this the flag would only ever be enforced on the platform.
+    from app.services import ruleset_service
+    sync = ruleset_service.sync_analyst_rules(db)
+    db.commit()
+    return {**updated, 'working_copy': sync}

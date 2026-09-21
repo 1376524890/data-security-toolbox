@@ -59,3 +59,27 @@ def test_unreadable_document_is_reported_not_silently_clean(tmp_path: Path) -> N
     assert assets and assets[0]["scan_status"] == "failed"
     assert assets[0]["sensitivity"] == "Unknown"
 
+
+
+def test_capture_container_is_not_a_document_asset(tmp_path, monkeypatch):
+    from app.engine.data_engine import engine as module
+
+    capture = tmp_path / "capture.pcap"
+    capture.write_bytes(b"capture bytes")
+    extracted = tmp_path / "unsupported.bin"
+    extracted.write_bytes(b"business file")
+    inspected = []
+    monkeypatch.setattr(module, "yara_scan", lambda path, rules: inspected.append(path) or [])
+    context = DetectionContext(target_type="pcap", path=capture, files=[extracted])
+    DataEngine().analyze(context)
+    assert capture in inspected  # Binary security checks still run.
+    assert [a["name"] for a in context.data["data_assets"]] == [extracted.name]
+    assert context.data["data_assets"][0]["scan_status"] == "unsupported"
+
+
+def test_explicitly_uploaded_capture_file_is_still_inventoried(tmp_path):
+    capture = tmp_path / "user.pcap"
+    capture.write_bytes(b"capture bytes")
+    context = DetectionContext(target_type="file", path=capture)
+    DataEngine().analyze(context)
+    assert context.data["data_assets"][0]["name"] == capture.name

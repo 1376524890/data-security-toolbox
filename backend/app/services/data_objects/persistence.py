@@ -40,49 +40,31 @@ def _get_or_create(
 
 
 def forget_probe(db: Session, probe_id: int) -> dict[str, int]:
-    """Drop one probe's observation state when the probe itself is deleted.
+    """Detach a retired source, preserving observations and all matched evidence."""
+    from datetime import UTC, datetime
+    from sqlalchemy import update
+    from app.models import Probe
 
-    An instance identity is ``(probe_id, path)``; once the probe is gone that
-    identity cannot be reconstructed, so keeping a half-detached copy would
-    invent a host that no longer exists. The *logical* objects stay, because a
-    second probe may still hold the same content, and the legacy
-    ``data_assets`` projection is untouched - the existing
-    "keep collected records, clear the foreign key" behaviour of
-    ``DELETE /probes/{id}`` is unchanged for every legacy table.
-    """
-    instance_ids = list(
-        db.scalars(select(AssetInstance.id).where(AssetInstance.probe_id == probe_id))
-    )
-    object_ids = list(
-        db.scalars(
-            select(AssetInstance.object_id.distinct()).where(AssetInstance.probe_id == probe_id)
-        )
-    )
-    detections = 0
-    if instance_ids:
-        detection_ids = select(Detection.id).where(Detection.instance_id.in_(instance_ids))
-        db.execute(
-            delete(DetectionEvidence).where(DetectionEvidence.detection_id.in_(detection_ids))
-        )
-        detections = _int(
-            db.scalar(
-                select(func.count())
-                .select_from(Detection)
-                .where(Detection.instance_id.in_(instance_ids))
-            )
-        )
-        db.execute(delete(Detection).where(Detection.instance_id.in_(instance_ids)))
-        db.execute(delete(AssetInstance).where(AssetInstance.id.in_(instance_ids)))
+    probe = db.get(Probe, probe_id)
+    rows = list(db.scalars(select(AssetInstance).where(AssetInstance.probe_id == probe_id)))
+    for instance in rows:
+        instance.owner_key = instance.owner_key or f"probe:{probe_id}"
+        instance.extra = {**(instance.extra or {}), "source_retired": True,
+                          "retired_probe_id": probe_id,
+                          "probe_name": probe.name if probe else "",
+                          "host": (probe.ip_address or probe.hostname) if probe else "",
+                          "source_retired_at": datetime.now(UTC).isoformat()}
+        instance.probe_id = None
+        instance.status = "SOURCE_RETIRED"
+    result = db.execute(update(Detection).where(Detection.probe_id == probe_id)
+                        .values(probe_id=None))
     db.flush()
-    for object_id in object_ids:
+    for object_id in {item.object_id for item in rows}:
         obj = db.get(DataObject, object_id)
-        if obj is not None:
+        if obj:
             recount_object(db, obj)
-    return {
-        "instances": len(instance_ids),
-        "detections": detections,
-        "objects_recounted": len(object_ids),
-    }
+    return {"instances_preserved": len(rows), "detections_preserved": result.rowcount,
+            "objects_recounted": len({item.object_id for item in rows})}
 
 
 def recount_object(db: Session, obj: DataObject) -> DataObject:

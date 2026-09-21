@@ -177,6 +177,12 @@ def dlp_rule_definition(rule_id: str, policy: dict[str, Any] | None) -> dict[str
     pieces = []
     if categories:
         pieces.append("敏感类型 " + "/".join(categories))
+    # The console's own rules (manual / imported) are scanned by the same
+    # engine, so the rule an operator sees here is the rule that actually ran.
+    from app.services import sensitive_engine
+    authored = [rule for rule in sensitive_engine.analyst_rules() if rule.get("enabled")]
+    if authored:
+        pieces.append(f"自定义规则 {len(authored)} 条")
     if keywords:
         pieces.append(f"关键词 {len(keywords)} 个")
     if fingerprints:

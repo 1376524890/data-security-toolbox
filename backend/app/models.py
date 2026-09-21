@@ -474,13 +474,23 @@ class AssetInstance(TimestampMixin, Base):
     Identity is (probe_id, normalised absolute path). Renaming a file therefore
     creates a new instance and leaves the old one for the scope-aware
     ACTIVE/NOT_OBSERVED decision - it is never silently re-pointed.
+
+    A database table has no probe and no file path, so identity is generalised to
+    ``(owner_key, path)``: ``probe:<id>`` for files, ``db:<connection_id>`` for a
+    table read over a configured connection. ``probe_id`` stays NULL for the
+    latter - a database source must not borrow a host identity it never had.
     """
 
     __tablename__ = "asset_instances"
-    __table_args__ = (UniqueConstraint("probe_id", "path", name="uq_asset_instance_probe_path"),)
+    __table_args__ = (UniqueConstraint("owner_key", "path", name="uq_asset_instance_owner_path"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     object_id: Mapped[int] = mapped_column(ForeignKey("data_objects.id"), index=True)
-    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), index=True)
+    #: NULL for a database-sourced instance: there is no probe in that path.
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), index=True, nullable=True)
+    #: ``probe:<probe_id>`` | ``db:<connection_id>``; the owner of this observation.
+    owner_key: Mapped[str] = mapped_column(String(160), default="", index=True)
+    #: file | database
+    source_kind: Mapped[str] = mapped_column(String(16), default="file", index=True)
     path: Mapped[str] = mapped_column(String(1024), default="")
     name: Mapped[str] = mapped_column(String(512), default="")
     #: file | directory | database_service
@@ -531,7 +541,10 @@ class Detection(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     object_id: Mapped[int] = mapped_column(ForeignKey("data_objects.id"), index=True)
     instance_id: Mapped[int] = mapped_column(ForeignKey("asset_instances.id"), index=True)
-    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), index=True)
+    #: NULL when the finding came from a database connection instead of a probe.
+    probe_id: Mapped[int] = mapped_column(ForeignKey("probes.id"), index=True, nullable=True)
+    #: file | database; the source of the observation that produced this row.
+    source_kind: Mapped[str] = mapped_column(String(16), default="file", index=True)
     scan_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     category: Mapped[str] = mapped_column(String(64), index=True)
     subcategory: Mapped[str] = mapped_column(String(64), default="")
@@ -554,7 +567,12 @@ class Detection(TimestampMixin, Base):
 
 
 class DetectionEvidence(TimestampMixin, Base):
-    """Why a detection fired. Never carries a matched value."""
+    """Why a detection fired.
+
+    Rule, recogniser, field and counts describe the reason. The matched原文 the
+    probe returned lives in ``extra['matches']`` (a bounded, capped sample), so a
+    reviewer can verify the finding without the platform storing the file.
+    """
 
     __tablename__ = "detection_evidence"
     __table_args__ = (UniqueConstraint("detection_id", "evidence_key", name="uq_detection_evidence_key"),)
@@ -577,6 +595,46 @@ class DetectionEvidence(TimestampMixin, Base):
     hit_count: Mapped[int] = mapped_column(Integer, default=0)
     engine_version: Mapped[str] = mapped_column(String(64), default="")
     ruleset_version: Mapped[str] = mapped_column(String(64), default="")
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class DatabaseConnection(TimestampMixin, Base):
+    """A target database the platform is allowed to read.
+
+    Only the *server side* connects: the worker opens the session, so the
+    platform container must be able to route to the address (no probe proxy, no
+    SSH tunnel is implied). The password is never stored in the clear and never
+    leaves the process: ``password_ciphertext`` is AES-GCM with the connection
+    identity bound in as AAD, and the API only ever reports whether one is set.
+
+    The stored record is a *configuration*, not a claim: reachability, version
+    and permissions are only ever reported from a real connection attempt
+    (``last_test_status`` / ``last_test_error``).
+    """
+
+    __tablename__ = "database_connections"
+    __table_args__ = (UniqueConstraint("name", name="uq_database_connection_name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    #: mysql | postgresql. Only engines with a real driver are accepted.
+    engine: Mapped[str] = mapped_column(String(32), index=True)
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer)
+    #: Default database/schema to reflect; a scan may still name another one.
+    database: Mapped[str] = mapped_column(String(128), default="")
+    username: Mapped[str] = mapped_column(String(128), default="")
+    password_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    password_nonce: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    password_key_id: Mapped[str] = mapped_column(String(64), default="")
+    #: disable | prefer | require | verify-full (driver-specific default kept when empty)
+    tls_mode: Mapped[str] = mapped_column(String(16), default="")
+    options: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_test_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: ok | failed | auth_error | unreachable | read_only_violation | untested
+    last_test_status: Mapped[str] = mapped_column(String(32), default="untested")
+    last_test_error: Mapped[str] = mapped_column(Text, default="")
+    last_scan_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
@@ -746,3 +804,25 @@ class ProbeDeploymentEvent(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     deployment: Mapped[ProbeDeployment] = relationship(back_populates="events")
+
+
+class FileSource(TimestampMixin, Base):
+    __tablename__ = "file_sources"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    protocol: Mapped[str] = mapped_column(String(16))
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer)
+    username: Mapped[str] = mapped_column(String(128), default="")
+    root_path: Mapped[str] = mapped_column(String(1024), default="/")
+    password_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    password_nonce: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    password_key_id: Mapped[str] = mapped_column(String(64), default="")
+    host_key_sha256: Mapped[str] = mapped_column(String(128), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    next_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str] = mapped_column(String(32), default="untested")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

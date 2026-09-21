@@ -245,11 +245,17 @@ data_objects 1---n asset_instances        rule_sets 1---n rule_set_versions / ru
 tasks 1---n detection_findings            detection_findings 1---n alerts 1---n alert_deliveries
 incidents（自持 findings JSON 与 fingerprint 去重，按 evidence.asset / evidence.assets 归属资产）
 scan_profiles 驱动探针侧扫描；reports / audit_logs / system_settings / integration_status 为平台侧记录
+database_connections 1---n tasks(kind=database_scan)；采集结果落在 data_objects / asset_instances(source_kind='database')
 ```
 
 说明：`assets` 是「主机 + 服务」粒度（同一 IP 的不同端口/服务各一条，`asset_type='service'`）；
-`data_objects` / `asset_instances` 是探针采集到的数据对象及其在具体探针上的物理副本，身份为
-`(probe_id, 规范化绝对路径)`。
+`data_objects` / `asset_instances` 是采集到的数据对象及其物理副本，身份为 `(owner_key, 路径)`：
+`owner_key` 为 `probe:<探针 id>`（文件）或 `db:<连接 id>`（目标数据库表），`source_kind` 记录来源是
+`file` 还是 `database`。数据库表与文件路径因此不会互相顶掉，`probe_id` 对数据库来源为空。
+类型中心（`/api/v1/data-types*`）与对象详情的 `host_count` 由此按**观测来源**去重：
+`owner_key`（`probe:<id>` / `db:<id>`）算一个来源，不能再直接数 `probe_id`——数据库来源的 NULL 既会
+计数崩溃，也会把所有目标库并成一个「空主机」。SQLite 测试库与 0016 之前的旧行 `owner_key` 为空串，
+此时用 `probe:<probe_id>` 回退（`app/services/data_objects/queries.py::owner_key_of`）。
 
 ## API 调用关系
 
@@ -269,6 +275,19 @@ scan_profiles 驱动探针侧扫描；reports / audit_logs / system_settings / i
 | 探针 → 服务端 | 每 `ruleset.poll_seconds`(900s) | HTTPS 下载 + SHA256 校验 | 规则包先校验再原子替换，失败保留旧版本；首启走随包基线快照 |
 | 探针 ← 服务端 | 平台触发 | 探针侧轮询 `allow_remote` | 远程扫描 / 数据资产采集任务 |
 | 服务端 → 探针 | 管理员下发或回收 | SSH（`deployment-worker`） | 推送安装/卸载脚本；卸载删除白名单固定，成功后才删平台记录 |
+
+探针自带运行时（3.7.0 起）：`runtime.tar.gz` 内含私有 CPython 3.11、Python 依赖、`dumpcap`/`tcpdump` 与
+库闭包，`probe/runtime_check.py` 用它自检（架构、解释器版本、依赖、抓包、可选平台连通性）。平台下发/回收
+前的预检走 `app/deployment/{preflight,runtime}.py`：把同一个运行时上传到目标机临时目录、比对 sha256 后
+执行自检，因此目标机不再需要主机 Python 或系统抓包工具，安装也不执行 pip/apt/venv（`probe/install.sh`
+先验证再原子替换 `/opt/data-security-toolbox/runtime`）。探针仍以 `dstprobe` + `CAP_NET_RAW`/
+`CAP_NET_ADMIN`/`CAP_DAC_READ_SEARCH` 运行，读不到的目录按覆盖缺口上报，不提权重试。
+
+启动链路同样不依赖目标机环境：`ExecStart` 固定为 `probe/run-probe.sh`，它只用 shell 内建命令定位自身目录
+（不调用 `dirname`），自设 `PATH` 并导出 `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`（systemd 启动时 `LANG` 通常未
+设置，否则 CPython 会退回 C 语言环境并按 ASCII 处理 stdio，中文日志直接报错）；`probe/runtime_check.py`
+除架构、依赖与抓包工具外，还校验运行时布局完整，并断言解释器来自包内 `python/`（`sys.base_prefix`），
+避免主机解释器被顶替进来。
 
 安全边界：探针只出站、只读采集，不解密 TLS、不做串接阻断；服务端不反向登录被检主机（除显式的探针下发/回收通道）。
 
@@ -305,3 +324,235 @@ $INTEGRATION_DIR/suricata_rules/*.rules  -> suricata   (离线规则包)
   `tests/test_api.py::test_rule_library_tags_every_file_with_its_engine` 锁定）。
 - 注意 `_worker_capability()` 上报的 suricata `rule_count` 单位是 `sid:` 条数（运行时口径），
   与注册表的「规则文件数」不同但都真实。
+
+
+## 2026-09-20 整改边界（止增与诊断已部署）
+
+原始 PCAP context.path 仍参与检测，但 DataEngine 不再将该容器登记为文档资产；
+context.files 中的独立文件继续按文档处理。判定使用上下文来源而非扩展名黑名单。
+文档 scan_status/scan_reason 由 application/analysis.py 保存到 DataAsset.extra。
+采集终态展示复用 services/data_objects/progress.collection_outcome；新上报写准确阶段，旧任务仅呈现兼容，不修改历史事实。
+
+### 采集预算的两个维度
+
+`shared/scanning/budget.py` 把「遍历是否走完」与「文件内容是否读完」分开记账，两者都要完整才是 `complete`：
+
+- `enumeration_complete`：只有文件/目录/字节/超时/取消/资源/未配置/不可读这类**枚举级**原因会置否。
+  它决定探针是否继续遍历，也是「哪些路径压根没被看过」的唯一依据。
+- `content_complete`：`row_budget`（累计行数超过 `max_sample_rows × 64`）与 `single_file_limit`
+  只属于这一维度。它们仍让整份报告不完整（`complete_scope=false`，因此不会退役未观测实例），
+  但不再终止遍历——此前 `/var/backups/dpkg.status.0` 一个文件就把整个 `/var` 的盘点截断成 9 个资产。
+- `termination_reason` 优先报枚举级原因，`termination_detail` 与之一致；`collection_outcome`
+  仅在 `enumeration_complete=true` 且原因属于内容维度时才改用「部分文件内容达到读取行数上限」措辞。
+
+后端/worker/前端运行镜像已按上述实现重建（2026-09-20）；**探针分发包与在线探针尚未更新**，
+因此目录诊断与截断语义的线上生效仍待出包与升级；数据库直连架构仍待实现。
+
+## 2026-09-20 契约变更：命中原文回传
+
+用户明确要求「发现敏感内容之后要回传原文」，因此**本节取代此前「检测证据从不保存/展示匹配到的原始值」
+的描述**。变更是有界、集中的，其余脱敏保证不变：
+
+```
+探针 shared/sensitive_detection/engine.py
+  DetectionHit.matches[:3]  ->  {value: ≤120 字符, context: 该值所在行 ≤240 字符}
+        │  （只命中字段名/关键字的命中 matches=[]，表示"没有可回传的原文"）
+        ▼
+探针 report_guard.raw_text_keys({"matches"})
+        │  matches 子树内不脱敏/不截断；Evidence 与 ScanReport 仍不含任何值
+        ▼
+探针 data_assets._hit_summary -> report.assets[].evidence.hits[].matches
+        ▼
+平台 services/data_objects/evidence._returned_matches()
+        │  以同样上限重裁并做形状校验（只接受非空 value），写入 DetectionEvidence.extra['matches']
+        ▼
+平台 /api/v1/detections/{id}/evidence -> items[].matches + matches_returned
+        ▼
+前端 实例详情 / 对象详情「检测证据」抽屉：展开行显示 value + context；
+      无 matches 时显示「这条证据没有回传原文（旧版探针，或只命中了字段名/关键字）」
+```
+
+- 上限常量：探针 `MAX_RETURNED_MATCHES=3`、`MAX_RETURNED_CHARS=120`、`MAX_CONTEXT_CHARS=240`；
+  平台 `MAX_RETURNED_MATCHES/MAX_MATCH_CHARS/MAX_CONTEXT_CHARS` 同值，只收紧不放大。
+- 存储：`DetectionEvidence` 仍无存值列，原文位于 `extra['matches']`；合并规则保留最新一组非空原文，
+  空列表不会覆盖已有原文。该批没有新增迁移；随后的 P2 批次新增 `0016_database_connections`（当前 head）。
+- 边界：`Evidence` / `ScanReport` / 其他任何模型字段都不得出现值；`report_guard.sanitize_report`
+  在 `matches` 之外仍按原样脱敏。旧报告没有该字段，读取端按空列表处理。
+
+## 2026-09-20 P2：平台直连目标数据库盘点
+
+目标数据库由**平台自己**连接（不经探针、不经 SSH 隧道），因此连通性测试与采集走同一执行网络
+（当前是 worker 容器所在网络）。这条链路复用文件路径上的同一份敏感引擎与同一套证据写入口。
+
+```
+前端 DatabaseConnections.vue
+  -> useDatabaseConnections.ts -> api/databaseConnections.ts
+  -> /api/v1/database-connections（CRUD / test / schemas / tables / scans / scans/{task_id}）
+        │  api/database_connections.py：管理员会话 + 审计；响应只含 password_set
+        ▼
+  services/database_scan/connection_service.py
+        │  字段校验、口令 AES-GCM 加密（AAD = db:<连接 id>:<用户名>:<密钥 id>）、
+        │  任务配置快照 + config_hash、单连接同时只允许一个采集任务
+        ▼
+  tasks(kind=database_scan) --Redis--> workers/analysis_tasks.database_scan_task
+        ▼
+  services/database_scan/scan.py
+        │  adapters.open_read_only：每连接执行 SET SESSION TRANSACTION READ ONLY 并回读校验
+        │  枚举库/表 → sample_table(SELECT * LIMIT) → detect.scan_table（共享敏感引擎，按列）
+        │  → ingest：DataObject(database_table) + AssetInstance(source_kind='database') + 证据
+        │  → retire_unseen（只在范围完整时）→ 汇总（按表明细 / notes / table_errors）
+        ▼
+  /api/v1/asset-instances?source_kind=database、/api/v1/data-objects/{id}、
+  /api/v1/detections/{id}/evidence —— 原文出口与文件来源共用同一个
+```
+
+- 只读保证：read-only 在连接池的 connect 钩子里对**每条**连接执行，且回读 `@@session.transaction_read_only`；
+  服务器若回答「可写」直接拒绝采集（`read_only_violation`）。标识符只来自反射，模块内没有接收 SQL 文本的入口。
+  真机负对照：对目标库执行 `CREATE TABLE` 被 MariaDB 以 `1792 Cannot execute statement in a READ ONLY transaction` 拒绝。
+- 引擎白名单：`mysql` → PyMySQL、`postgresql` → psycopg2；驱动选项只允许
+  `charset` / `sslmode` / `connect_timeout_seconds` / `statement_timeout_seconds`（秒数夹取 1..3600）。
+- 预算与终止：`database_scan_sample_rows`（默认 50 行/表）、`max_tables`、`max_seconds`、`value_chars`、
+  `connect_timeout`；`termination_reason` 汇报到底是哪一项截断（complete / table_budget / time_budget /
+  read_error / no_tables / cancelled），停止请求只在表之间生效，已读到的结果保留。
+- 检测口径：只有**值命中**计入 counts/categories；字段名与关键字线索进 `candidates` / `field_only_categories`，
+  不把 `id_card` 这样的列名当成数据；命中原文与文件来源受同一上限约束。
+- 凭据形态：口令只写不读，响应只有 `password_set`；快照携带 `password_key_id`，用户名或密钥在任务排队后变更
+  则明确报 `CredentialError`，不会静默改用其他凭据读取目标。
+- 安全影响（需后续任务承接）：报告、探针本地缓存与 `DetectionEvidence.extra` 现在会保存敏感原文，
+  因此探针→平台传输与数据库静态保护的重要性高于改造前（此前载荷可证明不含值）。
+
+
+### 采集任务与资产成员关系（2026-09-20）
+探针报告 → ingestion 返回实际入库 asset_instance_ids → data_collection 写 Task.result；
+任务页 → GET /asset-instances?task_id=… → 按任务探针及持久化实例 ID 查询当前资产 → 实例详情。
+旧任务仅能按 probe + last_scan_id 恢复仍可关联的实例，响应 association 标明限制，不根据路径/时间猜测历史成员。
+
+## 2026-09-20 共享文件来源（FTP/FTPS/SFTP）盘点
+
+共享目录由**平台自己**连接读取（不经探针、不经 SSH 隧道），因此连通性与采集走同一执行网络（当前是 worker
+容器所在网络）。这条链路与数据库直连共用同一份敏感引擎和同一套证据/资产写入口。
+
+```
+前端 SourceManagement.vue（来源管理：共享文件 / 数据库 / 主机探针 / 手动文件四个入口）
+  -> FileSources.vue + useFileSources.ts -> api/fileSources.ts
+  -> /api/v1/file-sources（列表 / 新建 / 更新 / 删除 + {id}/test、{id}/scan）
+        │  api/file_sources.py：管理员会话 + 审计（只记协议与任务号）；响应只有 password_set
+        ▼
+  services/file_scan/service.py
+        │  字段校验、口令 AES-GCM 加密（AAD = file-source:<id>:<用户名>:<密钥 id>）、
+        │  协议/地址/端口不可改（换端点就新建来源）、共享目录可改、单来源同时只允许一个采集任务
+        ▼
+  tasks(kind=file_source_scan) --Redis--> workers/analysis_tasks.file_source_scan_task
+        │  beat 每 60 秒跑 file_source_schedule，按 next_scan_at 周期派发（也可手动）
+        ▼
+  services/file_scan/scan.py
+        │  adapters.connect：FTP / 显式 FTPS（prot_p）/ SFTP（主机指纹固定）
+        │  枚举目录（深度/文件数/字节/时限/取消预算）→ 只读下载到临时文件 → ingest.analyze
+        │  （共享 sensitive_detection 引擎）→ ingest.store：DataObject + AssetInstance
+        │  （source_kind='file_share'，owner_key='file-source:<id>'）+ 检测证据
+        │  临时文件检测后立即删除；未再观测到的路径只在范围完整时标记 NOT_OBSERVED
+        ▼
+  /api/v1/asset-instances?owner_key=file-source:<id>、/api/v1/data-objects/{id}、
+  /api/v1/detections/{id}/evidence —— 原文出口与文件/数据库来源共用同一个；
+  删除来源只删除这份配置，已采集资产与证据保留（采集中的来源不可删）
+```
+
+- 传输只读：适配层只使用 `MLSD`/`LIST`、`RETR` 与 SFTP 读操作，没有写/删/改接口；远端名字先经
+  `child_path` 校验（拒绝 `..`、路径分隔符、CR/LF/NUL），符号链接只记 `skip`、永不跟随。
+- 列目录兼容：优先 `MLSD`，服务器回答 500/502（如 vsFTPd 3.0.5，`FEAT` 未声明该命令）时回退解析
+  `LIST` 的 ls -l 行；550 等真实回答不重试，直接归类为 `path_error`。失败一律转为类别
+  （`auth_error`/`path_error`/`protocol_error`/`timeout`/`dns_error`/`unreachable`），服务器回显文本不落库。
+- 预算与终止：`max_files`、`max_depth`、`max_bytes`、`max_file_bytes`、`max_seconds`（各自有上限），
+  逐文件如实记录 `coverage` 与 `termination_reason`（`complete`/`row_limit`/`sampled`/`single_file_limit`/
+  `file_changed_during_read`/`depth_limit`/`file_budget`/`byte_budget`/`time_budget`/`cancelled`）。
+- 身份：`owner_key='file-source:<id>'`、`path=远端绝对路径`；内容哈希只作为“是否变化”的证据
+  （`hash_type='scoped'`），不用于跨来源合并。
+- 界面：`/source-management`（`SourceManagement.vue`）与 `/asset-inventory`（`AssetInventory.vue`，
+  同页可切换敏感发现模式）；菜单只保留这两个入口，旧 URL（`/database-connections`、`/data-assets`、
+  `/sensitive`）继续可用。
+
+
+## 2026-09-20 统一规则源：一条规则，四引擎共享，命中带原文
+
+```
+控制台「规则库」（POST /api/v1/dlp/rules 手写规则；presidio 导入/更新）
+        │  data/integrations/dlp_rules/*.json（manual-*.json / presidio.json）
+        ▼
+services/sensitive_engine.analyst_rules()   ← 规则库 → 共享规则格式（EMAIL 套 email_shape 校验器）
+        │  analyst_signature()（mtime+size）变化才重建
+        ▼
+scan_engine() = shared/sensitive_detection 内置包 + 手写规则      scan_all(text, source_type=…)
+        ├── DataEngine（engine/data_engine/engine.py：scan_text / infer_columns）
+        ├── 文件来源采集（services/file_scan/ingest.py）      → DetectionEvidence.extra['matches']
+        ├── 数据库直连盘点（services/database_scan/detect.py）→ DetectionEvidence.extra['matches']
+        └── 网络防泄密（services/dlp/detect.py::inspect_content）
+                 │  内置包按 policy['categories'] 过滤；手写规则命中不过滤
+                 ▼
+            DLP 传输对象 matches（value + context）→ finding 证据 → 告警 → SSE security.alerts → /network/live
+```
+
+- 控制台规则 → 探针的路径是**两步**：`ruleset_service.sync_analyst_rules()` 先把规则镜像进规则集工作副本
+  （已发布版本不可变），操作者发布后才进 probe 下载的规则包。平台侧三条链路无需发布即可生效。
+- 命中原文的唯一出口仍是 `matches`：每命中 ≤3 条、`value` ≤120、`context` ≤240，探针与平台两侧各自重裁；
+  网络侧由 `shared/sensitive_detection/engine.py::text_matches()` 生成关键词命中的原文。
+- `kind` 保留实体原样大小写（自定义 `测试`/`COMPANY` 不再被小写化），只有内置包回落历史小写名；
+  类别过滤按大小写不敏感比较，`infer_columns` 为没有历史类别的手写规则补 `counts`。
+- 告警与否由风险分决定，不由命中决定：`_capture_exposure()` 只看目的地址是否公网
+  （`internal_only` → 2.0，`external_destination` → 3.0），`alert_policy.high_finding_min_risk`（默认 60）
+  再拦一道。同一份含 `张三` 的命中，内网互传 `risk=51`（不告警、网络防泄密页可见），外网外发 `risk=76.5`（告警）。
+
+## 网络 DLP 域分层与规则源单一映射（2026-09-20 第三十批）
+
+```
+app/api/*（DLP 策略读写、规则清单）        app/engine/dlp_engine.py（DetectionEngine 适配）
+        │                                        │
+        └──────────► services/dlp/detect.py ◄────┘   检测编排：唯一同时握着抓包与策略的一层
+                          │  capture.reassemble / capture.http_objects
+                          │  stream_objects（没有 HTTP 解析器的明文协议仍做有界文本扫描）
+                          ▼
+             services/dlp/{policy,self_traffic,capture}
+                          │
+             services/dlp/constants.py（上限、内置兜底策略、自身流量标记）
+                          │
+        services/rule_library.py（规则库：唯一知道 data/integrations/dlp_rules 布局的模块）
+                          ▲            │ stored_rule()
+                          │            ▼
+        sensitive_engine.analyst_rules() ─┬─ ruleset_service.import_working_rules()
+                          ▼              └─ 规则集工作副本 → 发布 → 探针规则包
+        services/sensitive_engine.py（平台侧唯一规则加载入口，按 mtime+size 签名重建）
+```
+
+- 实现分五层：常量 → 策略 / 自身流量判定 / 抓包与 HTTP 解析 → 检测编排。`app/services/dlp_service.py`
+  只剩兼容重导出，旧调用方与回归测试继续可用；新代码 import `app.services.dlp`。
+- **规则源只有一份映射**：`rule_library.stored_rule()` 把规则库的一条规则转成共享规则/规则包格式，
+  平台侧扫描（`sensitive_engine.analyst_rules()`）与下发给探针的工作副本
+  （`ruleset_service.import_working_rules()`）共用它。此前工作副本自己再读一遍同一份 JSON，
+  导入规则**漏掉了 `email_shape` 校验器**，同一条规则在平台与探针上命中口径不同。
+- **规则库布局只有一处**：`rule_library.rule_store_directory()` / `rule_store_files()` 是
+  `data/integrations/dlp_rules/*.json` 的唯一读者。引擎刷新签名（`analyst_signature()`）、规则来源清单
+  （`api/rule_presenter.py`）与启停写入（`rule_library.set_rule_enabled()`，由 `PATCH /dlp/rules/{id}` 调用）
+  都不再各自 glob 该目录。
+- **旧环已断**：`rule_library` 曾 `from app.services.dlp_service import masked`，DLP 侧又 import 规则库的
+  置信度常量，两个模块互相依赖；`masked()` 现在在中立的 `services/masking.py`。
+- 边界由 `backend/tests/test_dlp_boundaries.py`（7 项）锁定：分层文件集合、无 `app.api`/`app.workers`
+  依赖、只有检测层引用敏感引擎、规则库不再 import 网络 DLP、兼容外观只做重导出、单一映射，
+  以及「导入规则在规则包里带着平台侧同样的校验器」。
+
+
+## 数据库连接前端状态与视图边界（2026-09-21 第三十一批）
+
+`DatabaseConnections.vue -> useDatabaseConnections` 保留连接列表、选择、删除/连通测试及刷新协调。
+协调入口向三个子 composable 显式传入响应式目标与回调，子模块不互相 import：
+
+- `useDatabaseConnectionForm(engines, selectCreated, load)`：拥有响应式编辑草稿与保存状态，创建成功后通知
+  协调入口选择新连接，再刷新列表。编辑密码为空不提交 password，保存成功才清空草稿口令。
+- `useDatabaseScope(selectedConnection, loadScans)`：拥有 schema、库表清单与勾选范围，启动采集时使用
+  当前选中连接，发送 schemas 与带 schema 前缀的 tables，成功后刷新任务。
+- `useDatabaseScans(selectedId, error)`：拥有连接详情、任务历史、详情抽屉与唯一的 5 秒轮询 timer。
+  协调入口初次 load 完成后调用 startPolling，timer 在子 composable 的 onBeforeUnmount 清除。
+
+`components/DatabaseConnectionForm.vue` 与 `DatabaseScanDetail.vue` 只展示，通过 props、v-model 与
+save 事件和父页面连接；表单复用同一个响应式草稿，不复制口令。状态/结束原因的纯标签函数位于
+`databaseConnectionPresentation.ts`，旧入口继续提供同名函数。页面不新增 API 调用或轮询。
+本批保持原有请求及状态更新顺序；回归为 `database-connections-state.test.ts`（16 项）与
+`database-connections-page.test.ts`（6 项），后者挂载真实 Element Plus 组件验证表单/抽屉与范围操作。

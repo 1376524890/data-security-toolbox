@@ -5,7 +5,7 @@ from threading import Event
 
 import pytest
 
-from app.services.dlp_service import DEFAULT_POLICY, inspect_content
+from app.services.dlp import DEFAULT_POLICY, inspect_content
 from app.services.intelligence_service import normalize, parse_indicators
 
 

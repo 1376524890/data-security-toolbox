@@ -91,7 +91,7 @@ PROBE_BOOTSTRAP_TOKEN=探针注册令牌
 
 ### 3.2 路径 B：部署探针，自动采集受监控主机
 
-探针部署在**被监控主机**上，负责抓包、资产端口采集与目标文件采集。需 Python 3.11+、`requests`、`psutil`，以及 `dumpcap`（优先）或 `tcpdump`。
+探针部署在**被监控主机**上，负责抓包、资产端口采集与目标文件采集。探针 3.7.0 起分发包自带运行时（私有 CPython 3.11 + 依赖 + `dumpcap`/`tcpdump`），目标机不需要 Python、pip、apt 或抓包工具，只需要 systemd 与基础 coreutils/shadow 工具。
 
 ```bash
 # 1. 安装探针（创建 dstprobe 用户、systemd 服务、配置目录）

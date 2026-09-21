@@ -1,5 +1,72 @@
 # Changelog
 
+## v2.14.0 交付更新（探针 3.7.0，2026-09-21）— 探针自带运行时
+
+探针升到 **3.7.0**：分发包自带 CPython 3.11、全部 Python 依赖、`dumpcap`/`tcpdump` 及其 ELF 库闭包、
+私有动态加载器与 CA 证书，目标机不再需要主机 Python、pip、apt、wheel 或抓包工具。平台侧预检改为用这同一个
+运行时探测目标机（`app/deployment/{preflight,runtime}.py`），不再要求目标机 `python3 >= 3.11` 或预装
+dumpcap；服务单元仍是 `dstprobe` + `NET_RAW`/`NET_ADMIN`/`DAC_READ_SEARCH`，不提权到 root，读不到的目录
+按覆盖缺口上报。
+
+- **安装/升级/回退**：`install.sh` 先用自带解释器跑 `runtime_check.py`（架构、解释器版本、依赖、抓包工具、
+  可选平台连通性、archive sha256），通过后才停服务、原子替换 `/opt/data-security-toolbox/runtime`；
+  `probe.toml`、`probe.token` 与 spool/rules/cache 全部保留，所以换新包目录重跑即升级、换旧包目录重跑即回退。
+  不再使用 pip/apt/venv，也不再往 `/usr/local/bin` 写文件（`--skip-deps` 已移除）。
+- **不依赖目标环境**：`ExecStart` 固定指向 `run-probe.sh`，该脚本只用 shell 内建命令定位自身目录（不用
+  `dirname`）、自设 `PATH` 并固定 `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`——systemd 启动时 `LANG` 未设置，
+  CPython 会退回 C/POSIX 语言环境并按 ASCII 处理 stdio，中文日志（中文文件名、规则包消息）会被转义甚至
+  抛 `UnicodeEncodeError`；随包单元模板与 `install.sh` 生成的单元都写入这两个环境变量。`install.sh` 另加
+  主机工具前置检查（`tar`/`systemctl`/`useradd`/`id`/`chown`/`find`/`dirname`/`mktemp`，缺一个就一次性列出
+  全部后退出），`runtime_check.py` 校验运行时布局完整性并断言解释器来自包内 `python/`。冒烟覆盖「空环境 +
+  C 语言环境启动」「UTF-8 中文落盘」「76 个自带扩展模块全部可导入」「`/proc/self/maps` 无 runtime 外 .so」，
+  arm64 在 qemu 下显式 SKIP 真实抓包（模拟器不能翻译 libpcap 的 socket ioctl）而不是误报失败。
+- **平台口径**：平台自报版本仍是 2.14.0（本次是同一发布版本的交付更新），`PROBE_AGENT_VERSION` 与
+  `.env.example`、compose 默认值同步为 3.7.0；镜像另打 `2.14.0-probe3.7.0` 标签，供已部署实例就地升级。
+- **交付包**：`deploy_rev` 由 r2 升到 **r5**（`deploy.sh` 启动即打印平台/探针/脚本修订号；r3 是这批自带运行时
+  改动，r4 是按文档口径改正平台 `README.md` 与包内交付 README，r5 是探针启动链路加固（启动器自设 `PATH`
+  并固定 UTF-8、安装前一次性检查主机工具、`runtime_check.py` 校验运行时布局与解释器来源）后重出——靠修订号
+  与整包指纹区分版本）；`VERSION` 写明
+  `probe_python = 随包独立 Python 3.11，目标机无需 Python/pip/抓包工具`；`probe-offline/` 只做架构分发，
+  不再探测主机解释器，也不接受 `--python`/`--wheels`。
+- **验证**：交付包内的探针包在一次性、无网络、无 Python 的 Ubuntu 22.04 容器里跑通离线安装冒烟
+  （私有库不外泄、真实 `dumpcap` 抓包、重装保留 token 与 spool、`--keep-data` 卸载）；后端全量 6 项失败与
+  基线逐项一致；平台镜像重建并切换后 `/api/v1/health` 全绿、`openapi.json` 2.14.0、
+  `alembic current` = `0017_file_sources (head)`，容器内 `app/deployment/*` 与工作树 SHA256 逐字节一致。
+  详见 [离线交付包](docs/offline-package.md) 与 [探针说明](probe/README.md)。
+
+## v2.14.0（2026-09-20）— 共享文件来源、数据库直连盘点与统一规则源
+
+平台版本升至 2.14.0（`backend/app/main.py`、`frontend/package.json` 与 lock），探针升至 3.6.0
+（本版改了探针源码 `probe/data_assets.py`、`shared/sensitive_detection/*`、`shared/scanning/*`，
+已重建分发包）。迁移新增 `0016_database_connections` 与 `0017_file_sources`，head 为 `0017_file_sources`。
+
+- **统一规则源**：控制台手写规则与探针内置规则改走同一个敏感引擎 `services/sensitive_engine.py`
+  （`analyst_rules()` 读规则库、`scan_engine()` 按 mtime+size 签名重建、`scan_all()` 一次扫描），
+  文件扫描、数据库扫描、DataEngine 与网络防泄密四个消费方全部改走它。一条规则在
+  「敏感发现 / 实时流量告警 / 网络防泄密」三处命中口径一致，三处都带命中原文。
+- **命中原文回传（契约变更）**：`DetectionHit.matches` 携带 `value`（命中原文）与 `context`（所在行），
+  落库在 `DetectionEvidence.extra['matches']`。上限两侧各自强制：每条命中 ≤3 条、`value` ≤120、
+  `context` ≤240 字符；`report_guard` 把 `matches` 列为 `RAW_TEXT_KEYS`，其余字段仍不含任何值。
+  旧证据行没有该字段，前端显示「没有回传原文」，不伪造也不报错。
+- **共享文件来源**：平台可只读采集 FTP/FTPS/SFTP 共享目录，来源可新增/修改/删除，共享目录不再与协议、
+  地址、端口一起锁死；采集中的来源不可删，删来源只删配置、保留已采集资产与证据。真实目标 vsFTPd 3.0.5
+  不支持 `MLSD`，适配层已补 `LIST` 回退。
+- **数据库直连盘点**：只读会话直连 MySQL/MariaDB（PyMySQL）与 PostgreSQL（psycopg2），枚举库/表、
+  按列复用同一份敏感引擎做规则匹配，登记为 `source_kind=database` 的资产与检测证据；支持库表选择、
+  按预算采样、可停止任务与按表明细；口令 AES-GCM 加密落库、只写不读。
+- **采集语义**：`shared/scanning/budget.py` 把「目录枚举终止」与「内容采样截断」分开记账
+  （`enumeration_complete` / `content_complete`），长文件不再终止整棵目录遍历；探针区分目录
+  不存在/非目录/符号链接/无权限/其他错误；`collection_outcome` 统一采集终态文字。
+- **止增**：DataEngine 按 `context.target_type` + `context.path` 识别原始抓包容器，只阻止登记为文档资产，
+  保留 YARA 与提取文件路径。历史错误投影只做只读审计（`scripts/audit_capture_assets.py`），未删除任何数据。
+- **离线交付**：新增 x86_64 Linux（银河麒麟桌面操作系统 V10 SP1 / Ubuntu 22.04 LTS）离线一键部署包，含 8 个镜像、探针 3.6.0
+  分发包与离线 wheel、Compose v2 插件；`deploy.sh` 全程不构建、不拉取。见
+  [x86_64 Linux 离线交付包](docs/offline-package.md)。
+- **验证**：后端 829 passed / 6 failed（6 项失败与基线逐项一致）；前端 `vue-tsc` 通过、vitest 31 文件
+  267 项通过、生产构建未启用 `VITE_DEMO_MODE`；本机重建 5 个应用镜像并切换容器，`/api/v1/health`
+  全绿、迁移 `0017_file_sources (head)`、运行栈自报 2.14.0。真机证据见
+  [发布记录](docs/releases/v2.14.0.md)。
+
 ## v2.13.0（2026-09-20）— 结构与状态解耦
 
 本次发布把采集、编排、路由与页面状态按边界拆开，是纯结构调整：接口集合、数据表与索引、迁移基线与

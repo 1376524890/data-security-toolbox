@@ -27,6 +27,8 @@
 - `v2.11` 引擎规则库（规则文件真实加载、上游规则在线同步、命中规则快照与解释）、引擎总览页、
   PCAP 工作台（传输文件提取与文本/Hex 预览、上传定位），探针 3.5.0
 - `v2.13` 结构与状态解耦（后端按域拆路由与编排入口、前端页面状态收进 composable），接口与数据表不变
+- `v2.14` 共享文件来源（FTP/FTPS/SFTP）、数据库直连盘点（MySQL/MariaDB/PostgreSQL）、统一规则源与命中
+  原文回传，探针 3.6.0（2026-09-21 交付更新：探针 3.7.0 自带运行时，见下文）
 
 发布时创建 `vX.Y.Z` 注释标签。
 
@@ -50,3 +52,35 @@
 （本版未改探针代码，不重建也不覆盖同名分发包），数据库迁移保持 `0015_alert_hits`。本机已重建 backend /
 worker / beat / deployment-worker 与 frontend 镜像并切换容器，运行栈自报 2.13.0。
 本次是纯结构调整，不新增功能、不改判定逻辑、不动历史数据；详见 [发布记录](releases/v2.13.0.md)。
+
+
+## v2.14.0 发布（2026-09-20）
+
+本批改动（统一规则源、命中原文回传、共享文件来源、数据库直连盘点）在工作树内完成：平台版本升到 2.14.0
+（`backend/app/main.py`、`frontend/package.json` 与 lock），探针版本升到 3.6.0
+（`probe/probe.py`、`backend/app/core/config.py`、`scripts/build_probe_packages.py` 与 `.env`/`.env.example`
+同步；本版改了探针源码，已重建并覆盖 `probe_packages/probe-3.6.0/`），迁移新增
+`0016_database_connections` 与 `0017_file_sources`，head = `0017_file_sources`。本机已重建 backend /
+worker / beat / deployment-worker 与 frontend 镜像并切换容器，运行栈自报 2.14.0、`/api/v1/health` 全绿。
+同时产出 x86_64 Linux（银河麒麟 V10 SP1 / Ubuntu 22.04 LTS）离线一键部署包，见
+[x86_64 Linux 离线交付包](offline-package.md)，
+版本细节见 [发布记录](releases/v2.14.0.md)。本批未对任何真实主机升级探针、未创建 Git 标签。
+
+
+## v2.14.0 交付更新（探针 3.7.0，2026-09-21）
+
+同一平台版本（2.14.0）下的交付更新：探针升到 **3.7.0**——分发包自带私有 CPython 3.11、全部 Python 依赖、
+`dumpcap`/`tcpdump` 与 ELF 库闭包、私有加载器与 CA 证书，目标机不再需要 Python、pip、apt、wheel 或抓包工具；
+平台侧预检（`backend/app/deployment/{preflight,runtime}.py`）改用同一运行时探测目标机。本轮收尾把
+「下发后不依赖目标环境」落进实现与验收：`ExecStart` 固定指向 `probe/run-probe.sh`（只用 shell 内建命令定位
+自身目录、自设 `PATH`、固定 `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`），`install.sh` 安装前一次性检查主机
+工具，`runtime_check.py` 校验运行时布局并断言解释器来自包内 `python/`。采集身份不变（`dstprobe` +
+`CAP_NET_RAW`/`CAP_NET_ADMIN`/`CAP_DAC_READ_SEARCH`，不提权到 root）。
+
+- 版本声明：探针 3.7.0（`probe/probe.py`、`backend/app/core/config.py`、`scripts/build_probe_packages.py`、
+  `.env.example`）；平台自报仍为 2.14.0；迁移 head 保持 `0017_file_sources`（无新迁移）。
+- 分发包：`probe_packages/probe-3.7.0/{amd64,arm64}`（amd64 sha256 `0ac9fe87…`、arm64 `027ad503…`）；
+  镜像另打 `dst-toolbox/*:2.14.0-probe3.7.0` 标签，供已部署实例就地升级。
+- 离线交付包：`dst-toolbox-2.14.0-linux-x86_64.tar.gz`（`deploy_rev` **r5**，sha256 `42adc92d…`）。
+- 本次发布创建 Git 注释标签 **v2.14.0**（2026-09-20 的 2.14.0 快照当时未打标签）。
+- 未做：真机（192.168.191.130）探针就地升级、arm64 原生抓包复验、探针 `/tmp` 的 `PrivateTmp` 隔离。

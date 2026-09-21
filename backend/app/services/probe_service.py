@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.services.data_objects import persistence
 from app.models import (
     Alert,
+    AlertHit,
     Asset,
     FileRecord,
     Incident,
@@ -66,12 +67,9 @@ def delete_probe_record(db: Session, probe_id: int) -> dict[str, str]:
     if any(item.status not in FINISHED_DEPLOYMENT_STATES for item in deployments):
         raise ProbeInUseError("探针部署尚未结束，请等待部署结束后再删除")
     # Preserve collected records and deployment history, clearing foreign keys.
-    for model in (Asset, FileRecord, PcapRecord, Incident, Alert, ProbeDeployment, ProbeEnrollment):
+    for model in (Asset, FileRecord, PcapRecord, Incident, Alert, AlertHit, ProbeDeployment, ProbeEnrollment):
         db.execute(update(model).where(model.probe_id == probe_id).values(probe_id=None))
-    # The object model is a different case: an instance identity *is*
-    # (probe_id, normalised path), so it cannot survive as a detached row.
-    # Its own observation state is removed while the logical objects, the
-    # legacy data_assets projection and every other collected record stay.
+    # Retired sources keep their observations and evidence for historical review.
     persistence.forget_probe(db, probe_id)
     if probe.deployment_id:
         db.execute(update(ProbeEnrollment).where(

@@ -17,6 +17,7 @@ from app.api.dependencies import authenticated_probe as authenticated_probe
 from app.core.database import get_db
 from app.models import AnalysisResult, Probe, Task
 from app.services.data_objects import ingestion, values
+from app.services.data_objects.progress import collection_outcome
 from app.services.data_objects.progress import progress_percent as progress_percent
 from app.services.data_objects.progress import progress_stage as progress_stage
 from app.services.probe_task_service import TERMINAL
@@ -122,6 +123,7 @@ def data_asset_inventory(
     task.error = payload.error
     task.result = {
         "assets": stored,
+        "asset_instance_ids": outcome["asset_instance_ids"],
         "complete": payload.complete,
         "report_id": payload.report_id,
         "location": "probe",
@@ -139,6 +141,7 @@ def data_asset_inventory(
         "coverage": payload.coverage,
         "budget": payload.budget,
     }
+    task.current_stage, task.error = collection_outcome(task.status, task.result, task.error)
     probe.extra = {
         **(probe.extra or {}),
         "last_data_asset_scan": {**task.result, "status": task.status, "at": now.isoformat()},

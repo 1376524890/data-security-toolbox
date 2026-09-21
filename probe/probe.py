@@ -74,7 +74,7 @@ def _scan_budget_defaults() -> dict[str, Any]:
     return {key: _SCAN_LIMITS[key] for key in SCAN_BUDGET_KEYS if key in _SCAN_LIMITS}
 
 
-AGENT_VERSION = "3.5.0"
+AGENT_VERSION = "3.7.0"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
     "capture": {"interface": "any", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},

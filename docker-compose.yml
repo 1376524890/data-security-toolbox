@@ -32,7 +32,7 @@ services:
       dockerfile: backend/Dockerfile
       target: api
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     environment:
       APP_ENV: ${APP_ENV:-production}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
@@ -45,7 +45,7 @@ services:
       DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
       DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
       DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
-      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.5.0}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.7.0}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -128,7 +128,7 @@ services:
       DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
       DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
       DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
-      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.5.0}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.7.0}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -190,7 +190,7 @@ services:
       DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
       DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
       DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
-      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.5.0}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.7.0}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -233,7 +233,7 @@ services:
       DEPLOYMENT_CA_FILE: ${DEPLOYMENT_CA_FILE:-}
       DEPLOYMENT_KNOWN_HOSTS: ${DEPLOYMENT_KNOWN_HOSTS:-}
       DEPLOYMENT_VERIFY_HOST_KEY: ${DEPLOYMENT_VERIFY_HOST_KEY:-true}
-      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.5.0}
+      PROBE_AGENT_VERSION: ${PROBE_AGENT_VERSION:-3.7.0}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-security}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-security_toolbox}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1

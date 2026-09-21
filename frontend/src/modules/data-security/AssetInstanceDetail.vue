@@ -19,6 +19,19 @@ function formatTime(value: string | null | undefined): string {
   return value ? value.replace('T', ' ').slice(0, 19) : '—'
 }
 
+// Three collectors now write instances: a probe, a target database the platform
+// read itself, and a shared file source. The tag names the one that did; an
+// unknown kind keeps the probe wording rather than claiming a source.
+const sourceKind = computed(() => {
+  if (detail.value?.source_kind === 'database') {
+    return { short: '数据库直连', label: '数据库直连盘点', tone: 'warning' as const }
+  }
+  if (detail.value?.source_kind === 'file_share') {
+    return { short: '共享文件', label: '共享文件采集', tone: 'success' as const }
+  }
+  return { short: '探针文件', label: '探针文件采集', tone: 'info' as const }
+})
+
 function formatMtime(ns: number | null): string {
   if (!ns) return '—'
   // The probe reports mtime in nanoseconds since the epoch.
@@ -39,6 +52,7 @@ function formatMtime(ns: number | null): string {
         <el-tag v-if="detail?.coverage !== 'complete'" size="small" type="warning">
           扫描覆盖：{{ detail?.coverage }} / {{ detail?.termination_reason }}
         </el-tag>
+        <el-tag size="small" :type="sourceKind.tone">{{ sourceKind.short }}</el-tag>
         <div class="toolbar-spacer" />
         <el-button @click="toggleHistory">{{ includeHistory ? '只看当前' : '包含历史' }}</el-button>
         <el-button @click="load">刷新</el-button>
@@ -60,9 +74,16 @@ function formatMtime(ns: number | null): string {
             <el-descriptions-item label="路径"><code class="key">{{ detail?.path }}</code></el-descriptions-item>
             <el-descriptions-item label="文件名">{{ detail?.name }}</el-descriptions-item>
             <el-descriptions-item label="实例类型">{{ detail?.instance_type }}</el-descriptions-item>
-            <el-descriptions-item label="探针">
+            <el-descriptions-item label="来源">
+              <el-tag size="small" :type="sourceKind.tone">{{ sourceKind.label }}</el-tag>
+              <code class="key" style="margin-left: 6px">{{ detail?.owner_key }}</code>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="detail?.source_kind === 'file'" label="探针">
               {{ detail?.probe_name }}（{{ detail?.host }}）
               <el-tag size="small" type="info" style="margin-left: 6px">probe_id={{ detail?.probe_id }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item v-else label="采集来源">
+              {{ detail?.source_name }}（{{ detail?.host }}）
             </el-descriptions-item>
             <el-descriptions-item label="关联对象">
               <el-button link type="primary" @click="router.push(`/data-objects/${detail?.object_id}`)">
@@ -121,13 +142,27 @@ function formatMtime(ns: number | null): string {
                   title="该文件的业务归属、外部访问路径与主机间关系属于 P1，平台未采集，不会伪造。" />
       </div>
 
-      <el-drawer v-model="evidenceOpen" title="检测证据" size="620px">
+      <el-drawer v-model="evidenceOpen" title="检测证据" size="760px">
         <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
-                  title="规则、识别器、字段与命中次数；不含匹配到的原始值。" />
+                  title="规则、识别器、字段与命中次数；并回传命中处的原文（探针上限：每命中 3 条、每条长度有上限）。" />
         <div v-if="evidenceLoading">加载中…</div>
         <div v-else-if="evidenceError" class="danger-text">{{ evidenceError }}</div>
         <template v-else-if="evidence">
           <el-table :data="evidence.items" size="small" empty-text="该检测没有结构化证据（旧版探针只上报计数）">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div v-if="(row.matches || []).length" class="matches">
+                  <div v-for="(match, index) in row.matches" :key="index" class="match">
+                    <span class="mono match-value">{{ match.value }}</span>
+                    <span v-if="match.context" class="muted small match-context">{{ match.context }}</span>
+                  </div>
+                </div>
+                <div v-else class="muted small">这条证据没有回传原文（旧版探针，或只命中了字段名/关键字）。</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="原文" width="80">
+              <template #default="{ row }"><span class="muted small">{{ (row.matches || []).length }} 条</span></template>
+            </el-table-column>
             <el-table-column prop="rule_id" label="规则 ID" min-width="150" show-overflow-tooltip />
             <el-table-column prop="rule_source" label="来源" width="110" />
             <el-table-column prop="recognizer" label="识别器" width="120" />
@@ -149,5 +184,10 @@ function formatMtime(ns: number | null): string {
 .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .muted { color: var(--soc-text-dim); }
 .note { color: var(--soc-text-dim); font-size: 12px; margin-top: 8px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.matches { display: flex; flex-direction: column; gap: 6px; padding: 4px 8px; }
+.match { display: flex; flex-direction: column; gap: 2px; }
+.match-value { color: #f59e0b; word-break: break-all; }
+.match-context { word-break: break-all; }
 .danger-text { color: #ef4444; }
 </style>

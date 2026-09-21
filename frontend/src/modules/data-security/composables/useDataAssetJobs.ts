@@ -15,6 +15,7 @@ import { ElMessage } from 'element-plus'
 import { listProbes, type Probe } from '../../../api/probes'
 import { listScanProfiles, queueDataAssetJob, type ScanProfile } from '../../../api/scanProfiles'
 import { deleteTask, listTasks, stopTask } from '../../../api/tasks'
+import { listAssetInstances, type AssetInstanceRow } from '../../../api/dataCatalog'
 import type { Task } from '../../../types/task'
 
 export function useDataAssetJobs() {
@@ -28,7 +29,49 @@ export function useDataAssetJobs() {
   const pathsText = ref('')
   const dispatching = ref(false)
   const autoRefresh = ref(true)
+  const assetJob = ref<Task | null>(null)
+  const assetRows = ref<AssetInstanceRow[]>([])
+  const assetLoading = ref(false)
+  const assetError = ref('')
+  const assetPage = ref(1)
+  const assetTotal = ref(0)
+  const assetAssociation = ref('')
+  let assetRequest = 0
   let timer: number | undefined
+
+  async function loadAssets(page = 1): Promise<void> {
+    if (!assetJob.value) return
+    const version = ++assetRequest
+    const id = assetJob.value.id
+    assetPage.value = page
+    assetLoading.value = true
+    assetError.value = ''
+    assetRows.value = []
+    try {
+      const result = await listAssetInstances({ task_id: id, page, page_size: 50 })
+      if (version !== assetRequest) return
+      assetRows.value = result.items
+      assetTotal.value = result.total
+      assetAssociation.value = result.association || 'latest_scan_only'
+    } catch (err) {
+      if (version === assetRequest) assetError.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      if (version === assetRequest) assetLoading.value = false
+    }
+  }
+
+  async function openAssets(job: Task): Promise<void> {
+    assetJob.value = job
+    assetTotal.value = 0
+    assetAssociation.value = ''
+    await loadAssets()
+  }
+
+  function closeAssets(): void {
+    assetRequest += 1
+    assetJob.value = null
+    assetLoading.value = false
+  }
 
   const selectedProfile = computed(() => profiles.value.find((item) => item.id === profileId.value) || null)
 
@@ -111,6 +154,21 @@ export function useDataAssetJobs() {
     return (job.result || {}) as Record<string, unknown>
   }
 
+  /**
+   * One honest label for a scope that was not fully covered. A walk that reached
+   * the end of the tree but read some files only up to the content limit is not
+   * the same event as a directory that was never listed, and the two must not be
+   * described with the same words.
+   */
+  function coverageNote(job: Task): string {
+    const coverage = coverageOf(job)
+    if (coverage.complete_scope !== false) return ''
+    if (coverage.enumeration_complete === true && coverage.content_complete === false) {
+      return '· 目录已完整枚举，部分文件内容按上限截断'
+    }
+    return '· 范围未完整覆盖'
+  }
+
   function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
     if (status === 'Success') return 'success'
     if (status === 'Pending' || status === 'Running') return 'primary'
@@ -133,6 +191,8 @@ export function useDataAssetJobs() {
   onBeforeUnmount(() => { if (timer) window.clearInterval(timer) })
 
   return {
+    assetJob, assetRows, assetLoading, assetError, assetPage, assetTotal, assetAssociation,
+    openAssets, closeAssets, loadAssets,
     loading,
     error,
     probes,
@@ -151,6 +211,7 @@ export function useDataAssetJobs() {
     remove,
     coverageOf,
     resultOf,
+    coverageNote,
     statusType,
     running,
     finished,

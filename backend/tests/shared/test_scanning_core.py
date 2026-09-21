@@ -18,6 +18,7 @@ from shared.scanning.budget import (
     TERMINATION_COMPLETE,
     TERMINATION_DIRECTORIES,
     TERMINATION_FILES,
+    TERMINATION_ROWS,
     TERMINATION_TIMEOUT,
     BudgetExceeded,
     ScanBudget,
@@ -108,6 +109,30 @@ def test_only_the_first_termination_reason_is_kept() -> None:
     budget.stop(TERMINATION_FILES, "files")
     budget.stop(TERMINATION_TIMEOUT, "time")
     assert budget.termination_reason == TERMINATION_FILES
+    assert budget.coverage()["termination_detail"] == "files"
+
+
+def test_a_row_limit_is_content_truncation_not_an_enumeration_stop() -> None:
+    """One short sample must not claim the tree was never walked."""
+    budget = ScanBudget({"max_sample_rows": 25})
+    budget.spend_rows(25 * 64 + 1)
+    assert budget.termination_reason == TERMINATION_ROWS
+    assert budget.complete is False
+    assert budget.content_complete is False
+    assert budget.enumeration_complete is True
+    coverage = budget.coverage()
+    assert coverage["content_complete"] is False
+    assert coverage["enumeration_complete"] is True
+    assert coverage["complete_scope"] is False
+
+
+def test_an_enumeration_stop_outranks_content_truncation() -> None:
+    budget = ScanBudget({"max_sample_rows": 25})
+    budget.spend_rows(25 * 64 + 1)
+    budget.stop(TERMINATION_FILES, "files")
+    assert budget.termination_reason == TERMINATION_FILES
+    assert budget.enumeration_complete is False
+    assert budget.content_complete is False
     assert budget.coverage()["termination_detail"] == "files"
 
 

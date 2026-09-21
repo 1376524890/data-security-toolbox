@@ -127,6 +127,24 @@ def test_sanitize_truncates_oversized_strings() -> None:
     assert audit.truncated == 1
 
 
+def test_returned_matched_text_survives_sanitize_but_nothing_else_does() -> None:
+    """The ``matches`` subtree is the exception, and only that subtree."""
+    payload = {"assets": [{"evidence": {"hits": [
+        {"category": "phone", "matches": [{"value": PHONE, "context": f"mobile,{PHONE}"}]},
+    ]}}]}
+    clean, audit = sanitize_report(payload)
+    assert clean["assets"][0]["evidence"]["hits"][0]["matches"] == [
+        {"value": PHONE, "context": f"mobile,{PHONE}"}]
+    assert audit.redacted == 0, "returning the matched value is the point of the field"
+    # A value hiding anywhere else is still redacted and still counted.
+    other, other_audit = sanitize_report({"path": f"/srv/{PHONE}.csv", "matches": []})
+    assert other["path"] == REDACTION_PLACEHOLDER
+    assert other_audit.redacted == 1
+    # Structure is still enforced: the exemption is not a hole in the whitelist.
+    assert [item.code for item in validate_report(
+        {"assets": [{"evidence": {"hits": [{"matches": [{"value": PHONE}]}]}}]})] == []
+
+
 def test_sanitize_strips_control_characters() -> None:
     clean, _ = sanitize_report({"assets": [{"path": "/srv/data\x07/customers.csv"}]})
     assert clean["assets"][0]["path"] == "/srv/data/customers.csv"

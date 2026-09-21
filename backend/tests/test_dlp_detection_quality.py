@@ -14,7 +14,7 @@ import dpkt
 import pytest
 
 from app.core.config import settings
-from app.services.dlp_service import DEFAULT_POLICY, alertable, analyze_capture, inspect_content, normalize_policy
+from app.services.dlp import DEFAULT_POLICY, alertable, analyze_capture, inspect_content, normalize_policy
 from app.services.rule_library import atomic_json, import_presidio_wheel, managed_rules, scan_managed
 
 BASE_POLICY = {'categories': ['phone', 'id_card', 'email', 'api_key'], 'min_matches': 1}
@@ -79,6 +79,11 @@ def presidio_rules(tmp_path, monkeypatch):
     return managed_rules()
 
 
+def matched_values(hits):
+    """Every原文 the hits carry, in the one key allowed to hold it."""
+    return [match["value"] for hit in hits for match in hit.get("matches") or []]
+
+
 def test_container_traffic_is_evidence_without_alerts(presidio_rules, tmp_path):
     path = capture(tmp_path / 'container.pcap', CONTAINER_TRAFFIC)
     result, _, findings = analyze_capture(path, BASE_POLICY)
@@ -98,7 +103,15 @@ def test_protected_data_transfer_still_alerts(presidio_rules, tmp_path):
     finding = findings[0]
     assert finding['severity'] == 'High' and finding['rule_id'] == 'DLP_TRANSFER_001'
     assert {'id_card', 'phone', 'api_key'} <= set(finding['evidence']['triggered_by'])
-    assert '110101199003071234' not in json.dumps(result)
+    # The operator asked to see what was transmitted, so a hit now carries the
+    # bounded matched原文 under ``matches``; this deliberately inverted the
+    # earlier "no matched value leaves the network DLP stage" contract.
+    assert '110101199003071234' in matched_values(finding['evidence']['matches'])
+    # Bounded exactly like every other原文出口: 3 samples, 120/240 characters.
+    for hit in finding['evidence']['matches']:
+        assert len(hit.get('matches') or []) <= 3
+        for match in hit.get('matches') or []:
+            assert len(match['value']) <= 120 and len(match['context']) <= 240
 
 
 def test_host_internal_traffic_is_not_egress(presidio_rules, tmp_path):
@@ -109,12 +122,15 @@ def test_host_internal_traffic_is_not_egress(presidio_rules, tmp_path):
 
 
 def test_weak_and_metadata_hits_never_alert(presidio_rules):
-    policy = {**BASE_POLICY, 'managed_rules': presidio_rules}
-    hits = {hit['kind']: hit for hit in inspect_content(b'sequence 20260915133 host 172.18.0.4', policy)}
+    # The engine reads the rule store itself; nothing is injected through the
+    # policy any more, because the platform and the console must run one set.
+    hits = {hit['kind']: hit for hit in inspect_content(b'sequence 20260915133 host 172.18.0.4', BASE_POLICY)}
     assert not alertable(hits['AU_ABN'], DEFAULT_POLICY['min_confidence'])
     # Metadata locators are reported but can never make a stream sensitive.
     assert hits['IP_ADDRESS']['sensitive'] is False
     assert not alertable(hits['IP_ADDRESS'], DEFAULT_POLICY['min_confidence'])
+    # The value behind a metadata hit is still原文 an operator can check.
+    assert matched_values([hits['AU_ABN']]) == ['20260915133']
 
 
 def test_loose_email_pattern_rejects_connection_strings(presidio_rules):
@@ -122,6 +138,19 @@ def test_loose_email_pattern_rejects_connection_strings(presidio_rules):
             'pattern': r"\b\w+@\w+(?:\.\w+)+\b", 'enabled': True, 'source': 'Presidio', 'confidence': .8}
     assert scan_managed('postgresql://security@172.18.0.2:5432/security_toolbox', [rule]) == []
     assert scan_managed('contact alice@example.com now', [rule])[0]['kind'] == 'EMAIL_ADDRESS'
+
+
+def test_store_rules_get_the_same_email_shape_check(presidio_rules):
+    """A loose email rule from the store rejects the same impostor, one engine."""
+    from app.services import sensitive_engine
+    from app.services.rule_library import save_manual_rule
+
+    save_manual_rule({'name': 'EmailRecognizer: Email (Medium)', 'entity': 'EMAIL_ADDRESS',
+                      'pattern': r"\b\w+@\w+(?:\.\w+)+\b", 'confidence': .8})
+    entities = {hit.entity for hit in sensitive_engine.scan_all('postgresql://security@172.18.0.2:5432/security_toolbox')}
+    assert 'EMAIL' not in entities
+    entities = {hit.entity for hit in sensitive_engine.scan_all('contact alice@example.com now')}
+    assert 'EMAIL' in entities
 
 
 def test_policy_defaults_cover_stored_documents_without_new_keys():

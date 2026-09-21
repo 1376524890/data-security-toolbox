@@ -36,7 +36,7 @@ function openObject(item: DataObjectRow): void {
       <div class="stat-grid cols-4">
         <StatCard label="关联对象数" :value="row?.object_count ?? 0" sub="该类型内部计数，不跨类型去重" />
         <StatCard label="关联实例数" :value="row?.active_instance_count ?? 0" />
-        <StatCard label="主机数" :value="row?.host_count ?? 0" sub="按探针去重" />
+        <StatCard label="主机数" :value="row?.host_count ?? 0" sub="按来源去重（文件探针 / 数据库连接）" />
         <StatCard label="确认 / 疑似副本" :value="`${row?.confirmed_duplicate_count ?? 0} / ${row?.candidate_duplicate_count ?? 0}`"
                   tone="warning"
                   :sub="row?.truncated ? '结果已按上限截断' : `疑似需 ≥2 实例；待确认身份 ${row?.identity_pending_count ?? 0} 个`" />

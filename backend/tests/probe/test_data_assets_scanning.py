@@ -84,6 +84,36 @@ def test_a_byte_limit_stops_the_scan_and_is_recorded(tmp_path: Path) -> None:
     assert report["coverage"]["termination_reason"] == "byte_budget"
 
 
+def test_a_file_sampled_past_the_row_limit_does_not_end_the_walk(tmp_path: Path) -> None:
+    """Content truncation is not an enumeration stop.
+
+    A real /var scan came back with 9 assets because ``/var/backups/dpkg.status.0``
+    pushed the shared row counter over its cap and the walker read that as the end
+    of the scope. The long file may only cost itself its sample.
+    """
+    root, cache = _roots(tmp_path)
+    nested = root / "nested"
+    nested.mkdir()
+    (root / "dpkg.status.0").write_text(
+        "\n".join(f"Package: pkg-{index}" for index in range(4000)), encoding="utf-8")
+    (nested / "customers.csv").write_text(f"id,phone\n1,{PHONE}\n", encoding="utf-8")
+
+    report = data_assets.discover_data_assets(_config(root, cache))
+    names = {item["name"] for item in _file_assets(report)}
+    assert {"dpkg.status.0", "customers.csv"} <= names, "the walk must continue past a long file"
+    assert any(item["asset_type"] == "directory" for item in report["assets"])
+
+    coverage = report["coverage"]
+    assert coverage["rows_read"] > 25 * 64
+    assert coverage["enumeration_complete"] is True
+    assert coverage["content_complete"] is False
+    assert coverage["termination_reason"] == "row_budget"
+    # Still not complete: nothing may be retired off a report with a short sample.
+    assert coverage["complete_scope"] is False
+    assert report["complete"] is False
+    assert report["completed_scope"] is False
+
+
 def test_a_stop_event_cancels_and_marks_the_scan_incomplete(tmp_path: Path) -> None:
     import threading
 
@@ -212,27 +242,58 @@ def test_xlsx_columns_are_read_locally(tmp_path: Path) -> None:
     assert record["evidence"]["parser"] == "xlsx"
 
 
-def test_the_report_still_carries_no_raw_value(tmp_path: Path) -> None:
+def test_the_report_returns_the_matched_text_of_a_confirmed_hit(tmp_path: Path) -> None:
+    """原文回传 is an explicit operator requirement: the finding must be verifiable.
+
+    What travels is bounded - the value and the line it sits on - never the file.
+    """
     import json
 
     root, cache = _roots(tmp_path)
     _write_tree(root)
-    (root / "secrets.txt").write_text(
-        "api_key=sk-live-abcdefghijklmnopqrstuvwxyz0123456789\n", encoding="utf-8")
     report = data_assets.discover_data_assets(_config(root, cache))
-    blob = json.dumps(report, ensure_ascii=False)
-    assert PHONE not in blob
-    assert "sk-live-abcdefghijklmnopqrstuvwxyz0123456789" not in blob
-    # Sample cells and parser sample text stay in memory.
+    csv_asset = next(item for item in _file_assets(report)
+                     if item["name"] == "customers.csv")
+    phone_hit = next(hit for hit in csv_asset["evidence"]["hits"]
+                     if hit["category"] == "phone")
+    assert phone_hit["matches"], "a confirmed hit must return what it matched"
+    assert phone_hit["matches"][0]["value"] == PHONE
+    assert PHONE in phone_hit["matches"][0]["context"]
+    assert len(phone_hit["matches"]) <= 3
+    # Bounded, not the file: the report carries these strings and nothing else
+    # from the sample, and the parser's sample cells stay in memory.
     for asset in report["assets"]:
         assert "values" not in json.dumps(asset.get("evidence", {}))
+        for hit in asset.get("evidence", {}).get("hits", []):
+            for match in hit.get("matches", []):
+                assert len(match["value"]) <= 120 and len(match["context"]) <= 240
 
 
-def test_cache_file_never_contains_raw_values(tmp_path: Path) -> None:
+def test_a_header_only_hit_returns_no_matched_text(tmp_path: Path) -> None:
+    """A column named ``phone`` with no values matched nothing, so it returns nothing."""
+    root, cache = _roots(tmp_path)
+    (root / "template.csv").write_text("id,phone\n", encoding="utf-8")
+    report = data_assets.discover_data_assets(_config(root, cache))
+    hits = [hit for item in _file_assets(report)
+            for hit in item["evidence"]["hits"] if hit["category"] == "phone"]
+    assert hits, "the header is still evidence that the column is worth checking"
+    assert all(hit["matches"] == [] for hit in hits)
+    assert all(hit["confirmed"] is False for hit in hits)
+
+
+def test_the_cache_holds_the_bounded_sample_not_the_file(tmp_path: Path) -> None:
+    """A cache hit must reproduce the report, so the returned sample is cached too.
+
+    Only the returned strings are: nothing else from the file's content is.
+    """
     root, cache = _roots(tmp_path)
     _write_tree(root)
+    (root / "notes.txt").write_text(
+        f"contact {PHONE}\njust an ordinary prose line\n", encoding="utf-8")
     data_assets.discover_data_assets(_config(root, cache))
-    assert PHONE.encode() not in cache.read_bytes()
+    blob = cache.read_bytes()
+    assert PHONE.encode() in blob, "the returned sample is what makes a cache hit honest"
+    assert b"ordinary prose line" not in blob, "the file itself is never cached"
 
 
 def test_directory_assets_and_counts_are_still_produced(tmp_path: Path) -> None:

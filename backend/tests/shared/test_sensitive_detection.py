@@ -133,7 +133,12 @@ def test_repeated_values_of_one_type_count_separately() -> None:
     assert [hit.count for hit in engine.scan_text("13800138000 and 13900139000")] == [2]
 
 
-def test_matched_values_never_reach_the_serialised_result() -> None:
+def test_matched_values_reach_only_the_bounded_matches_field() -> None:
+    """原文回传 is deliberate and contained: it never leaks out of ``matches``.
+
+    The operator asked to see what was found, so the hit carries it; the engine's
+    own ScanReport still cannot, and nothing else in the hit serialises a value.
+    """
     engine = build_engine()
     secrets = ("13800138000", ID_CARD_DIGIT, LUHN_VALID_CARD, "user@example.com")
     hits = engine.scan_text(f"phone {secrets[0]} id {secrets[1]} card {secrets[2]} mail {secrets[3]}")
@@ -141,16 +146,54 @@ def test_matched_values_never_reach_the_serialised_result() -> None:
     serialised = json.dumps([hit.to_dict() for hit in hits], ensure_ascii=False)
     report = json.dumps(engine.last_report.to_dict(), ensure_ascii=False)
     for secret in secrets:
-        assert secret not in serialised
+        assert secret in serialised
         assert secret not in report
+        # Nothing outside ``matches`` mentions the value: not the rule ids, not
+        # the confidence, not the level.
+        for hit in hits:
+            payload = hit.to_dict()
+            del payload["matches"]
+            assert secret not in json.dumps(payload, ensure_ascii=False)
 
 
-def test_result_structures_have_no_field_for_a_matched_value() -> None:
-    """The guarantee is structural, not a masking step someone must remember."""
+def test_only_matches_can_hold_a_matched_value() -> None:
+    """Evidence keeps the structural guarantee; one field is the deliberate exception."""
     forbidden = {"text", "value", "values", "match", "matched", "raw", "sample", "samples"}
-    for structure in (Evidence, DetectionHit):
-        names = {field.name for field in dataclasses.fields(structure)}
-        assert not names & forbidden
+    assert not {field.name for field in dataclasses.fields(Evidence)} & forbidden
+    assert not {field.name for field in dataclasses.fields(DetectionHit)} & forbidden
+    assert "matches" in {field.name for field in dataclasses.fields(DetectionHit)}
+
+
+def test_returned_matches_are_bounded_in_count_and_length() -> None:
+    """Three capped samples per entity; ``count`` already states the rest."""
+    engine = build_engine()
+    hits = engine.scan_text(" ".join(f"1380013800{index}" for index in range(9)))
+    phone = next(hit for hit in hits if hit.entity == "PHONE")
+    assert phone.count == 9
+    assert len(phone.matches) == 3
+    assert phone.matches[0]["value"] == "13800138000"
+    for match in phone.matches:
+        assert len(match["value"]) <= 120
+        assert len(match["context"]) <= 240
+    # A hit that only matched a field name matched no value, so it returns none.
+    header_only = engine.scan_field("phone")
+    assert header_only and all(hit.matches == [] for hit in header_only)
+
+
+def test_matched_context_is_the_line_the_value_sits_on() -> None:
+    """The value is verifiable in place, not just reported as a count."""
+    engine = build_engine()
+    phone_value = "13800138000"
+    line = f"customer 张三 phone={phone_value} id={ID_CARD_DIGIT}"
+    hits = engine.scan_text(f"unrelated line\n{line}\ntrailing line")
+    phone = next(hit for hit in hits if hit.entity == "PHONE")
+    assert phone.matches[0]["value"] == phone_value
+    assert phone.matches[0]["context"] == line
+    # A line wider than the cap keeps the value instead of losing it off the edge.
+    wide = engine.scan_text("padding " * 60 + phone_value)
+    match = next(hit for hit in wide if hit.entity == "PHONE").matches[0]
+    assert len(match["context"]) <= 240
+    assert phone_value in match["context"]
 
 
 def test_catastrophic_regex_is_bounded_reported_and_not_fatal() -> None:

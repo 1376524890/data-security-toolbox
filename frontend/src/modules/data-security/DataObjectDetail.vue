@@ -68,10 +68,17 @@ function openInstance(row: AssetInstanceRow): void {
       </div>
 
       <div class="soc-card" style="margin-top: 12px">
-        <div class="soc-card-title"><span class="dot" />实例（探针上的物理副本）</div>
+        <div class="soc-card-title"><span class="dot" />实例（观测到的物理副本）</div>
         <el-table :data="detail?.instances || []" size="small" empty-text="该对象暂无实例" @row-click="openInstance">
           <el-table-column prop="id" label="ID" width="80" />
           <el-table-column prop="path" label="路径" min-width="260" show-overflow-tooltip />
+          <el-table-column label="来源" width="120">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.source_kind === 'database' ? 'warning' : 'info'">
+                {{ row.source_kind === 'database' ? '数据库直连' : '探针文件' }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="probe_name" label="探针" width="140" />
           <el-table-column prop="host" label="主机" width="140" />
           <el-table-column label="状态" width="120">
@@ -121,9 +128,9 @@ function openInstance(row: AssetInstanceRow): void {
                   title="该对象所属的业务系统、数据流向与网络关系未采集，平台不做任何推断或连线绘制。" />
       </div>
 
-      <el-drawer v-model="evidenceOpen" title="检测证据" size="620px">
+      <el-drawer v-model="evidenceOpen" title="检测证据" size="760px">
         <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
-                  title="证据只包含规则、识别器、字段位置与命中次数；平台从不保存或展示匹配到的原始值。" />
+                  title="证据包含规则、识别器、字段位置与命中次数，并回传探针在命中处看到的原文（每条命中最多 3 条、有长度上限）。" />
         <div v-if="evidenceLoading">加载中…</div>
         <div v-else-if="evidenceError" class="danger-text">{{ evidenceError }}</div>
         <template v-else-if="evidence">
@@ -133,6 +140,20 @@ function openInstance(row: AssetInstanceRow): void {
             <el-descriptions-item label="命中数">{{ evidence.detection.hit_count }}</el-descriptions-item>
           </el-descriptions>
           <el-table :data="evidence.items" size="small" empty-text="该检测没有结构化证据（旧版探针报告只上报计数，不含逐条证据）">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div v-if="(row.matches || []).length" class="matches">
+                  <div v-for="(match, index) in row.matches" :key="index" class="match">
+                    <span class="mono match-value">{{ match.value }}</span>
+                    <span v-if="match.context" class="muted small match-context">{{ match.context }}</span>
+                  </div>
+                </div>
+                <div v-else class="muted small">这条证据没有回传原文（旧版探针，或只命中了字段名/关键字）。</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="原文" width="80">
+              <template #default="{ row }"><span class="muted small">{{ (row.matches || []).length }} 条</span></template>
+            </el-table-column>
             <el-table-column prop="rule_id" label="规则 ID" min-width="150" show-overflow-tooltip />
             <el-table-column prop="rule_source" label="来源" width="110" />
             <el-table-column prop="recognizer" label="识别器" width="120" />
@@ -155,5 +176,10 @@ function openInstance(row: AssetInstanceRow): void {
 .muted { color: var(--soc-text-dim); }
 .note { color: var(--soc-text-dim); font-size: 12px; margin-top: 8px; }
 .danger-text { color: #ef4444; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.matches { display: flex; flex-direction: column; gap: 6px; padding: 4px 8px; }
+.match { display: flex; flex-direction: column; gap: 2px; }
+.match-value { color: #f59e0b; word-break: break-all; }
+.match-context { word-break: break-all; }
 :deep(.el-table__row) { cursor: pointer; }
 </style>

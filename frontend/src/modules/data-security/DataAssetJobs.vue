@@ -10,7 +10,9 @@ const router = useRouter()
 const {
   loading, error, probes, profiles, jobs, probeId, profileId, pathsText, dispatching,
   autoRefresh, selectedProfile, statusType, coverageOf, running, finished, partial,
-  load, loadJobs, dispatch, cancel, remove,
+  load, loadJobs, dispatch, cancel, remove, coverageNote,
+  assetJob, assetRows, assetLoading, assetError, assetPage, assetTotal, assetAssociation,
+  openAssets, closeAssets, loadAssets,
 } = useDataAssetJobs()
 </script>
 
@@ -82,9 +84,9 @@ const {
               <span v-if="(row.result || {}).files_analyzed === undefined && !Object.keys(coverageOf(row)).length" class="muted">—</span>
               <span v-else class="muted small">
                 文件 {{ coverageOf(row).files_analyzed ?? '—' }} / {{ coverageOf(row).max_files ?? '—' }}，
-                目录 {{ coverageOf(row).directories_visited ?? '—' }}，
+                目录 {{ coverageOf(row).directories_scanned ?? coverageOf(row).directories_visited ?? '—' }}，
                 读取 {{ coverageOf(row).bytes_read ?? '—' }} 字节
-                <span v-if="coverageOf(row).complete_scope === false" class="warn-text">· 范围未完整覆盖</span>
+                <span v-if="coverageNote(row)" class="warn-text">{{ coverageNote(row) }}</span>
               </span>
             </template>
           </el-table-column>
@@ -103,7 +105,7 @@ const {
           <el-table-column label="操作" width="190" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" size="small"
-                         @click="router.push({ path: '/data-types' })">数据类型</el-button>
+                         @click="openAssets(row)">查看资产</el-button>
               <el-button link size="small" :disabled="!['Pending', 'Running'].includes(row.status)"
                          @click="cancel(row)">取消</el-button>
               <el-button link type="danger" size="small"
@@ -119,6 +121,27 @@ const {
                   title="定时巡检、增量计划与业务系统范围（P1）尚未实现：平台不会自动下发扫描，也不会声称已按业务系统归类。" />
       </div>
     </StateBox>
+    <el-drawer :model-value="!!assetJob" :title="`任务 #${assetJob?.id} · 采集资产`" size="860px" @close="closeAssets">
+      <el-alert type="info" :closable="false" show-icon
+                title="列出本任务关联的资产，详情显示资产当前状态；后续扫描可能更新内容和检测结果。" />
+      <el-alert v-if="assetAssociation === 'latest_scan_only'" type="warning" :closable="false" show-icon
+                title="旧任务未保存完整关联清单，仅展示最后一次扫描仍属于本任务的资产；被后续扫描更新的资产可能不在此列表，不能据此判断当时未采集。" style="margin-top: 10px" />
+      <StateBox :loading="assetLoading" :error="assetError" :empty="false" @retry="loadAssets(assetPage)">
+        <el-table :data="assetRows" size="small" empty-text="暂无可关联的已入库资产" style="margin-top: 12px">
+          <el-table-column prop="path" label="资产路径" min-width="290" show-overflow-tooltip />
+          <el-table-column prop="instance_type" label="类型" width="100" />
+          <el-table-column prop="sensitivity" label="敏感级别" width="100" />
+          <el-table-column prop="coverage" label="内容覆盖" width="100" />
+          <el-table-column label="详情" width="90">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="router.push(`/asset-instances/${row.id}`)">查看</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-pagination :current-page="assetPage" :page-size="50" :total="assetTotal"
+                       layout="total, prev, pager, next" @current-change="loadAssets" />
+      </StateBox>
+    </el-drawer>
   </div>
 </template>
 

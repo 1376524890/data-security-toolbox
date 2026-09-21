@@ -37,6 +37,13 @@ const routes: RouteRecordRaw[] = [
   { path: '/asset-instances/:id', component: () => import('../modules/data-security/AssetInstanceDetail.vue'), meta: { title: 'AssetInstance Detail', group: 'Asset & Data Security' } },
   { path: '/scan-profiles', component: () => import('../modules/data-security/ScanProfiles.vue'), meta: { title: 'Scan Profiles', group: 'Asset & Data Security' } },
   { path: '/data-asset-jobs', component: () => import('../modules/data-security/DataAssetJobs.vue'), meta: { title: 'Data Asset Jobs', group: 'Asset & Data Security' } },
+  // Target databases are collected by the platform itself, not by a probe.
+  { path: '/database-connections', component: () => import('../modules/data-security/DatabaseConnections.vue'), meta: { title: 'Database Connections', group: 'Asset & Data Security' } },
+  // One page for every source the platform collects by itself: shared files
+  // (FTP/FTPS/SFTP) and target databases, plus pointers to the probe and upload
+  // paths. The per-protocol pages stay reachable so old links keep working.
+  { path: '/source-management', component: () => import('../modules/data-security/SourceManagement.vue'), meta: { title: 'Source Management', group: 'Asset & Data Security' } },
+  { path: '/asset-inventory', component: () => import('../modules/data-security/AssetInventory.vue'), meta: { title: 'Asset Inventory', group: 'Asset & Data Security' } },
   // Threat Intelligence
   { path: '/network/dlp', component: () => import('../modules/data-security/NetworkDlp.vue'), meta: { title: '网络防泄密', group: 'Asset & Data Security' } },
   { path: '/threat/ioc', component: () => import('../modules/threat/IocCenter.vue'), meta: { title: 'IOC', group: 'Threat Intelligence' } },

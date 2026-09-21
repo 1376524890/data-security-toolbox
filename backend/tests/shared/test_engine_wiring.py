@@ -50,7 +50,7 @@ def test_probe_and_platform_resolve_the_same_rule_pack() -> None:
     assert sensitive_engine.SHARED_ROOT is not None
 
 
-def test_probe_file_scan_reports_shared_entities_without_raw_values(tmp_path: Path) -> None:
+def test_probe_file_scan_reports_shared_entities_and_the_matched_text(tmp_path: Path) -> None:
     from probe import data_assets
 
     sample = tmp_path / "customers.csv"
@@ -60,10 +60,21 @@ def test_probe_file_scan_reports_shared_entities_without_raw_values(tmp_path: Pa
     assert {"phone", "id_card"} <= set(record["categories"])
     hits = {item["entity"]: item for item in record["evidence"]["hits"]}
     assert {"PHONE", "ID_CARD"} <= set(hits)
-    # Evidence explains a hit through rules and levels, never through the value.
+    # Evidence explains a hit through rules and levels; the value travels beside
+    # it in ``matches`` (operator requirement: a finding must be verifiable).
     assert hits["PHONE"]["rule_ids"] and hits["PHONE"]["severity"] == "Medium"
-    assert "13800138000" not in json.dumps(record, ensure_ascii=False)
-    assert ID_CARD not in json.dumps(record, ensure_ascii=False)
+    assert hits["PHONE"]["matches"][0]["value"] == PHONE
+    assert hits["ID_CARD"]["matches"][0]["value"] == ID_CARD
+    blob = json.dumps(record, ensure_ascii=False)
+    for hit in hits.values():
+        for match in hit["matches"]:
+            assert len(match["value"]) <= 120 and len(match["context"]) <= 240
+    # A column is scanned from its own sampled cells, so the returned context is
+    # the line that value sits on and never the surrounding row. The report still
+    # holds no sample-value list: what travels is the matched原文, not the file.
+    assert hits["PHONE"]["matches"][0]["context"] == PHONE
+    assert hits["ID_CARD"]["matches"][0]["context"] == ID_CARD
+    assert "values" not in blob
 
 
 def test_probe_report_guard_produces_a_payload_the_platform_accepts(tmp_path: Path) -> None:
@@ -86,7 +97,7 @@ def test_probe_report_guard_produces_a_payload_the_platform_accepts(tmp_path: Pa
 
 
 def test_netdlp_text_stage_uses_the_shared_engine() -> None:
-    from app.services.dlp_service import inspect_content
+    from app.services.dlp import inspect_content
 
     policy = {"categories": ["phone", "id_card"], "min_matches": 1}
     hits = {item["kind"]: item for item in inspect_content(
@@ -95,7 +106,78 @@ def test_netdlp_text_stage_uses_the_shared_engine() -> None:
     assert hits["phone"]["confidence"] == 0.7
     assert hits["id_card"]["entity"] == "ID_CARD"
     assert hits["phone"]["samples"] == []
-    assert PHONE not in json.dumps(hits, ensure_ascii=False)
+    # The matched原文 rides in ``matches`` only; that is the one key allowed to
+    # carry it, and it is bounded by the shared engine the platform runs.
+    assert hits["phone"]["matches"] == [{"value": PHONE, "context": f"phone={PHONE}&id_card={ID_CARD}"}]
+    without_matches = {key: value for key, value in hits["phone"].items() if key != "matches"}
+    assert PHONE not in json.dumps(without_matches, ensure_ascii=False)
+
+
+def test_policy_keyword_hits_carry_the_matched_line() -> None:
+    from app.services.dlp import inspect_content
+
+    hits = {item["kind"]: item for item in inspect_content(
+        "内部机密：项目A".encode(), {"categories": [], "keywords": ["内部机密"], "min_matches": 1})}
+    assert hits["keyword"]["rule_source"] == "policy_keyword"
+    assert hits["keyword"]["matches"] == [{"value": "内部机密", "context": "内部机密：项目A"}]
+
+
+def _http_capture(path: Path, body: bytes) -> Path:
+    """One cleartext HTTP POST, the shape the passive DLP stage reassembles."""
+    import socket
+
+    import dpkt
+
+    payload = (b"POST /upload HTTP/1.1\r\nHost: bi.example.com\r\nContent-Length: "
+               + str(len(body)).encode() + b"\r\n\r\n" + body)
+    tcp = dpkt.tcp.TCP(sport=51000, dport=80, seq=1, flags=dpkt.tcp.TH_ACK, data=payload)
+    packet = dpkt.ip.IP(src=socket.inet_aton("10.0.0.12"), dst=socket.inet_aton("10.0.0.33"),
+                        p=6, data=tcp)
+    packet.len = len(packet)
+    with path.open("wb") as handle:
+        writer = dpkt.pcap.Writer(handle, linktype=101)
+        writer.writepkt(bytes(packet), ts=1)
+    return path
+
+
+def test_a_console_rule_is_one_rule_for_files_and_for_the_network(tmp_path: Path, monkeypatch) -> None:
+    """The requirement: a rule added in the console matches everywhere, with原文.
+
+    One rule store feeds the file scan (敏感发现), the network DLP text stage
+    (网络防泄密) and, through the finding it raises, the realtime alert stream.
+    """
+    from app.core.config import settings
+    from app.engine.data_engine.engine import scan_text
+    from app.services import rule_library
+    from app.services.dlp import analyze_capture
+
+    monkeypatch.setattr(settings, "integration_dir", tmp_path / "integrations")
+    rule_library.save_manual_rule({"name": "规则测试", "entity": "测试", "pattern": "张三", "confidence": 0.7})
+
+    scan = scan_text(f"客户姓名：张三，联系方式 {PHONE}")
+    custom = {hit["entity"]: hit for hit in scan["confirmed_hits"]}["测试"]
+    assert scan["counts"]["测试"] == 1
+    assert custom["matches"] == [{"value": "张三", "context": f"客户姓名：张三，联系方式 {PHONE}"}]
+
+    path = _http_capture(tmp_path / "name.pcap", "姓名=张三&phone=13800138000".encode())
+    result, _, findings = analyze_capture(path, {"categories": ["phone"], "min_matches": 1})
+    hits = {hit["kind"]: hit for hit in result["objects"][0]["matches"]}
+    assert hits["测试"]["matches"][0]["value"] == "张三"
+    # The finding behind the realtime alert carries the same原文.
+    raised = {hit["kind"]: hit for hit in findings[0]["evidence"]["matches"]}
+    assert raised["测试"]["matches"][0]["value"] == "张三"
+    assert "测试" in findings[0]["evidence"]["triggered_by"]
+
+
+def test_a_rule_added_later_is_picked_up_without_a_restart(tmp_path: Path, monkeypatch) -> None:
+    from app.core.config import settings
+    from app.services import rule_library
+
+    monkeypatch.setattr(settings, "integration_dir", tmp_path / "integrations")
+    assert sensitive_engine.scan_all("张三") == []
+    stored = rule_library.save_manual_rule({"name": "规则测试", "entity": "测试", "pattern": "张三"})
+    hits = {hit.entity: hit for hit in sensitive_engine.scan_all("张三")}
+    assert hits["测试"].rule_ids == [stored["id"]]
 
 
 def test_presidio_static_hits_are_never_labelled_as_a_runtime_run() -> None:

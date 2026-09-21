@@ -198,4 +198,6 @@ def test_package_ships_the_uninstaller_next_to_the_installer() -> None:
     installer = INSTALLER.read_text(encoding="utf-8")
     assert '"${SCRIPT_DIR}/uninstall.sh" "${APP_DIR}/uninstall.sh"' in installer
     assert '"${APP_DIR}/.created-user"' in installer
-    assert '"${APP_DIR}/.installed-capture-tool"' in installer
+    # New packages keep tools private; the uninstaller still understands legacy markers.
+    assert 'RUNTIME_DIR="${APP_DIR}/runtime"' in installer
+    assert '/usr/local/bin/dumpcap' not in installer

@@ -1,6 +1,7 @@
 """Probe-side data asset discovery (no network access required)."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -141,8 +142,18 @@ def test_discover_data_assets_classifies_files_and_columns(tmp_path: Path) -> No
     secrets = by_name["secrets.txt"]
     assert secrets["sensitivity"] == "Critical"
     assert "api_key" in secrets["categories"]
-    # Raw matched values must never leave the host.
-    assert "sk-abcdefghijklmnopqrstuvwxyz0123456789" not in repr(report)
+    # 原文回传 is deliberate: the matched value travels so an operator can verify
+    # the finding, bounded in count and length like every other report value.
+    secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789"
+    matches = [match for hit in secrets["evidence"]["hits"] for match in hit["matches"]]
+    assert any(match["value"] == secret for match in matches)
+    for match in matches:
+        assert len(match["value"]) <= 120 and len(match["context"]) <= 240
+    # ...and only there: the asset itself still carries no raw sample list.
+    assert not {"values", "samples", "text"} & set(secrets)
+    assert secret not in json.dumps(
+        {key: value for key, value in secrets.items() if key != "evidence"},
+        ensure_ascii=False)
 
     assert by_name["app.db"]["asset_type"] == "database"
     assert by_name["dump.sql"]["asset_type"] == "database"
@@ -220,3 +231,33 @@ def test_symlink_not_followed(tmp_path):
     link = tmp_path / 'link.csv'
     link.symlink_to(target)
     assert data_assets.inspect_file(link, ScanBudget()) is None
+
+
+def test_missing_directory_has_specific_error_and_incomplete_coverage(tmp_path):
+    report = data_assets.discover_data_assets({
+        "paths": [str(tmp_path / "missing")], "include_databases": False})
+    assert "目录不存在:" in report["error"]
+    assert not report["coverage"]["complete_scope"]
+    assert report["coverage"]["termination_reason"] == "unreadable"
+    assert report["coverage"]["files_discovered"] == 0
+
+
+def test_file_path_is_not_reported_as_missing_directory(tmp_path):
+    path = tmp_path / "file.txt"
+    path.write_text("text")
+    report = data_assets.discover_data_assets({"paths": [str(path)], "include_databases": False})
+    assert "指定路径不是目录:" in report["error"]
+    assert not report["complete"]
+
+
+def test_permission_error_is_distinct_from_missing_path(tmp_path, monkeypatch):
+    original = Path.lstat
+    def denied(path, *args, **kwargs):
+        if path == tmp_path:
+            raise PermissionError("denied")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "lstat", denied)
+    report = data_assets.discover_data_assets({
+        "paths": [str(tmp_path)], "include_databases": False})
+    assert "无权限访问目录:" in report["error"]
+    assert not report["coverage"]["complete_scope"]

@@ -14,6 +14,7 @@ from app.core.json_storage import dumps_json
 from app.main import app
 from app.models import AnalysisResult, LocalCve, Task
 from app.services import dlp_service, scan_service
+from app.services.dlp import capture
 
 
 def test_legacy_json_repair_preserves_records_and_literal_escapes(tmp_path):
@@ -53,8 +54,10 @@ def test_cves_paginate_and_keep_legacy_contract():
 def test_sensitive_transfer_bytes_and_hash_match_download(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, 'storage_dir', tmp_path)
     body = b'company-secret' + bytes(range(256)) * 20
-    monkeypatch.setattr(dlp_service, 'reassemble', lambda path: ([(('10.8.0.1',12345,'10.8.0.2',80), b'http', False)], {}))
-    monkeypatch.setattr(dlp_service, 'http_objects', lambda data: [{'filename':'sample.bin','body':body,'complete':True}])
+    # The capture primitives are looked up in their own module; the DLP service
+    # only re-exports them for callers that still import the old path.
+    monkeypatch.setattr(capture, 'reassemble', lambda path: ([(('10.8.0.1',12345,'10.8.0.2',80), b'http', False)], {}))
+    monkeypatch.setattr(capture, 'http_objects', lambda data: [{'filename':'sample.bin','body':body,'complete':True}])
     result, _, findings = dlp_service.analyze_capture(tmp_path / 'test.pcap', {'keywords':['company-secret']})
     obj = result['objects'][0]
     assert obj['sha256'] == hashlib.sha256(body).hexdigest() and obj['binary_available']

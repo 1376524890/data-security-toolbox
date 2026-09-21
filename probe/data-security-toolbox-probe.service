@@ -7,16 +7,18 @@ Wants=network-online.target
 Type=simple
 User=dstprobe
 Group=dstprobe
-ExecStart=/usr/bin/python3 /opt/data-security-toolbox/probe/probe.py --config /etc/data-security-toolbox/probe.toml
+ExecStart=/opt/data-security-toolbox/run-probe.sh --config /etc/data-security-toolbox/probe.toml
 Restart=always
 RestartSec=5
+# The bundled interpreter must not inherit the host locale (see run-probe.sh).
+Environment=PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 # Read-only inventory access, including administrator-selected private directories.
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_DAC_READ_SEARCH
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_DAC_READ_SEARCH
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/data-security-toolbox /etc/data-security-toolbox
+ReadWritePaths=/var/lib/data-security-toolbox/spool /var/lib/data-security-toolbox/rules /var/lib/data-security-toolbox/cache /etc/data-security-toolbox
 PrivateTmp=true
 
 [Install]

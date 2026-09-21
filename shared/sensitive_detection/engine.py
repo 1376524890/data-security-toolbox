@@ -6,9 +6,13 @@ Usage::
     for hit in engine.scan_text(text, field_name="phone"):
         ...
 
-The engine never returns, stores or logs a matched value. It reports how many
-distinct spans matched, which rules produced evidence and how confident that
-evidence is.
+The engine reports how many distinct spans matched, which rules produced evidence
+and how confident that evidence is. It also returns a *bounded* sample of the
+matched原文 (value plus its line) for hits that matched a real value, because an
+operator has to be able to verify what was found. The bound is the safety
+mechanism: at most :data:`MAX_RETURNED_MATCHES` strings per entity, each capped at
+:data:`MAX_RETURNED_CHARS`, with the context line capped at
+:data:`MAX_CONTEXT_CHARS`. A file is never returned.
 """
 from __future__ import annotations
 
@@ -26,6 +30,13 @@ from .validators import get_validator
 
 ENGINE_VERSION = "1.0.0"
 SCHEMA_VERSION = "1.0"
+
+#: How much matched原文 travels with a hit. Three samples prove the finding; the
+#: hit's ``count`` already states how many there were, so more would only make
+#: reports heavier without making them more useful.
+MAX_RETURNED_MATCHES = 3
+MAX_RETURNED_CHARS = 120
+MAX_CONTEXT_CHARS = 240
 
 # Field evidence is only a hint, so it never exceeds the evidence ceiling.
 FIELD_EVIDENCE_CEILING = confidence_module.FIELD_EVIDENCE_CEILING
@@ -58,6 +69,55 @@ def _field_hint_match(field_name: str, hints: Iterable[str]) -> bool:
         elif hint in field_name:
             return True
     return False
+
+
+def _line_context(text: str, start: int, end: int) -> str:
+    """The line a match sits on, trimmed, capped around the match itself.
+
+    A CSV row can be far wider than the cap, so a too-long line is cut to a
+    window centred on the value instead of losing the value at the right edge.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    line = text[line_start: line_end if line_end != -1 else len(text)].strip()
+    if len(line) <= MAX_CONTEXT_CHARS:
+        return line
+    position = max(start - line_start, 0)
+    half = MAX_CONTEXT_CHARS // 2
+    return line[max(position - half, 0):][:MAX_CONTEXT_CHARS]
+
+
+def _returned_matches(text: str, intervals: list[tuple[int, int]]) -> list[dict[str, str]]:
+    """Matched原文 for the first few value spans, both parts capped."""
+    matches: list[dict[str, str]] = []
+    for start, end in intervals[:MAX_RETURNED_MATCHES]:
+        value = text[start:end]
+        if not value.strip():
+            continue
+        matches.append({
+            "value": value[:MAX_RETURNED_CHARS],
+            "context": _line_context(text, start, end),
+        })
+    return matches
+
+
+def text_matches(text: str, needle: str, limit: int = MAX_RETURNED_MATCHES) -> list[dict[str, str]]:
+    """Matched原文 for a literal needle (a configured keyword): value plus its line.
+
+    A rule matches through its pattern; a policy keyword is text an operator
+    typed, so this applies :func:`_returned_matches` to that case. The caps are
+    the same ones, because every原文 that leaves the engine must be bounded the
+    same way regardless of which kind of rule produced it.
+    """
+    matches: list[dict[str, str]] = []
+    if not needle or not text:
+        return matches
+    for match in re.finditer(re.escape(needle), text, re.IGNORECASE):
+        matches.append({"value": match.group()[:MAX_RETURNED_CHARS],
+                        "context": _line_context(text, match.start(), match.end())})
+        if len(matches) >= max(1, int(limit)):
+            break
+    return matches
 
 
 @dataclass(slots=True)
@@ -236,7 +296,8 @@ class SensitiveDetectionEngine:
         for entity, items in evidence.items():
             merged = matching.merge_intervals(intervals.get(entity, []))
             hit = DetectionHit(entity=entity, source_entity=entity, count=len(merged),
-                               evidence=items, context_evidence=not merged)
+                               evidence=items, context_evidence=not merged,
+                               matches=_returned_matches(text, merged))
             hits.append(hit)
         # Strongest first; structural metadata last so real data leads the report.
         hits.sort(key=lambda item: (item.sensitive, item.confidence, item.count), reverse=True)

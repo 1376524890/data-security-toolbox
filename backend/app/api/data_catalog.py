@@ -6,8 +6,9 @@ legacy ``data_assets`` projection, so the pages cannot drift from the scan
 results. Lists are bounded, sortable only by a whitelist and paginated with the
 platform's existing ``paginate``/``page_response`` helpers.
 
-Nothing in this module returns a matched value: the evidence API exposes rule,
-recogniser, field and count, which is all the model ever stores.
+The evidence API exposes rule, recogniser, field, count and - by explicit
+operator requirement - the bounded matched原文 the probe returned for that hit
+(``extra['matches']``). No endpoint ever returns file content.
 """
 from __future__ import annotations
 
@@ -15,15 +16,15 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 
-from app.services.data_objects import definitions, projection, queries
 from app.api.pagination import page_response, paginate
 from app.core.database import get_db
-from app.models import AssetInstance, DataObject, Detection, DetectionEvidence, Probe
+from app.models import AssetInstance, DataObject, Detection, DetectionEvidence, Probe, Task
 from app.services import sensitivity_map
 from app.services.audit_service import record_audit
+from app.services.data_objects import definitions, projection, queries
 
 router = APIRouter(prefix='/api/v1')
 
@@ -77,8 +78,11 @@ def _instance_row(instance: AssetInstance, probe: Probe | None = None,
                   mapping: dict[str, str] | None = None) -> dict[str, Any]:
     return {
         'id': instance.id, 'object_id': instance.object_id, 'probe_id': instance.probe_id,
-        'probe_name': probe.name if probe else '',
-        'host': (probe.ip_address or probe.hostname) if probe else '',
+        'owner_key': instance.owner_key or '',
+        # file | database: which source observed this copy.
+        'source_kind': instance.source_kind or 'file',
+        'probe_name': probe.name if probe else (instance.extra or {}).get('probe_name', ''),
+        'host': (probe.ip_address or probe.hostname) if probe else (instance.extra or {}).get('host', ''),
         'path': instance.path, 'name': instance.name, 'instance_type': instance.instance_type,
         'size': instance.size, 'content_hash': instance.content_hash,
         'hash_type': instance.hash_type, 'status': instance.status,
@@ -91,6 +95,8 @@ def _instance_row(instance: AssetInstance, probe: Probe | None = None,
         'ruleset_version': instance.ruleset_version, 'engine_version': instance.engine_version,
         'profile_version': instance.profile_version,
         'last_scan_id': instance.last_scan_id,
+        'source_name': (instance.extra or {}).get('source_name') or (instance.extra or {}).get('connection_name') or (instance.extra or {}).get('probe_name', ''),
+        'last_change': (instance.extra or {}).get('last_change', ''),
         'first_seen_at': instance.first_seen_at.isoformat() if instance.first_seen_at else '',
         'last_seen_at': instance.last_seen_at.isoformat() if instance.last_seen_at else '',
     }
@@ -100,6 +106,7 @@ def _detection_row(detection: Detection) -> dict[str, Any]:
     return {
         'id': detection.id, 'object_id': detection.object_id,
         'instance_id': detection.instance_id, 'probe_id': detection.probe_id,
+        'source_kind': detection.source_kind or 'file',
         'scan_id': detection.scan_id, 'category': detection.category,
         'subcategory': detection.subcategory,
         'sensitivity_level': detection.sensitivity_level, 'severity': detection.severity,
@@ -136,6 +143,7 @@ def list_data_types(probe_id: int | None = Query(default=None),
             'totals.identity_pending': '仅 1 个实例的部分指纹对象，身份待确认，不称副本',
             'object_count': '该类型的关联对象数（不跨类型去重，仅供类型内查看）',
             'active_instance_count': '该类型的关联活跃实例数（不跨类型去重）',
+            'host_count': '观测来源数：一台探针算一个，一个数据库连接也算一个',
             'candidate_count': '该类型的部分指纹对象数，单独统计，不计入确认副本',
         },
         'levels': sensitivity_map.LEVEL_META,
@@ -216,7 +224,11 @@ def data_object_detail(object_id: int, db: Session = Depends(get_db)) -> dict[st
     mapping = sensitivity_map.overrides(db)
     payload['instances'] = [_instance_row(item, probes.get(item.probe_id), mapping)
                             for item in instances]
-    payload['host_count'] = len({item.probe_id for item in instances})
+    # Distinct observers, not distinct probes: a database-sourced instance has
+    # no probe_id at all, and counting that column put every configured target
+    # database into one nameless bucket.
+    payload['host_count'] = len({key for key in (
+        queries.owner_key_of(item.probe_id, item.owner_key) for item in instances) if key})
     payload['ruleset_versions'] = sorted({item.ruleset_version for item in instances if item.ruleset_version})
     return payload
 
@@ -237,18 +249,52 @@ def data_object_detections(object_id: int, page: int = Query(1, ge=1),
 def list_asset_instances(probe_id: int | None = None, object_id: int | None = None,
                          status: str | None = None, category: str | None = None,
                          instance_type: str | None = None, search: str | None = None,
+                         source_kind: str | None = None,
+                         task_id: int | None = None,
+                         owner_key: str | None = None, sensitive_only: bool = False,
                          order_by: str | None = None, page: int = Query(1, ge=1),
                          page_size: int = Query(50, ge=1, le=200),
                          db: Session = Depends(get_db)) -> dict[str, Any]:
     query = select(AssetInstance)
+    association = None
+    if task_id is not None:
+        task = db.get(Task, task_id)
+        if task is None or task.kind not in {'data_asset_scan', 'database_scan', 'file_source_scan'}:
+            raise HTTPException(404, 'data asset task not found')
+        result = task.result or {}
+        # Persist membership for new reports: last_scan_id changes on the next scan.
+        payload = task.payload or {}
+        if task.kind == 'data_asset_scan':
+            key = f"probe:{payload.get('probe_id')}"
+            query = query.where(or_(AssetInstance.owner_key == key,
+                                    AssetInstance.probe_id == payload.get('probe_id')))
+        elif task.kind == 'file_source_scan':
+            query = query.where(AssetInstance.owner_key == f"file-source:{payload.get('source_id')}")
+        else:
+            query = query.where(AssetInstance.owner_key == f"db:{payload.get('connection_id')}")
+        if 'asset_instance_ids' in result:
+            query = query.where(AssetInstance.id.in_(result['asset_instance_ids']))
+            association = 'recorded_membership'
+        else:
+            scan_id = result.get('scan_id')
+            query = query.where(AssetInstance.last_scan_id == scan_id) if scan_id else query.where(False)
+            association = 'latest_scan_only'
     if probe_id:
         query = query.where(AssetInstance.probe_id == probe_id)
+    if owner_key:
+        query = query.where(AssetInstance.owner_key == owner_key)
+    if sensitive_only:
+        query = query.where(AssetInstance.id.in_(select(Detection.instance_id).where(
+            Detection.object_id == AssetInstance.object_id,
+            Detection.hit_count > 0)))
     if object_id:
         query = query.where(AssetInstance.object_id == object_id)
     if status:
         query = query.where(AssetInstance.status == str(status).upper())
     if instance_type:
         query = query.where(AssetInstance.instance_type == instance_type)
+    if source_kind:
+        query = query.where(AssetInstance.source_kind == str(source_kind).lower())
     if category:
         query = query.where(AssetInstance.categories.contains([str(category).lower()]))
     if search:
@@ -257,9 +303,11 @@ def list_asset_instances(probe_id: int | None = None, object_id: int | None = No
     result = paginate(db, query, page, page_size)
     probes = {item.id: item for item in db.scalars(select(Probe)).all()}
     mapping = sensitivity_map.overrides(db)
-    return page_response([_instance_row(item, probes.get(item.probe_id), mapping)
-                          for item in result['items']],
-                         page, page_size, result['total'])
+    response = page_response([_instance_row(item, probes.get(item.probe_id), mapping)
+                              for item in result['items']], page, page_size, result['total'])
+    if association:
+        response['association'] = association
+    return response
 
 
 @router.get('/asset-instances/{instance_id}')
@@ -290,18 +338,26 @@ def detection_evidence(detection_id: int, db: Session = Depends(get_db)) -> dict
         raise HTTPException(404, 'detection not found')
     rows = db.scalars(select(DetectionEvidence).where(
         DetectionEvidence.detection_id == detection_id).order_by(DetectionEvidence.id)).all()
-    return {
-        'detection': _detection_row(detection),
-        'items': [{
+    items = [
+        {
             'id': row.id, 'rule_id': row.rule_id, 'rule_name': row.rule_name,
             'rule_source': row.rule_source, 'recognizer': row.recognizer,
             'evidence_type': row.evidence_type, 'field_name': row.field_name,
             'sheet_name': row.sheet_name, 'column_index': row.column_index,
             'confidence': round(float(row.confidence or 0), 3), 'hit_count': row.hit_count,
             'engine_version': row.engine_version, 'ruleset_version': row.ruleset_version,
-        } for row in rows],
+            # 原文 the probe returned with this hit; older evidence rows have none,
+            # which is shown as "no returned text" rather than as an empty finding.
+            'matches': list((row.extra or {}).get('matches') or []),
+        }
+        for row in rows
+    ]
+    return {
+        'detection': _detection_row(detection),
+        'items': items,
         'count': len(rows),
-        'note': '证据只包含规则、识别器、字段与计数，从不包含匹配到的原始值',
+        'matches_returned': sum(len(item['matches']) for item in items),
+        'note': '证据含规则、识别器、字段与计数，并回传命中处原文（每命中最多 3 条，长度有上限）',
     }
 
 

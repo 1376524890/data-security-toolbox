@@ -42,6 +42,7 @@ from shared.scanning.budget import (  # noqa: E402
     DEFAULT_LIMITS,
     TERMINATION_COMPLETE,
     TERMINATION_UNCONFIGURED,
+    TERMINATION_UNREADABLE,
     BudgetExceeded,
     ScanBudget,
 )
@@ -253,12 +254,15 @@ def scan_text(text: str, limit: int = SCAN_LIMIT) -> dict[str, int]:
 
 def _hit_summary(hits, *, field_name: str = '', sheet_name: str = '',
                   column_index: int | None = None) -> list[dict]:
-    """Explain a hit without carrying any value: rule, type, count, confidence.
+    """Explain a hit: rule, type, count, confidence and the matched原文.
 
     The per-rule ``evidence`` entries come from the shared engine, whose
-    ``Evidence`` structure has no field for a matched value. They are what lets
+    ``Evidence`` structure has no field for a matched value; they are what lets
     the platform build one Detection with several de-duplicated Evidence rows
-    instead of a single unexplainable count.
+    instead of a single unexplainable count. The value itself travels in
+    ``matches`` (engine-capped: a few strings, each length-limited), because the
+    operator asked to see what was found; a hit that only matched a field name
+    has no value and therefore reports none.
     """
     summary = []
     for hit in hits:
@@ -276,6 +280,9 @@ def _hit_summary(hits, *, field_name: str = '', sheet_name: str = '',
             'rule_ids': hit.rule_ids,
             'rule_sources': hit.rule_sources,
             'evidence': [entry.to_dict() for entry in hit.evidence][:32],
+            # Always present: an empty list says "nothing was matched here", which
+            # is different from "this report predates原文回传".
+            'matches': [dict(entry) for entry in hit.matches],
         }
         if field_name:
             item['field_name'] = str(field_name)[:128]
@@ -704,11 +711,21 @@ def discover_data_assets(config: dict, stop_event=None, on_progress=None) -> dic
             except BudgetExceeded:
                 break
             try:
-                readable_directory = not root.is_symlink() and root.is_dir()
-            except OSError:
-                readable_directory = False
-            if not readable_directory:
-                errors.append(f'目录不存在或不可读取: {root}')
+                mode = root.lstat().st_mode
+                if stat_module.S_ISLNK(mode):
+                    errors.append(f'不采集符号链接目录: {root}')
+                    continue
+                if not stat_module.S_ISDIR(mode):
+                    errors.append(f'指定路径不是目录: {root}')
+                    continue
+            except FileNotFoundError:
+                errors.append(f'目录不存在: {root}')
+                continue
+            except PermissionError:
+                errors.append(f'无权限访问目录: {root}')
+                continue
+            except OSError as exc:
+                errors.append(f'目录访问失败（{type(exc).__name__}）: {root}')
                 continue
             root = root.absolute()
             if scope.excludes_path(str(root)):
@@ -773,9 +790,9 @@ def discover_data_assets(config: dict, stop_event=None, on_progress=None) -> dic
                 if counted:
                     assets.append(_directory_asset(Path(current), counted, total_size,
                                                    sorted(directory_categories)))
-                if not budget.complete:
+                if not budget.enumeration_complete:
                     break
-            if not budget.complete:
+            if not budget.enumeration_complete:
                 break
         databases = []
         if include_databases:
@@ -795,6 +812,11 @@ def discover_data_assets(config: dict, stop_event=None, on_progress=None) -> dic
 
     if not configured:
         budget.stop(TERMINATION_UNCONFIGURED, '未配置采集目录')
+    elif errors:
+        # A path the walk could not read leaves a hole in the report. Recording it
+        # as the termination reason keeps ``complete_scope`` false, so a scan with
+        # holes can never be presented as a finished one.
+        budget.stop(TERMINATION_UNREADABLE, '; '.join(errors)[:255])
     report_progress(force=True)
     coverage = budget.coverage()
     if scope.active:

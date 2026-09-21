@@ -41,7 +41,7 @@ function openType(row: { category: string }): void {
       <div class="soc-card" style="margin-top: 12px">
         <div class="soc-card-title"><span class="dot" />类型明细</div>
         <el-alert type="info" :closable="false" show-icon style="margin-bottom: 10px"
-                  title="去重口径：顶部卡片为跨类型去重后的对象/实例数；表格中的“关联对象数/关联实例数”只描述该类型内部，不能相加。确认副本按“完整 SHA256 相同”的对象计 max(范围内实例数 - 1, 0)；部分指纹仅当至少存在 2 个实例时才计为疑似副本，单实例只显示“待确认身份”。" />
+                  title="去重口径：顶部卡片为跨类型去重后的对象/实例数；表格中的“关联对象数/关联实例数”只描述该类型内部，不能相加。“主机数”按观测来源去重：一台探针算一个来源，一个数据库连接也算一个来源。确认副本按“完整 SHA256 相同”的对象计 max(范围内实例数 - 1, 0)；部分指纹仅当至少存在 2 个实例时才计为疑似副本，单实例只显示“待确认身份”。" />
         <el-table :data="filtered" size="small" empty-text="尚无扫描结果" @row-click="openType">
           <el-table-column prop="category" label="类型" min-width="140">
             <template #default="{ row }">

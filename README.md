@@ -86,7 +86,7 @@ docker compose -f docker-compose.yml -f docker-compose.integrations.yml --profil
 
 ## 探针部署与运行
 
-探针部署在**受监控主机**，负责抓包、资产采集与目标文件采集。需要 **Python 3.11+**（`tomllib`、`datetime.UTC`）、`requests`、`psutil`，以及 `dumpcap`（优先）或 `tcpdump`。系统自带 Python 过旧（如 3.8）时，请用 python3.11+（如 miniconda）并相应修改 systemd 的 `ExecStart`。
+探针部署在**受监控主机**，负责抓包、资产采集与目标文件采集。**探针 3.7.0 起分发包自带运行时**（私有 CPython 3.11、`requests`/`psutil` 等依赖、`dumpcap`（优先）/`tcpdump` 与 ELF 库闭包、私有加载器与 CA），目标机**不需要 Python、pip、apt、wheel 或抓包工具**，也不用改 `ExecStart`（主机只需 systemd 与 `tar`/`useradd`/`chown` 等基础工具，启动脚本自带 `PATH` 与 UTF-8 环境）；`install.sh` 先用自带解释器校验运行时（架构、解释器版本、依赖、抓包工具、可选平台连通性、archive sha256），通过后才停服务并原子替换 `/opt/data-security-toolbox/runtime`，`probe.toml`/`probe.token`/spool/rules/cache 全部保留——重跑即升级、换旧包重跑即回退。平台侧探针部署预检也用这同一个运行时探测目标机（`app/deployment/{preflight,runtime}.py`），不再要求主机 `python3 >= 3.11` 或预装抓包工具。采集身份不变（`dstprobe` + `CAP_NET_RAW`/`CAP_NET_ADMIN`/`CAP_DAC_READ_SEARCH`，不提权到 root），读不到的目录按覆盖缺口如实上报。
 
 ```bash
 # 1. 安装探针（创建 dstprobe 用户、systemd 服务、配置目录）

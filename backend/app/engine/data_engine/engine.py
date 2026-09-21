@@ -153,14 +153,30 @@ def extract_text(path: Path) -> str:
 
 
 def scan_text(text: str) -> dict[str, Any]:
-    """Per-category counts. No matched value is returned, stored or logged."""
+    """Per-category counts plus the bounded matched原文 each hit carries.
+
+    The原文 travels under ``matches`` only (value plus its line, capped by the
+    engine), because an operator has to be able to verify what was found; every
+    other field stays value-free.
+    """
     from app.services import sensitive_engine
 
-    hits = sensitive_engine.scan_text(text, source_type="file")
+    # The platform's own rules (manual / imported) are part of this scan, so a
+    # rule an analyst adds in the console is found in files and not only in the
+    # network DLP stage.
+    hits = sensitive_engine.scan_all(text, source_type="file")
     confirmed = sensitive_engine.confirmed_hits(hits)
     candidates = sensitive_engine.candidate_hits(hits)
     counts: dict[str, int] = {name: 0 for name in REGEX_RULES}
     counts.update(sensitive_engine.count_by_legacy_name(hits))
+    # A rule the console added has no legacy category name; it still belongs in
+    # the report under the entity its author wrote, or the hit would be visible
+    # in the evidence while missing from the counts beside it.
+    for hit in hits:
+        if sensitive_engine.legacy_name(hit.entity):
+            continue
+        key = str(hit.entity).lower()
+        counts[key] = counts.get(key, 0) + hit.count
     return {
         "counts": counts,
         "hits": [hit.to_dict() for hit in hits],
@@ -203,7 +219,7 @@ def infer_columns(text: str, source: str) -> list[dict[str, Any]]:
             columns = []
     from app.services import sensitive_engine
 
-    engine = sensitive_engine.get_engine()
+    engine = sensitive_engine.scan_engine()
     classified: list[dict[str, Any]] = []
     for index, column in enumerate(columns):
         values = [row[index] for row in rows if index < len(row)][:50]
@@ -320,7 +336,10 @@ class DataEngine(DetectionEngine):
                 "yara": yara_matches[:50],
             }
             columns = infer_columns(text, path.name)
-            if columns:
+            # The capture is evidence for network analysis, not a business document.
+            # Keep YARA/findings below; extracted files can still become assets.
+            capture_container = context.target_type == "pcap" and path == context.path
+            if columns and not capture_container:
                 evidence["columns"] = columns
                 has_confirmed = any(column["confirmed_categories"] for column in columns)
                 has_candidate = any(column["candidate_categories"] for column in columns)
@@ -333,7 +352,7 @@ class DataEngine(DetectionEngine):
                     "source": path.name,
                     "columns": columns,
                 })
-            elif text_status["status"] in {SCAN_FAILED, SCAN_UNSUPPORTED}:
+            elif not capture_container and text_status["status"] in {SCAN_FAILED, SCAN_UNSUPPORTED}:
                 # Say the file was not inspected instead of letting an empty scan
                 # look like a clean result.
                 context.data.setdefault("data_assets", []).append({

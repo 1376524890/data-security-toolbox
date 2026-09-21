@@ -48,6 +48,9 @@ def ingest_report(
     projection can never land separately.
     """
     probe_id = probe.id
+    #: Instance identity is (owner_key, path); a probe-owned row is ``probe:<id>``
+    #: so a database table can use ``db:<connection_id>`` without borrowing a probe.
+    owner_key = f"probe:{probe_id}"
     observed_at = _parse_time(payload.get("observed_at")) or datetime.now(UTC)
     scan_id = _text(payload.get("scan_id") or payload.get("report_id"), 64)
     roots = [
@@ -65,6 +68,7 @@ def ingest_report(
     entries = [(item, False) for item in assets] + [(item, True) for item in databases]
 
     stored = 0
+    instance_ids: set[int] = set()
     late_skipped = 0
     seen_paths: set[tuple[str, str]] = set()
     # Every object whose counters may have moved: the ones this report observed,
@@ -118,9 +122,11 @@ def ingest_report(
         instance, _ = _get_or_create(
             db,
             AssetInstance,
-            {"probe_id": probe_id, "path": path},
+            {"owner_key": owner_key, "path": path},
             {
                 "object_id": obj.id,
+                "probe_id": probe_id,
+                "source_kind": "file",
                 "name": _text(entry.get("name"), 512),
                 "instance_type": instance_type,
                 "size": size,
@@ -169,6 +175,9 @@ def ingest_report(
         if instance.object_id and instance.object_id != obj.id:
             affected_objects.add(int(instance.object_id))
         instance.object_id = obj.id
+        instance.probe_id = probe_id
+        instance.owner_key = owner_key
+        instance.source_kind = "file"
         affected_objects.add(int(obj.id))
         instance.status = INSTANCE_ACTIVE
         instance.last_seen_at = _newest(instance.last_seen_at, observed_at) or observed_at
@@ -297,6 +306,7 @@ def ingest_report(
         )
         seen_paths.add((path, instance_type))
         stored += 1
+        instance_ids.add(instance.id)
 
     swept = sweep_scope(
         db,
@@ -338,6 +348,7 @@ def ingest_report(
         "scope_key": scope_key,
         "schema_version": schema_version,
         "stored": stored,
+        "asset_instance_ids": sorted(instance_ids),
         "complete_scope": covered,
         "not_observed": len(swept),
         "late_skipped": late_skipped,

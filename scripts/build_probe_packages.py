@@ -16,10 +16,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PROBE = ROOT / "probe"
 OUT = ROOT / "probe_packages"
-VERSION = "3.5.0"
+VERSION = "3.7.0"
 ARCHS = ["amd64", "arm64"]
 FILES = [
     "install.sh",
+    "run-probe.sh",
+    "runtime_check.py",
     "uninstall.sh",
     "probe.py",
     "scanner.py",
@@ -33,7 +35,6 @@ FILES = [
 # platform, so the package has to carry it: probe.py imports
 # `shared.sensitive_detection` from its parent directory (APP_DIR).
 TREES = {ROOT / "shared": "shared"}
-BIN_NAMES = ["dumpcap", "tcpdump"]
 
 
 def sha256(path: Path) -> str:
@@ -96,19 +97,21 @@ def build(arch: str) -> tuple[Path, str]:
         copy_text(PROBE / name, pkg_dir / name)
     # `shared/sensitive_detection` must be installable next to `probe/`.
     tree_files = copy_trees(pkg_dir)
-    # Optional capture-tool binaries (placed at probe_packages/bin/<arch>/).
-    bundled: list[str] = []
-    for bin_name in BIN_NAMES:
-        src_bin = OUT / "bin" / arch / bin_name
-        if src_bin.is_file():
-            dest_dir = pkg_dir / "bin"
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_bin, dest_dir / bin_name)
-            bundled.append(f"bin/{bin_name}")
-    # Optional offline wheels (placed at probe_packages/wheels/).
-    if (OUT / "wheels").is_dir() and any((OUT / "wheels").glob("*.whl")):
-        shutil.copytree(OUT / "wheels", pkg_dir / "wheels", dirs_exist_ok=True)
-        bundled.append("wheels")
+    runtime_dir = OUT / "runtimes" / arch
+    runtime_archive = runtime_dir / "runtime.tar.gz"
+    metadata_path = runtime_dir / "runtime.json"
+    if not runtime_archive.is_file() or not metadata_path.is_file():
+        raise SystemExit(f"missing {arch} runtime: run scripts/build_probe_runtime.py --arch {arch}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("arch") != arch or not metadata.get("self_contained"):
+        raise SystemExit("runtime architecture or format mismatch")
+    if sha256(runtime_archive) != metadata.get("sha256"):
+        raise SystemExit("runtime digest mismatch")
+    requirements = (PROBE / "requirements.txt").read_bytes().replace(b"\r\n", b"\n")
+    if hashlib.sha256(requirements).hexdigest() != metadata.get("requirements_sha256"):
+        raise SystemExit("runtime dependencies are stale: rebuild the runtime")
+    shutil.copy2(runtime_archive, pkg_dir / "runtime.tar.gz")
+    bundled = ["runtime.tar.gz"]
     artifact = pkg_dir / f"probe-{VERSION}-{arch}.tar.gz"
     members = [*FILES, *tree_files, *bundled]
     with tarfile.open(artifact, "w:gz") as tar:
@@ -119,6 +122,7 @@ def build(arch: str) -> tuple[Path, str]:
         "version": VERSION,
         "arch": arch,
         "python_min": "3.11",
+        "runtime": metadata,
         "supported_os": ["debian", "ubuntu", "rhel", "rocky", "centos"],
         "artifact": artifact.name,
         "sha256": digest,
@@ -133,10 +137,6 @@ def main() -> None:
         path, digest = build(arch)
         print(f"built {path} sha256={digest}")
 
-    if (OUT / "bin").exists():
-        print("note: bundled capture-tool binaries found in probe_packages/bin/")
-    if (OUT / "wheels").exists():
-        print("note: offline wheels found in probe_packages/wheels/")
 
 
 if __name__ == "__main__":

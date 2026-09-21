@@ -38,7 +38,7 @@ def _headers(probe_id: int, token: str) -> dict[str, str]:
 
 
 def _hit(category: str, *, count: int = 2, rules=("SD_PHONE_001",), field: str = "",
-         sheet: str = "", evidence_types=("regex",)) -> dict:
+         sheet: str = "", evidence_types=("regex",), matches=None) -> dict:
     return {
         "entity": category.upper(), "category": category, "count": count, "confidence": 0.9,
         "level": "L2", "severity": "Medium", "field_only": False,
@@ -47,6 +47,7 @@ def _hit(category: str, *, count: int = 2, rules=("SD_PHONE_001",), field: str =
                       "evidence_type": kind, "confidence": 0.9, "rule_source": "builtin"}
                      for rule in rules for kind in evidence_types],
         "field_name": field, "sheet_name": sheet,
+        "matches": list(matches or []),
     }
 
 
@@ -404,6 +405,60 @@ def test_same_hash_on_two_probes_shares_the_object_but_not_the_host() -> None:
         assert phone["host_count"] >= 2
 
 # --- detections and evidence ------------------------------------------------
+def test_returned_matched_text_travels_with_the_evidence_row() -> None:
+    """The原文 a scan returned is stored on its evidence row and served back.
+
+    An empty one must never erase text that was already returned: a later scan
+    that only saw the field name cannot un-say what the first scan proved.
+    """
+    hits = [_hit("phone", field="mobile", sheet="Sheet1",
+                 matches=[{"value": "13800138000", "context": "mobile,13800138000"}])]
+    assets = [_file("/srv/data/contacts.csv", hits=hits)]
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "matched-text-probe")
+        assert _post(client, probe_id, token, _report("r-match-1", assets)).status_code == 200
+        instance_id = client.get(
+            f"/api/v1/asset-instances?probe_id={probe_id}").json()["items"][0]["id"]
+        detection_id = next(
+            item["id"] for item in
+            client.get(f"/api/v1/asset-instances/{instance_id}").json()["detections"]
+            if item["category"] == "phone")
+        covered = client.get(f"/api/v1/detections/{detection_id}/evidence").json()
+        assert covered["matches_returned"] == 1
+        assert covered["items"][0]["matches"] == [
+            {"value": "13800138000", "context": "mobile,13800138000"}]
+
+        # A second scan with no returned text keeps the stored sample.
+        bare = [_hit("phone", field="mobile", sheet="Sheet1")]
+        assert _post(client, probe_id, token, _report(
+            "r-match-2", [_file("/srv/data/contacts.csv", hits=bare)],
+            observed_at="2026-09-15T02:00:00+00:00")).status_code == 200
+        kept = client.get(f"/api/v1/detections/{detection_id}/evidence").json()
+        assert kept["items"][0]["matches"] == [
+            {"value": "13800138000", "context": "mobile,13800138000"}]
+
+
+def test_returned_matched_text_is_rebounded_by_the_platform() -> None:
+    """A host cannot widen the caps by sending more or longer strings."""
+    hits = [_hit("phone", field="mobile",
+                 matches=[{"value": "1" * 400, "context": "c" * 900} for _ in range(9)])]
+    assets = [_file("/srv/data/wide.csv", hits=hits)]
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "matched-text-bounds-probe")
+        assert _post(client, probe_id, token, _report("r-match-3", assets)).status_code == 200
+        instance_id = client.get(
+            f"/api/v1/asset-instances?probe_id={probe_id}").json()["items"][0]["id"]
+        detection_id = next(
+            item["id"] for item in
+            client.get(f"/api/v1/asset-instances/{instance_id}").json()["detections"]
+            if item["category"] == "phone")
+        covered = client.get(f"/api/v1/detections/{detection_id}/evidence").json()
+        assert covered["matches_returned"] == 3
+        for item in covered["items"][0]["matches"]:
+            assert len(item["value"]) == 120
+            assert len(item["context"]) == 240
+
+
 def test_one_detection_per_instance_and_type_with_deduplicated_evidence() -> None:
     with TestClient(app) as client:
         probe_id, token = _register_probe(client, "detection-probe")
@@ -433,7 +488,10 @@ def test_one_detection_per_instance_and_type_with_deduplicated_evidence() -> Non
                         ("SD_PHONE_002", "regex"), ("SD_PHONE_002", "field_name")}
         assert evidence["items"][0]["field_name"] == "mobile"
         assert evidence["items"][0]["sheet_name"] == "Sheet1"
-        assert "匹配到的原始值" in evidence["note"]
+        assert "原文" in evidence["note"]
+        # No returned text in this fixture: the row says so instead of pretending.
+        assert evidence["items"][0]["matches"] == []
+        assert evidence["matches_returned"] == 0
 
         # Re-sending the same scan must not duplicate evidence rows.
         assert _post(client, probe_id, token, _report("r-det-1b", assets,
@@ -1051,7 +1109,7 @@ def test_level_mapping_is_explainable_and_never_overwrites_the_legacy_field() ->
 
 
 # --- probe removal ----------------------------------------------------------
-def test_deleting_a_probe_removes_its_observation_state_but_not_the_objects() -> None:
+def test_deleting_a_probe_preserves_observations_and_evidence() -> None:
     """`DELETE /probes/{id}` keeps collected records; the object model follows.
 
     An instance identity is ``(probe_id, path)``, so the probe's instances,
@@ -1080,6 +1138,44 @@ def test_deleting_a_probe_removes_its_observation_state_but_not_the_objects() ->
         assert db.scalars(select(Detection).where(Detection.probe_id == probe_id)).all() == []
         obj = db.get(DataObject, object_id)
         assert obj is not None, "the logical object outlives the probe that first saw it"
-        assert obj.instance_count == 0 and obj.active_instance_count == 0
+        assert obj.instance_count == 1 and obj.active_instance_count == 0
+        archived = db.scalar(select(AssetInstance).where(AssetInstance.object_id == object_id))
+        assert archived.status == 'SOURCE_RETIRED'
+        assert archived.owner_key == f'probe:{probe_id}'
+        detections = list(db.scalars(select(Detection).where(Detection.instance_id == archived.id)))
+        assert detections
+        assert db.scalar(select(DetectionEvidence).where(DetectionEvidence.detection_id == detections[0].id)) is not None
         assert db.scalars(select(DataAsset).where(
             DataAsset.extra["probe_id"].as_integer() == probe_id)).all() != []
+
+
+def test_task_asset_membership_survives_rescan_and_isolates_probes() -> None:
+    with TestClient(app) as client:
+        pid, token = _register_probe(client, "task-membership")
+        other, other_token = _register_probe(client, "task-membership-other")
+        first = _post(client, pid, token, _report("membership-1", [
+            _file("/srv/data/member.csv", sha=_h("member")),
+            _file("/srv/data/clean.csv", sha=_h("clean-member"), categories=(), hits=[]),
+        ])).json()
+        _post(client, other, other_token, _report("membership-1", [
+            _file("/srv/data/other.csv", sha=_h("other-member"))]))
+        _post(client, pid, token, _report("membership-2", [
+            _file("/srv/data/member.csv", sha=_h("member-updated")),
+        ], observed_at="2026-09-16T00:00:00+00:00"))
+        response = client.get('/api/v1/asset-instances', params={'task_id': first['id'], 'page_size': 1})
+        assert response.status_code == 200
+        body = response.json()
+        assert body['total'] == 2
+        assert len(body['items']) == 1
+        assert body['association'] == 'recorded_membership'
+        assert body['items'][0]['probe_id'] == pid
+        # Older tasks have only last_scan_id: expose that limitation explicitly.
+        with SessionLocal() as db:
+            task = db.get(Task, first['id'])
+            task.result = {k: v for k, v in task.result.items() if k != 'asset_instance_ids'}
+            db.commit()
+        legacy = client.get('/api/v1/asset-instances', params={'task_id': first['id']}).json()
+        assert legacy['association'] == 'latest_scan_only'
+        assert legacy['total'] == 1
+        assert legacy['items'][0]['name'] == 'clean.csv'
+        assert client.get('/api/v1/asset-instances?task_id=99999999').status_code == 404

@@ -85,6 +85,7 @@ source/
   `integrations.py`、`data_catalog.py`、`deployments.py`、`libraries.py`、`profiles.py`、`rules.py`、
   `auth.py`、`health.py`、`network_scan.py`、`test_data.py`、`rulesets.py`；
   跨域复用的鉴权与上传守卫放 `api/dependencies.py`，跨域复用的响应结构放 `api/*_presenter.py`。
+  目标数据库直连盘点在 `database_connections.py`（`/database-connections*`）。
 - 列表统一用 `page` / `page_size`，返回 `{items, total, page, page_size}`（见 `app/api/pagination.py`）。
 - 认证：控制台用会话 Cookie / Bearer；探针接口用 `X-Probe-ID` + `X-Probe-Token`。
 - 不要随意删除已有 API、改路径或改返回结构。确需修改时，先评估兼容性并记入 `PROJECT_STATUS.md`。
@@ -92,7 +93,9 @@ source/
 ## 数据库规范
 
 - 表结构以 `app/models.py` 为准；任何结构变更必须新增 Alembic 迁移（`backend/alembic/versions/`）。
-  已发布的迁移文件不可回改。当前最新为 `0015_alert_hits`（v2.12.0 发布基线；已在本机应用）。
+  已发布的迁移文件不可回改。当前最新为 `0016_database_connections`（新增 `database_connections` 表，
+  并给 `asset_instances` / `detections` 增加来源列、把实例唯一键从 `(probe_id, path)` 改为 `(owner_key, path)`；
+  已随 API 容器启动时的 `alembic upgrade head` 应用）。
 - 严重度/风险等级统一用英文首字母大写：`Critical` / `High` / `Medium` / `Low`。
 - 派生表（如 `incidents`）可以在根因修复后用维护端点按原始数据重算，但**绝不允许凭空造数据**。
 - 维护端点参考：`POST /api/v1/admin/data-assets/backfill`、`POST /api/v1/admin/data-assets/rebuild-projection`
@@ -470,9 +473,108 @@ composable 里，轮询 timer 归 composable 所有并在卸载时清除，不�
 Grype 导入任务轮询（2s）由 composable 持有，任务 id 存 `localStorage`，卸载时清除定时器；IOC 开关按
 `metadata.enabled` 取反提交后重载。回归：`frontend/src/__tests__/threat-center-state.test.ts`（32 项）。
 
+## 目标数据库直连盘点边界（2026-09-20）
+
+平台自己连接目标数据库（不经过探针、不经过 SSH 隧道），由状态与 API 编排在
+`backend/app/services/database_scan/`（`adapters` 连接与反射、`detect` 按列复用共享敏感引擎、
+`ingest` 落库、`connection_service` 校验与凭据、`scan` 编排），路由在 `api/database_connections.py`，
+任务名 `security_toolbox.database_scan`（`analysis_tasks.database_scan_task`）。
+前端 `DatabaseConnections.vue` + `composables/useDatabaseConnections.ts` + `api/databaseConnections.ts`。
+
+这些约束不要放宽：
+
+- **只读**：`adapters` 在连接池 connect 钩子里对每条连接执行 `SET SESSION TRANSACTION READ ONLY`
+  并回读 `@@session.transaction_read_only`；服务器回答「可写」时必须拒绝采集。不要为「方便」去掉校验。
+- **不给 SQL 文本入口**：标识符一律来自反射；任何新增接口都不得接受用户提交的 SQL 片段。
+- **口令只写不读**：库内存密文，响应与审计只允许出现 `password_set`；解密失败按凭据错误处理，不得回退到别的口令。
+- **检测口径**：只有值命中计入 counts/categories，字段名/关键字线索进 `candidates`，不要把列名当数据。
+- **退役**：未再见到的表只在范围完整（`complete_scope`）时才标记退役，取消/超时不得退役。
+
+路径/哈希：`asset_instances.owner_key` 为 `probe:<id>` 或 `db:<连接 id>`，与 `source_kind` 一起构成来源；
+证据原文出口仍只有 `GET /api/v1/detections/{id}/evidence`。回归：`backend/tests/test_database_*.py`
+（真机门控 `test_database_scan_target.py` 需要 `.local/db-target.env`）与
+`frontend/src/__tests__/database-connections-state.test.ts`。
+## 共享文件来源边界（2026-09-20）
+
+平台自己连接 FTP / 显式 FTPS / SFTP 共享目录（不经探针、不经 SSH 隧道），由状态与 API 编排在
+`backend/app/services/file_scan/`（`adapters` 只读传输、`credentials` 口令加密、`service` 配置与任务快照、
+`scan` 预算化枚举与临时文件清理、`ingest` 复用共享敏感引擎与证据/资产写入口），路由在
+`api/file_sources.py`，任务名 `security_toolbox.file_source_scan` 与 `security_toolbox.file_source_schedule`
+（beat 每 60 秒检查到期来源）。前端 `SourceManagement.vue`（来源管理，「共享文件」页签内嵌 `FileSources.vue`）
+`+ composables/useFileSources.ts + api/fileSources.ts`；迁移 `0017_file_sources`。
+
+这些约束不要放宽：
+
+- **只读**：适配层只用 `MLSD`/`LIST`、`RETR` 与 SFTP 读操作，不提供写入/删除/改名入口；远端名字先经
+  `child_path` 校验（`..`、路径分隔符、CR/LF/NUL 一律拒绝），符号链接只记 `skip`、永不跟随。
+- **列目录兼容**：优先 `MLSD`，服务器回答 500/502（如 vsFTPd 3.0.5）时回退解析 `LIST`；550 等真实回答
+  不得重试为其他命令，必须归类上报。
+- **错误只报类别**：`auth_error`/`path_error`/`protocol_error`/`timeout`/`dns_error`/`unreachable`；
+  服务器回显文本可能带账号口令，任何情况下不得写进任务、来源记录或日志。
+- **口令只写不读**：库内存密文（AAD 绑定来源 id 与用户名），响应与审计只允许出现 `password_set`；
+  改名/换密钥后按凭据错误处理，不得回退到别的口令。改用户名必须同时提供新口令。
+- **目标身份不可变**：协议、地址、端口创建后不可改（要换端点就新建来源，保留原来源历史）；**共享目录可改**：
+  路径按远端绝对路径存储，移动目录只让旧路径在下一次完整采集后标记 `NOT_OBSERVED`，不删除资产。
+  同一来源同时只允许一个采集任务；采集中的来源不可删除，删除只移除配置，已采集资产与证据保留。
+- **诚实覆盖度**：逐文件记录 `coverage` 与 `termination_reason`；只有范围完整时才把未再观测到的路径标记
+  `NOT_OBSERVED`，取消/超时/预算截断都不退役。
+
+路径/哈希：`asset_instances.owner_key` 为 `probe:<id>`、`db:<连接 id>` 或 `file-source:<来源 id>`，与
+`source_kind`（`file`/`database`/`file_share`）一起构成来源；实例详情接口必须返回
+`source_kind`/`owner_key`/`source_name`，页面按三类显示，不得把共享文件或数据库来源显示成探针。
+证据原文出口仍只有 `GET /api/v1/detections/{id}/evidence`。回归：`backend/tests/test_file_sources.py` 与
+`frontend/src/__tests__/file-sources-state.test.ts`、`asset-inventory-state.test.ts`。
+
+
+## 统一规则源与命中原文边界（2026-09-20）
+
+控制台手写的规则、probe 内置包、文件扫描、数据库扫描与网络防泄密跑的是**同一个敏感引擎**：
+平台侧唯一入口是 `backend/app/services/sensitive_engine.py`（`scan_engine()` = 内置包 + 规则库手写规则，
+按 `analyst_signature()`（`data/integrations/dlp_rules/*.json` 的 mtime+size）缓存重建；对外还有
+`scan_all()` / `analyst_rules()` / `has_analyst_rule()` / `scan_timeouts()` /
+`to_legacy_hits(..., include_matches=True)`）。消费方 `engine/data_engine/engine.py`、
+`services/file_scan/ingest.py`、`services/database_scan/detect.py`、`services/dlp_service.py` 一律走它，
+**不要再各写一份规则加载**。"一条规则、三处命中、带原文"就是这条线的验收口径。
+
+这些约束不要放宽：
+
+- **一条规则一处定义，两处生效面**：规则只写规则库（`manual` / `presidio_static`）；
+  `ruleset_service.sync_analyst_rules()` 把它镜像进规则集的**工作副本**（已发布版本不可变），
+  **要下发给探针必须人工发布**。控制台加规则对平台侧三条链路立即生效，探针侧要等发布。
+- **手写规则不受类别白名单约束**：网络防泄密的 `policy['categories']` 只过滤内置包命中；操作者自己写的规则
+  命中一律上报（作者意图优先），不要用策略勾选项把它滤掉。
+- **实体大小写保留**：`to_legacy_hits` 只对内置包回落历史小写名，自定义实体（`COMPANY`、`测试`）原样输出；
+  类别过滤按大小写不敏感比较。
+- **原文只走 `matches`**：每条命中 ≤3 条、`value` ≤120、`context` ≤240 字符（探针与平台两侧各自重裁，
+  平台侧只接受非空 `value`）；`shared/sensitive_detection/report_guard.py` 把它列为 `RAW_TEXT_KEYS`。
+  计数、类别、规则元数据、`samples` 永远不含值，只命中字段名/关键字的命中 `matches` 为空列表。
+- **策略关键词与文件指纹**：关键词命中标 `rule_source='policy_keyword'`（原文由
+  `shared/sensitive_detection/engine.py::text_matches()` 生成），文件指纹命中标 `rule_source='policy_fingerprint'`
+  且 `matches=[]`；`analyze_capture()` 不得再往策略字典里写 `managed_rules`（每次调用必须用局部
+  `rule_timeouts`，否则会跨任务累积）。
+- **告警阈值不是命中阈值**：命中是否进告警中心还取决于风险分与 `alert_policy`
+  （`high_finding_min_risk` 默认 60）。同一份命中，目的地址是内网（`exposure_factor=2.0`）时
+  `risk=51` 不告警、是公网（`exposure_basis=external_destination`）时 `risk=76.5` 才告警——
+  这是设计边界，改动它要用户确认，不要顺手调。
+
+回归：`backend/tests/test_dlp_detection_quality.py`、`test_rule_libraries.py`、
+`tests/shared/test_engine_wiring.py` 与 `frontend/src/__tests__/network-dlp-discovery-state.test.ts`。
+
+
 ## 与其他文档的关系
 
 - 交付/演示口径：`docs/领导演示方案.md`
 - 部署与运行：`docs/部署与运行手册.md`、`docs/deployment.md`、`docs/offline-deployment.md`
 - 验收：`docs/acceptance_test.md`、`docs/acceptance_test_report.md`
 - 版本策略：`docs/versioning.md`、`CHANGELOG.md`
+
+
+## 数据库连接页状态边界（2026-09-21 第三十一批）
+
+`frontend/src/modules/data-security/composables/useDatabaseConnections.ts` 是协调入口：负责列表、选中连接、
+删除/测试与刷新；编辑草稿/保存进 `useDatabaseConnectionForm`，库表范围/派发进 `useDatabaseScope`，
+详情/历史/抽屉与 5 秒轮询进 `useDatabaseScans`。子模块只通过显式响应式参数与回调协作，不反向导入入口。
+`DatabaseConnectionForm.vue` / `DatabaseScanDetail.vue` 是展示组件，不调用 API；表单使用父级草稿，
+密码只写不读、编辑空密码不提交、保存成功才清空。timer 只有 scans 一处持有，初次加载后启动、卸载清除。
+纯标签在 `databaseConnectionPresentation.ts`，旧入口保留返回字段与 `ConnectionForm` 类型导出。
+回归：`database-connections-state.test.ts`、`database-connections-page.test.ts`、typecheck 与全量 vitest。

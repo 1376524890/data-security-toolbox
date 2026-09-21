@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
-import json
 from typing import Any
 
 from app.core.config import settings
+from app.deployment.package import PackageError
+from app.deployment.runtime import check_runtime
 from app.deployment.ssh_client import SshClient, SshError
 
 
@@ -22,15 +23,6 @@ def _os_name(os_release: str) -> str:
     return match.group(1).strip().strip("\"'").lower()
 
 
-def _python_ok(python_version: str) -> tuple[bool, str]:
-    match = re.match(r"Python (\d+)\.(\d+)", python_version)
-    if not match:
-        return False, python_version
-    major, minor = int(match.group(1)), int(match.group(2))
-    ok = (major, minor) >= (3, 11)
-    return ok, python_version
-
-
 def run_preflight(ssh: SshClient, profile: str | None = None, backend_url: str | None = None) -> dict[str, Any]:
     """Collect host facts and return a preflight report (no secrets)."""
     checks: list[dict[str, Any]] = []
@@ -43,10 +35,6 @@ def run_preflight(ssh: SshClient, profile: str | None = None, backend_url: str |
     arch = arch_raw.lower()
     arch_norm = "amd64" if arch in {"x86_64", "amd64"} else ("arm64" if arch in {"aarch64", "arm64"} else arch)
     os_name = _os_name(os_release)
-
-    _, python_raw = _run(ssh, "python3 --version 2>&1 || true")
-    python_ok, python_version = _python_ok(python_raw)
-    add("python", ">=3.11", python_version, python_ok)
 
     _, pid1 = _run(ssh, "ps -p 1 -o comm= 2>/dev/null || echo none")
     systemd_ok = pid1 == "systemd"
@@ -69,10 +57,6 @@ def run_preflight(ssh: SshClient, profile: str | None = None, backend_url: str |
     disk_ok = disk_mb >= 1024
     add("disk", ">=1024 MB free", f"{disk_mb} MB", disk_ok)
 
-    _, capture_tools = _run(ssh, "command -v dumpcap 2>/dev/null; command -v tcpdump 2>/dev/null")
-    capture_tool = "dumpcap" if "dumpcap" in capture_tools else ("tcpdump" if "tcpdump" in capture_tools else "")
-    add("capture_tool", "dumpcap|tcpdump", capture_tool or "none", bool(capture_tool))
-
     _, interfaces = _run(ssh, "ls /sys/class/net 2>/dev/null")
     iface_list = [line for line in interfaces.splitlines() if line and line not in {"lo"}]
     add("interface", "non-loopback NIC", ", ".join(iface_list[:5]) or "none", bool(iface_list))
@@ -82,27 +66,22 @@ def run_preflight(ssh: SshClient, profile: str | None = None, backend_url: str |
     add("sudo", "root or passwordless sudo", "ok" if sudo_ok else "unavailable", sudo_ok)
 
     backend_url = backend_url or settings.deployment_backend_url
-    connectivity_ok = False
-    connectivity_detail = ""
-    if backend_url:
-        rc, out = _run(
-            ssh,
-            "python3 - <<'PY'\n"
-            "import socket, urllib.request\n"
-            "try:\n"
-            f"    host = {json.dumps(backend_url.rstrip('/') + '/api/v1/health')}\n"
-            "    socket.setdefaulttimeout(10)\n"
-            "    urllib.request.urlopen(host, timeout=10)\n"
-            "    print('ok')\n"
-            "except Exception as e:\n"
-            "    print('fail:', type(e).__name__)\n"
-            "PY",
-        )
-        connectivity_ok = "ok" in out
-        connectivity_detail = out
-    else:
-        connectivity_detail = "backend_url not configured"
-    add("backend_connectivity", "HTTP(S) reachable", connectivity_detail[:200], connectivity_ok)
+    runtime = {}
+    runtime_error = ""
+    try:
+        runtime = check_runtime(ssh, arch_norm, backend_url)
+    except (PackageError, SshError) as exc:
+        runtime_error = str(exc)
+    python_version = str(runtime.get("python", "unavailable"))
+    capture_tool = str(runtime.get("capture_tool", ""))
+    runtime_ok = bool(runtime.get("ok"))
+    connectivity_ok = bool(runtime.get("connectivity"))
+    add("python", "bundled Python 3.11 (host Python not required)", python_version, runtime_ok,
+        runtime_error or str(runtime.get("error", "")))
+    add("capture_tool", "bundled dumpcap + tcpdump", capture_tool or "unavailable", runtime_ok)
+    add("backend_connectivity", "HTTP(S) reachable using bundled Python",
+        "ok" if connectivity_ok else "unreachable", connectivity_ok,
+        runtime_error or str(runtime.get("error", "")))
 
     compatible = all(item["pass"] for item in checks if item["name"] != "backend_connectivity") and connectivity_ok
     capability_score = 100 if compatible else max(0, sum(10 for item in checks if item["pass"]))

@@ -326,3 +326,24 @@ def test_delete_probe_can_strip_the_host_in_the_same_request(monkeypatch) -> Non
             json={"remove_remote": True, "auth_type": "password", "password": "secret"},
         )
         assert refused.status_code == 400
+
+
+def test_platform_delete_failure_keeps_remote_success_and_destroys_credential(monkeypatch, tmp_path):
+    _fake_ssh(monkeypatch, tmp_path)
+    def failed_delete(db, probe_id):
+        db.add(Probe(name=None))
+        db.flush()  # Put the ORM session into a real failed-transaction state.
+    monkeypatch.setattr(removal, 'delete_probe_record', failed_delete)
+    with SessionLocal() as db:
+        probe = Probe(name='platform-delete-failure', token='live', token_hash='hash')
+        db.add(probe)
+        db.commit()
+        probe_id = probe.id
+        deployment_id = _removal_row(db, probe_id=probe_id, removal_options={'delete_record': True})
+        removal.RemovalService(db, deployment_id).run()
+        row = db.get(ProbeDeployment, deployment_id)
+        assert row.status == 'REMOVED'
+        assert row.result['platform_record_deleted'] is False
+        assert row.result['platform_record_error'] == 'database_error'
+        assert _credential_rows(db, deployment_id) == []
+        assert db.get(Probe, probe_id).token_hash == ''

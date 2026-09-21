@@ -19,6 +19,8 @@ export const menuGroups: MenuNode[] = [
   ]},
   { group: '资产与数据安全', items: [
     { path: '/assets', title: '资产中心', icon: 'Monitor' },
+    { path: '/asset-inventory', title: '资产目录', icon: 'Grid' },
+    { path: '/source-management', title: '来源管理', icon: 'DataLine' },
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },
     { path: '/data-types', title: '数据类型中心', icon: 'Grid' },
     { path: '/scan-profiles', title: '扫描配置', icon: 'Setting' },
