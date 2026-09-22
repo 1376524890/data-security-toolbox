@@ -61,6 +61,26 @@ Ubuntu 26.04 / 64 核 123G，Docker 29.1.3，`/` 剩 70G；本机与目标机同
   `10.99.99.1`（非 110）→ 两个端口均超时丢弃；SSH 22 不受影响；`systemctl restart docker`
   之后规则仍在、8 容器自动恢复 healthy。临时 netns/veth 已清理。增删网段改脚本里的 `ALLOW_CIDRS`。
 
+- 按用户要求把目标机上的项目接入远程仓库并纳入版本控制（**目标机现在是可开发的工作副本**）：
+  1. **同一个仓库**：`/home/user/dst-toolbox-3.0.0-linux-arm64` 接的是
+     `origin git@github.com:1376524890/data-security-toolbox.git`，在 `develop` 分支跟踪 `origin/develop`。
+     与研发机**逐字节一致**：HEAD 都是 `43c2092`、树哈希都是 `594070b8`、131 个提交 / 717 个跟踪文件。
+  2. **认证走目标机自己的密钥**：目标机生成 `~/.ssh/id_ed25519`（ed25519），公钥已加进 GitHub 账号
+     `1376524890`；`git ls-remote`、`git fetch`、`git push --dry-run`（`Everything up-to-date`）均实测通过。
+     提交身份 `Codex <codex@example.com>`（`git config` 局部设置，未动全局）。
+  3. **解包残留只在本机忽略**：`README-离线部署.md` / `SHA256SUMS.txt` / `VERSION` / `deploy.conf` /
+     `deploy.sh` / `undeploy.sh` 写进 **`.git/info/exclude`**（故意**不进共享 `.gitignore`**：它们是打包脚本
+     从 `deploy/` 拷到包根的产物，仓库里已有正规来源，不该被全局忽略）。这样 `git status` 保持干净，
+     又不会把交付件误提交。
+  4. **`.env` 不入库**（`.gitignore:8`）：目标机 `.env` 是 `600 root:root`，含管理员口令、
+     `SECRET_KEY`、`POSTGRES_PASSWORD`、`PROBE_BOOTSTRAP_TOKEN`，**不要 `git add -f`**。
+  5. 目标机可直接开发提交：`cd ~/dst-toolbox-3.0.0-linux-arm64 && git add -A && git commit -m '…' && git push`。
+- **安全提醒（本轮发现，尚未处理）**：远程仓库 `1376524890/data-security-toolbox` 当前是 **public**
+  （GitHub API `visibility=public`），而本文件第 30 行记着控制台的真实管理员口令（`admin / <见该行>`）。
+  建议**把仓库改成 private**，或抹掉该口令后只保留「口令在目标机 `.env` / 由 `deploy.sh` 打印」。已核对
+  **源码本身没有硬编码真实凭据**（`.env.example`、`backend/tests/conftest.py`、`probe/install.sh` 里
+  都是占位或测试值）。另：默认分支是 `master`，`develop` 只是分支，改默认分支前先确认没有依赖。
+
 ## 第四十批：v3.0.0 一键离线部署套件与发布（2026-09-22）
 
 用户目标：给一个**一键配置脚本**，包含全部参数的设置，一键跑完部署；然后重新推 git、发布包、发布 release，
