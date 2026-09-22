@@ -51,13 +51,21 @@ def _reveal(deployment: ProbeDeployment) -> dict[str, Any]:
     return {"password": None, "private_key": secret, "key_passphrase": None}
 
 
+#: The statuses a *successful* install ends at. A push install is marked
+#: REGISTERED when the probe calls back and ONLINE on its first heartbeat
+#: (``api/probes.py``); nothing in the platform ever writes "SUCCEEDED", which
+#: is what this lookup used to ask for - so no task-dedicated probe was ever
+#: retired, and a probe that had once captured could not be cleaned up.
+SETTLED_INSTALL_STATES = ("REGISTERED", "ONLINE")
+
+
 def owner_deployment(db: Session, probe_id: int) -> ProbeDeployment | None:
-    """The successful install deployment that created this probe, if any."""
+    """The install deployment that put this probe on its host, if any."""
     return db.scalar(
         select(ProbeDeployment)
         .where(ProbeDeployment.probe_id == probe_id,
                ProbeDeployment.action == "install",
-               ProbeDeployment.status == "SUCCEEDED")
+               ProbeDeployment.status.in_(SETTLED_INSTALL_STATES))
         .order_by(ProbeDeployment.id.desc()))
 
 

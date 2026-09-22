@@ -251,13 +251,16 @@ class ProbeDeleteRequest(BaseModel):
     user override the values recorded at deploy time, which is what makes the
     button work for a probe that was registered by hand or whose deployment row
     is gone.
+
+    A credential may be left out entirely: the platform then retires the probe
+    with the one its install retained, which is the whole point of retaining it.
     """
 
     remove_remote: bool = False
     host: str | None = Field(default=None, max_length=255)
     port: int | None = Field(default=None, ge=1, le=65535)
     username: str | None = Field(default=None, max_length=128)
-    auth_type: Literal["password", "private_key"] = "password"
+    auth_type: Literal["password", "private_key"] | None = None
     password: str | None = None
     private_key: str | None = None
     key_passphrase: str | None = None
@@ -267,7 +270,10 @@ class ProbeDeleteRequest(BaseModel):
 
     @model_validator(mode="after")
     def credential_required_when_remote(self) -> "ProbeDeleteRequest":
-        if self.remove_remote:
+        # Only a *stated* auth type has to arrive with its secret; omitting both
+        # means "use the credential the install retained" and is resolved by the
+        # route, which refuses the request when there is nothing to reuse.
+        if self.remove_remote and self.auth_type is not None:
             _validate_ssh_credential(self.auth_type, self.password, self.private_key)
         return self
 

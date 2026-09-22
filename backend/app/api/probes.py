@@ -37,6 +37,7 @@ from app.deployment.record import DeploymentError
 from app.deployment.removal import create_removal_deployment
 from app.models import Probe, ProbeDeployment, Task, User
 from app.schemas import Heartbeat, ProbeDeleteRequest, ProbeRegister, ProbeScanRequest
+from app.services import probe_lifecycle
 from app.services.crypto_profile import build_crypto_profile
 from app.services.probe_service import ProbeInUseError, ProbeNotFoundError, delete_probe_record
 from app.services.probe_task_service import expire_probe_tasks, visible_tasks
@@ -259,8 +260,6 @@ def delete_probe(
         # take it away again: retire it with that one instead of making the
         # operator re-type the host password for a machine the platform already
         # has access to.
-        from app.services import probe_lifecycle
-
         retained = probe_lifecycle.retained_credential(db, probe_id)
         if retained is None:
             raise HTTPException(400, "探针的部署未保留凭据，请提供 auth_type 与口令或私钥")
