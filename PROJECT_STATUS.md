@@ -1,6 +1,21 @@
 # 项目状态
 
-2026-09-22 第四十批（本轮）：**v3.0.0 一键离线部署套件与发布**。
+2026-09-22 第四十二批（本轮）：**目标机接入远程 Git，探针监控修复上线**。
+
+目标机 `/home/user/dst-toolbox-3.0.0-linux-arm64`（3.0.0 离线包解包目录）已纳入版本控制：
+`origin = git@github.com:1376524890/data-security-toolbox.git`、分支 `develop` 跟踪 `origin/develop`，
+免密走目标机自带密钥（ED25519 `SHA256:fhthVPgD4RndCOuQORa3Ws0wnEle1TIHywAWBN2t4Fg`），`fetch`/`push`
+均可用；发布件与运行期数据（`.env`、`deploy-data/`、`dist-offline/`、包根 `deploy.sh` 等）只在本机忽略、
+不进仓库。本地与目标机 `HEAD^{tree}` = `0627e286355001f81956c24df2eb59d1c1361ee1`，代码逐字节一致。
+
+上一批 `804b420` 说明里承诺的「安装状态」根因当时漏进了提交（`owner_deployment` 仍查没人写过的
+`SUCCEEDED`），补 `653ada3`：改查 `REGISTERED`/`ONLINE`，`DELETE /probes/{id}` 可复用安装保留的凭据。
+目标机离线拉不到 base image，三个应用镜像在本机重建后 `docker save | gzip -1 | ssh` 运过去 `docker load`
+并 `--force-recreate`；线上复验：`/health` 3 个 worker、`analysis_worker: ready`、`tshark.available=true`，
+停 monitoring 任务 3 → `Cancelled` 且 186 条 pcap 片段转 `Cancelled`、被堵住的 `scan` id=34 转 `Running`，
+停监测后探针被远端卸载并从 `probes`/`probe_deployments` 清空。详见 `TASK.md` 第四十二批。
+
+2026-09-22 第四十批（上一批）：**v3.0.0 一键离线部署套件与发布**。
 
 平台版本从 2.14.0 升到 **3.0.0**（探针保持 3.7.0，迁移 head `0019_policy_group_fingerprints`），
 本版把此前几批已上线未发版的内容一并落成正式发布，并首次交付 **arm64 一键离线部署包**。

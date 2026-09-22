@@ -1,5 +1,55 @@
 # 当前任务：资产与数据安全增强
 
+## 第四十二批：目标机接入远程 Git + 探针监控修复上线（2026-09-22）
+
+用户目标：把目标机上那份项目接到 `git@github.com:1376524890/data-security-toolbox.git` 并纳入版本控制。
+
+**目标机 Git 接入（真实执行）**
+
+- 工作树 `/home/user/dst-toolbox-3.0.0-linux-arm64`（3.0.0 离线包解包目录）已建库：
+  `origin = git@github.com:1376524890/data-security-toolbox.git`，分支 `develop` 跟踪 `origin/develop`，
+  提交身份 `Codex <codex@example.com>`（与本地一致）。
+- 免密走目标机自己的密钥 `~/.ssh/id_ed25519`（ED25519，`SHA256:fhthVPgD4RndCOuQORa3Ws0wnEle1TIHywAWBN2t4Fg`）；
+  `ssh -T git@github.com` 回 `Hi 1376524890!`，`git fetch` / `git push --dry-run` 均通——目标机不是只读镜像，
+  本身就是一处可提可拉的工作副本。
+- 交付包根多出来的发布件（`README-离线部署.md`、`SHA256SUMS.txt`、`VERSION`、`deploy.conf`、`deploy.sh`、
+  `undeploy.sh`）写进 `.git/info/exclude`（只在本机忽略，不动仓库共享的 `.gitignore`）；运行期数据
+  `.env`、`deploy-data/`、`dist-offline/`、`frontend/dist|node_modules` 由仓库 `.gitignore` 覆盖。
+  `git status` 干净，改动全在受控范围内。
+- 一致性核对：本地与目标机 `HEAD^{tree}` 同为 `0627e286355001f81956c24df2eb59d1c1361ee1`。
+- `.git` 只有 14M（包内自带历史），目标机无需再克隆一份即可开发。
+
+**线上修复探针监控任务（真实执行）**
+
+- `804b420` 提交说明里承诺的第二处根因**当时漏进了提交**：`probe_lifecycle.owner_deployment()` 仍按
+  `status == "SUCCEEDED"` 找安装单，而全代码库没有一处写 `SUCCEEDED`（推送安装的终态是探针回调时的
+  `REGISTERED`、首次心跳后的 `ONLINE`），所以任务专属探针从未被自动回收、抓过包的探针也删不掉。
+  补提交 `653ada3`：改查 `REGISTERED`/`ONLINE`；`DELETE /probes/{id}` 允许不带口令、改用安装保留的凭据，
+  没有可复用的凭据才 400；`ProbeDeleteRequest.auth_type` 因此改回可选，校验器只在显式给了类型时触发。
+  `tests/test_probe_lifecycle.py` +5 项后 16 项全绿。
+- 目标机离线拉不到 base image（`failed to resolve reference "docker.io/library/python:3.11-slim"`），
+  三个应用镜像在本机（同为 aarch64）用 legacy builder 重建后运过去：`docker save backend worker frontend
+  | gzip -1 | ssh`（883 673 359 字节，约 70 秒，~19MB/s），`docker load` 后**逐个验内容**——backend / worker
+  镜像里有 `pcap_worker_queue`、frontend 的 `TaskCenter-*.js` 里有「回收探针」——再
+  `compose up -d --no-build --force-recreate backend worker pcap-worker beat deployment-worker frontend`。
+  注：load 后镜像 ID 与本地不同（containerd 重新生成 manifest 摘要），验内容比验 ID 可靠。
+  旧镜像（`87cbabf4fbb5` / `6729dc2241a4` / `a97aa30cd0b1`）保留为 `<none>` 便于回滚，中转 tar 已删。
+- **线上复验（目标机上真实请求）**：
+  - `/api/v1/health` = ok，`celery.workers=3`（analysis / pcap / beat），`analysis_worker: ready`、
+    `tshark.available=true`——修复前这里是 `analysis_worker: offline`。
+  - `POST /api/v1/tasks/3/stop`（monitoring）→ 200 `Cancelled`，`current_stage` =
+    「已停止监测，同时取消 186 段待分析流量」；`tasks` 表里 186 条 `pcap Pending` 全部转 `Cancelled`，
+    再拉任务列表仍显示 `Cancelled`（此前列表刷新会把它重绘成「持续监测中」，是用户看到"卡死"的原因之一）。
+  - 被堵住的 `scan` id=34 立刻转 `Running`（`Nuclei 扫描 http://192.168.110.168:8080`）；`file_source_scan`
+    id=35 在 10:01 就被 `time_budget` 判过期（其配置里 `max_seconds: 1`），属旧 backlog 的连带结果。
+  - 探针回收闭环：停监测后 `retire_after_task` 排队卸载，`source-deployment-worker-1` 日志显示 10:05:58
+    收到 `run_probe_deployment`、`Authentication (password) successful!`、5 秒成功；随后 `probes` 与
+    `probe_deployments` 都是 0 行——192.168.110.168 上那份探针已被远端卸载并清掉记录（一键回收实测通过）。
+  - 控制台 `http://127.0.0.1:8080/` 200。
+- **安全提醒（未彻底处理）**：远端仓库当前是 **public**。本条已把 `TASK.md` 里明文的管理员口令换成
+  「取自目标机 `.env` 的 `ADMIN_PASSWORD`」，但 `43c2092` 这次提交的历史里仍有该口令，彻底消除需要
+  把仓库改 private 或重写历史。
+
 ## 第四十一批：交付包实测离线部署到 192.168.110.50（2026-09-22）
 
 用户目标：连到 `user@192.168.110.50`，把本项目**以离线方式**部署上去并测试能跑。目标机 aarch64 /
@@ -27,7 +77,7 @@ Ubuntu 26.04 / 64 核 123G，Docker 29.1.3，`/` 剩 70G；本机与目标机同
 - 验收（全部真实请求）：8 容器 Up（backend / worker / postgres / redis healthy）；`/api/v1/health`
   status=ok、db/redis/celery ok、tshark 4.4.18 + zeek 8.2.2 + suricata 7.0.10 均 available；
   `http://192.168.110.50/` `/cockpit` `/index.html` 全 200；`openapi info.version = 3.0.0`；
-  `admin / Adm1n@Dst3.0` 登录 200 并拿到会话 Cookie；按前端 `api/*.ts` 真实调用的 47 条路径逐条 curl
+  `admin / $ADMIN_PASSWORD`（口令取目标机 `.env`，仓库里不记明文）登录 200 并拿到会话 Cookie；按前端 `api/*.ts` 真实调用的 47 条路径逐条 curl
   全部 200；Playwright 带会话截图 `/cockpit` 与 `/` 两个首页均正常渲染（驾驶舱显示“API ok、
   集成组件 5/8、Sigma 6 条规则”，数据为空属全新库正常现象）。`.env` 落盘为 `600 root:root`。
 - `source` 栈保留在目标机运行；交付包（3.4G）与 tar.gz（1.2G）留在 `/home/user/` 供重跑/回滚。
