@@ -39,6 +39,12 @@ def self_endpoint_entries(policy):
 
 def _split_endpoint(value):
     host, port = str(value or '').strip(), None
+    # A bare port ("6379") means "this port anywhere": the platform's own service
+    # ports are how its internal traffic is recognised when the container
+    # addresses change on every recreate. It is deliberately explicit - an
+    # operator opts in by naming the port.
+    if host.isdigit():
+        return '', int(host)
     if ':' in host:
         head, _, tail = host.rpartition(':')
         if tail.isdigit() and head:
@@ -51,7 +57,7 @@ def parse_self_endpoints(entries):
     parsed = []
     for item in entries:
         host, port = _split_endpoint(item)
-        if not host:
+        if not host and port is None:
             continue
         try:
             network = ipaddress.ip_network(host, strict=False)
@@ -69,6 +75,8 @@ def endpoint_is_self(ip, port, parsed):
     for network, host, entry_port in parsed:
         if entry_port is not None and int(port) != entry_port:
             continue
+        if not host and network is None:
+            return True          # port-only entry matched above
         if network is not None:
             if address in network:
                 return True

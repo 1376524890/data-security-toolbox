@@ -50,18 +50,50 @@ function isActive(path: string): boolean {
   return route.path.startsWith(path)
 }
 
-function onAlert(alert: { title: string; severity: string; id: number }): void {
+// Popups are coalesced: a probe analysing traffic every 30 s produces alerts
+// continuously, and one toast per alert buries the console. At most one popup
+// per window, summarising what arrived in it, with a mute switch beside the bell
+// (the badge keeps counting either way).
+const ALERT_POPUP_WINDOW_MS = 15000
+const alertsMuted = ref(localStorage.getItem('dst-alert-mute') === '1')
+const pendingAlerts = ref<{ title: string; severity: string; id: number }[]>([])
+let alertWindow: number | null = null
+
+function flushAlerts(): void {
+  const items = pendingAlerts.value.splice(0)
+  if (!items.length) return
+  const worst = items.some((a) => a.severity === 'Critical') ? 'Critical'
+    : items.some((a) => a.severity === 'High') ? 'High' : 'Medium'
   ElNotification({
-    title: `${alert.severity} ${alert.title}`,
-    message: `Alert #${alert.id}`,
-    type: alert.severity === 'Critical' ? 'error' : alert.severity === 'High' ? 'warning' : 'info',
+    title: items.length === 1 ? `${items[0].severity} ${items[0].title}`
+      : `${items.length} 条新告警（最高 ${worst}）`,
+    message: items.length === 1 ? `Alert #${items[0].id}`
+      : items.slice(0, 3).map((a) => `#${a.id} ${a.title}`).join('；').slice(0, 200),
+    type: worst === 'Critical' ? 'error' : worst === 'High' ? 'warning' : 'info',
     duration: 6000,
-    onClick: () => router.push('/alerts'),
+    onClick: () => { router.push('/data-assets') },
   })
 }
 
+function onAlert(alert: { title: string; severity: string; id: number }): void {
+  pendingAlerts.value.push(alert)
+  if (alertsMuted.value) return       // muted: the badge still counts, nothing pops
+  if (alertWindow !== null) return    // one popup per window; the rest queue behind it
+  flushAlerts()
+  alertWindow = window.setTimeout(() => { alertWindow = null; flushAlerts() },
+                                  ALERT_POPUP_WINDOW_MS)
+}
+
+function toggleAlertMute(): void {
+  alertsMuted.value = !alertsMuted.value
+  localStorage.setItem('dst-alert-mute', alertsMuted.value ? '1' : '0')
+  if (!alertsMuted.value) flushAlerts()
+}
+
 function openAlerts(): void {
-  router.push('/alerts')
+  // The alert centre was merged into 数据资产; the risk list there is where an
+  // alert is acted on now.
+  router.push(activeMenuEntry('/data-assets', {}) ? '/data-assets' : '/')
 }
 
 async function loadTestStatus(): Promise<void> {
@@ -153,6 +185,10 @@ onBeforeUnmount(() => {
           <el-badge :value="unhandledAlerts" :hidden="!unhandledAlerts" :max="99">
             <el-button size="small" text @click="openAlerts"><el-icon><Bell /></el-icon></el-button>
           </el-badge>
+          <el-button size="small" text :title="alertsMuted ? '告警弹窗已静音（计数仍在）' : '告警弹窗开启'"
+                     @click="toggleAlertMute">
+            <el-icon><component :is="alertsMuted ? 'MuteNotification' : 'BellFilled'" /></el-icon>
+          </el-button>
           <el-button size="small" text :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
                      @click="toggleTheme">
             <el-icon><component :is="theme === 'dark' ? 'Sunny' : 'Moon'" /></el-icon>
