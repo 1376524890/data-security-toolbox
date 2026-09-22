@@ -19,6 +19,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.services.data_objects import persistence
+from app.services.monitoring import MONITOR_KIND
 from app.models import (
     Alert,
     AlertHit,
@@ -55,8 +56,24 @@ def delete_probe_record(db: Session, probe_id: int) -> dict[str, str]:
     probe = db.get(Probe, probe_id)
     if not probe:
         raise ProbeNotFoundError("探针不存在")
+    # A monitoring row is bookkeeping for the probe's own capture, not work
+    # anyone is waiting on: it exists only while the probe feeds segments in,
+    # so retiring the probe has to end it. Refusing here (the old behaviour)
+    # made a probe that ever captured impossible to delete, because its monitor
+    # row never reaches a terminal state by itself.
+    monitors = db.scalars(select(Task).where(
+        Task.kind == MONITOR_KIND,
+        Task.payload["probe_id"].as_integer() == probe_id,
+        Task.status.in_(["Pending", "Running"]),
+    )).all()
+    now = datetime.now(UTC)
+    for monitor in monitors:
+        monitor.status = "Cancelled"
+        monitor.current_stage = "探针已回收，监测结束"
+        monitor.finished_at = now
     active_task = db.scalar(select(Task.id).where(
         Task.payload["probe_id"].as_integer() == probe_id,
+        Task.kind != MONITOR_KIND,
         Task.status.in_(["Pending", "Running"]),
     ).limit(1))
     if active_task:

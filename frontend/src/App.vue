@@ -7,20 +7,19 @@ import { useAuthStore } from './stores/auth'
 import { useSystemStore } from './stores/system'
 import { importTestData, clearTestData, getTestStatus, markTestImported, consumeTestImported, type TestStatus } from './api/test'
 import type { IntegrationStatus } from './types/integration'
+import { applyTheme, themeMode } from './utils/theme'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const system = useSystemStore()
 const collapsed = ref(false)
-const theme = ref<'dark' | 'light'>(
-  document.documentElement.classList.contains('light') ? 'light' : 'dark')
+// The mode lives in utils/theme so the chart wrappers can rebuild their options
+// on a switch; this component only owns the toggle button.
+const theme = themeMode
 
 function toggleTheme(): void {
-  theme.value = theme.value === 'dark' ? 'light' : 'dark'
-  document.documentElement.classList.toggle('dark', theme.value === 'dark')
-  document.documentElement.classList.toggle('light', theme.value === 'light')
-  localStorage.setItem('dst-theme', theme.value)
+  applyTheme(theme.value === 'dark' ? 'light' : 'dark')
 }
 const now = ref(new Date())
 let clock = 0
@@ -44,6 +43,9 @@ const healthStatus = computed(() => system.health?.status || 'checking')
 const testDataImportEnabled = computed(() => system.health?.features?.test_data_import === true)
 
 const menuVisible = computed(() => !route.meta.public)
+// The 数据安全态势大屏 draws its own chrome and is meant to run full-bleed on a
+// wall, so the shell steps aside for it instead of donating 240px of sidebar.
+const screenLayout = computed(() => route.meta.layout === 'screen')
 
 function isActive(path: string): boolean {
   if (path === '/') return route.path === '/'
@@ -146,7 +148,7 @@ onBeforeUnmount(() => {
 <template>
   <el-config-provider>
     <div v-if="auth.user || route.meta.public" class="app-shell">
-      <aside v-if="menuVisible" class="app-aside" :class="{ collapsed }">
+      <aside v-if="menuVisible && !screenLayout" class="app-aside" :class="{ collapsed }">
         <div class="brand">
           <div class="brand-logo">D</div>
           <div v-if="!collapsed">
@@ -156,7 +158,8 @@ onBeforeUnmount(() => {
         </div>
         <nav class="side-menu">
           <template v-for="section in menuGroups" :key="section.group">
-            <div class="menu-group-title">{{ collapsed ? '···' : section.group }}</div>
+            <!-- A section without a name (数据大屏) gets no label at all. -->
+            <div v-if="section.group" class="menu-group-title">{{ collapsed ? '···' : section.group }}</div>
             <el-menu :default-active="activeKey" router :collapse="collapsed" :collapse-transition="false">
               <el-menu-item v-for="item in section.items" :key="menuIndex(item)" :index="menuIndex(item)">
                 <el-icon><component :is="item.icon" /></el-icon>
@@ -167,7 +170,9 @@ onBeforeUnmount(() => {
         </nav>
       </aside>
 
-      <div class="app-main">
+      <main v-if="screenLayout" class="app-screen"><router-view /></main>
+
+      <div v-else class="app-main">
         <header class="app-header">
           <el-button v-if="menuVisible" text @click="collapsed = !collapsed">
             <el-icon :size="18"><component :is="collapsed ? 'Expand' : 'Fold'" /></el-icon>
@@ -230,6 +235,12 @@ onBeforeUnmount(() => {
 <style>
 @import './styles/theme.css';
 @import './styles/main.css';
+
+.app-screen {
+  flex: 1; min-width: 0; height: 100vh; overflow: hidden;
+  /* The big screen is dark on purpose whatever the console theme is. */
+  background: #071426;
+}
 
 .test-badge { color: var(--soc-warning); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--soc-warning); display: inline-block; }

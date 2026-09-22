@@ -6,7 +6,7 @@ import StatCard from '../../../components/common/StatCard.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
 import HexViewer from '../../../components/evidence/HexViewer.vue'
 import { downloadUrl } from '../../../api/client'
-import AssessmentPanel from '../assessments/components/AssessmentPanel.vue'
+import EgressReport from './EgressReport.vue'
 import { useFlowReport } from './composables/useFlowReport'
 
 // 数据流动与防护 shows exactly two reports and no rule configuration: a) the
@@ -23,7 +23,8 @@ function onChange(name: string): void {
 
 const {
   loading, error, transfers, coverage, enabled, busy, selected, drawer, binary, binaryError,
-  binaryLoading, riskyCount, matchedText, alertable, load, toggleRuleSet, openTransfer,
+  binaryLoading, riskyCount, fileBoundCount, matchedText, alertable, load, toggleRuleSet,
+  openTransfer,
 } = useFlowReport()
 </script>
 
@@ -41,10 +42,11 @@ const {
           <el-button @click="load">刷新</el-button>
         </div>
         <StateBox :loading="loading" :error="error" :empty="false" @retry="load">
-          <div class="stat-grid cols-4">
+          <div class="stat-grid cols-5">
             <StatCard label="传输对象" :value="transfers.length" sub="已分析的抓包对象" />
             <StatCard label="风险对象" :value="riskyCount" sub="命中规则集且达置信度" tone="danger" />
             <StatCard label="命中对象" :value="transfers.filter((t) => t.matches.length).length" tone="warning" />
+            <StatCard label="绑定文件" :value="fileBoundCount" sub="内容与已盘点文件一致" />
             <StatCard label="覆盖抓包" :value="coverage.length" sub="含截断信息见下" />
           </div>
           <div class="soc-card" style="margin-top: 12px">
@@ -68,6 +70,17 @@ const {
                   <span v-if="!row.matches.length" class="muted">未命中</span>
                 </template>
               </el-table-column>
+              <el-table-column label="对应文件" min-width="180">
+                <template #default="{ row }">
+                  <template v-if="row.file_bound">
+                    <div v-for="file in row.files" :key="file.instance_id">
+                      <el-tag size="small" type="success">{{ file.name || file.path }}</el-tag>
+                      <span class="muted"> {{ file.source_name || file.host || file.source_kind }}</span>
+                    </div>
+                  </template>
+                  <span v-else class="muted">未匹配到已盘点文件</span>
+                </template>
+              </el-table-column>
             </el-table>
             <el-empty v-if="!transfers.length" description="尚无抓包分析结果；在任务中心下发监控任务后自动产生" />
           </div>
@@ -80,7 +93,7 @@ const {
       </el-tab-pane>
 
       <el-tab-pane label="数据出境报告" name="egress">
-        <AssessmentPanel v-if="active === 'egress'" kind="egress" />
+        <EgressReport v-if="active === 'egress'" />
       </el-tab-pane>
     </el-tabs>
 
@@ -98,6 +111,16 @@ const {
           <el-table-column prop="ruleId" label="规则" min-width="140" />
           <el-table-column prop="value" label="命中值" min-width="160" />
           <el-table-column prop="context" label="上下文" min-width="240" show-overflow-tooltip />
+        </el-table>
+        <div class="section-title">对应文件</div>
+        <el-alert v-if="!selected.file_bound" type="info" :closable="false"
+                  title="该对象的内容未匹配到已盘点的文件（可能来自未纳入盘点范围的目录，或只是片段）" />
+        <el-table v-else :data="selected.files" size="small">
+          <el-table-column prop="name" label="文件" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="path" label="路径" min-width="240" show-overflow-tooltip />
+          <el-table-column prop="source_name" label="来源" min-width="120" />
+          <el-table-column prop="host" label="主机" min-width="120" />
+          <el-table-column prop="sensitivity" label="敏感级" width="90" />
         </el-table>
         <div class="section-title">二进制证据</div>
         <el-alert v-if="binaryError" :title="binaryError" type="info" :closable="false" />

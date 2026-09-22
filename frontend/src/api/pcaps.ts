@@ -53,6 +53,14 @@ export function getPcapPackets(id: number, page = 1, pageSize = 100, search = ''
   return apiGet(`/pcaps/${id}/packets`, { page, page_size: pageSize, search })
 }
 
+/** Packets of one conversation in a capture: the egress report drills from a
+ *  transfer object down to the actual packets, parsed. */
+export function getPcapFlowPackets(pcapId: number, query: {
+  ip?: string; port?: number; page?: number; page_size?: number
+}): Promise<PageResult<Packet>> {
+  return apiGet(`/pcaps/${pcapId}/packets`, { ...query })
+}
+
 export function getPcapAlerts(id: number): Promise<{ items: AlertItem[] }> {
   return apiGet(`/pcaps/${id}/alerts`)
 }

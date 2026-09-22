@@ -235,9 +235,15 @@ def run_pipeline(context: DetectionContext, task_id: int, db=None) -> list[tuple
         ]
         from app.models import SystemSetting
         from app.services.dlp import DEFAULT_POLICY
+        from app.services.policy_groups import merge_network_rules, network_rule_overlay
 
         policy = db.scalar(select(SystemSetting).where(SystemSetting.key == "dlp_policy"))
-        context.data["dlp_policy"] = policy.value if policy else DEFAULT_POLICY
+        # A fingerprint accepted from a file scan lives in a policy group; the
+        # network stage has to see it too, or the two halves enforce different
+        # rules for the same content.
+        context.data["dlp_policy"] = merge_network_rules(
+            policy.value if policy else DEFAULT_POLICY, network_rule_overlay(db)
+        )
         # Grype contains hundreds of thousands of CVEs. Query per service in
         # ThreatIntelEngine rather than loading the whole catalog per packet task.
         if db.scalar(select(LocalCve.id).limit(1)) is not None:

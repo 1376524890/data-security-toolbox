@@ -63,14 +63,21 @@ from app.integrations.offline_manager import (
 from app.integrations.runner import run_adapter
 from app.models import Alert, DetectionFinding, LocalCve
 from app.services.alert_service import create_finding_alert, create_incident_alert, publish_alert
+from app.services.cve_sync import fingerprints as cve_fingerprints
+from app.services.cve_sync import sync as sync_cve_library
 from app.services.rule_library import atomic_json
 
 router = APIRouter()
 incident_engine = IncidentEngine()
 
 
-@router.get("/integrations")
-def list_integrations() -> list[dict[str, Any]]:
+def integration_catalogue() -> list[dict[str, Any]]:
+    """The adapter catalogue the console renders, with worker-merged health.
+
+    Extracted from the route so the big screen's KPI band counts the same
+    components the engine card lists; two spellings of "集成组件 x/y" on one
+    page would be a bug, not a rounding difference.
+    """
     entries = list(integration_registry.metadata())
     # The API container may lack the Zeek/Suricata binaries while a live
     # analysis worker reports the capability (published to Redis). Surface the
@@ -112,6 +119,11 @@ def list_integrations() -> list[dict[str, Any]]:
         }
     )
     return entries
+
+
+@router.get("/integrations")
+def list_integrations() -> list[dict[str, Any]]:
+    return integration_catalogue()
 
 
 @router.post("/integrations/{name}/analyze")
@@ -205,6 +217,30 @@ def offline_cves(
     return page_response(
         list_local_cves(db, search or "", page_size, (page - 1) * page_size), page, page_size, total
     )
+
+
+@router.get("/offline/cves/fingerprints")
+def cve_fingerprints_for_update(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """The products an online update would query NVD for.
+
+    Returned before the call so the operator sees the scope (and its cost)
+    instead of firing an unbounded update at a rate-limited public API.
+    """
+    return {"fingerprints": cve_fingerprints(db)}
+
+
+class CveSync(BaseModel):
+    #: Empty means "whatever the platform fingerprinted"; the update is
+    #: fingerprint-driven, not a full NVD mirror.
+    keywords: list[str] = Field(default_factory=list)
+    per_fingerprint: int = Field(default=50, ge=1, le=2000)
+
+
+@router.post("/offline/cves/sync")
+def sync_cves(payload: CveSync, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Import CVE rules for the fingerprinted products from the NVD 2.0 API."""
+    keywords = [item.strip() for item in payload.keywords if item.strip()]
+    return sync_cve_library(db, keywords or None, payload.per_fingerprint)
 
 
 @router.post("/offline/upload")

@@ -11,9 +11,24 @@ from app.models import PolicyGroup, Probe, Task
 PROBE_TASK_KINDS = ("probe_scan", "data_asset_scan")
 TERMINAL = ("Success", "Failed", "Partial", "Cancelled")
 
+#: The kinds a 采集 run creates. They share one list so the task centre's
+#: ``kind=collection`` filter and the cockpit's "近 7 天采集任务" row count the
+#: same work.
+COLLECTION_TASK_KINDS = ("data_asset_scan", "database_scan", "file_source_scan")
+
 
 def visible_tasks():
     return Task.payload["deleted"].as_boolean().is_not(True)
+
+
+def default_task_filter():
+    """The rows a task list shows unless the caller filters by kind.
+
+    A capture segment is child work of a monitoring task, so the default list
+    shows the monitor; ``kind=pcap`` reaches the segments. Shared by
+    ``GET /tasks`` and the cockpit's 最近任务 card so both hide the same rows.
+    """
+    return Task.payload["monitor_task_id"].as_integer().is_(None)
 
 
 def _validated_policy_group_ids(db: Session, ids: list[int] | None) -> list[int]:

@@ -59,6 +59,7 @@ def list_alerts(
     start: str | None = None,
     end: str | None = None,
     search: str | None = None,
+    order: str = Query("risk", pattern="^(risk|recent)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -80,9 +81,14 @@ def list_alerts(
         query = query.where(
             or_(Alert.title.ilike(f"%{search}%"), Alert.summary.ilike(f"%{search}%"))
         )
-    result = paginate(
-        db, query.order_by(Alert.risk_score.desc(), Alert.last_seen.desc()), page, page_size
-    )
+    # ``risk`` is the console's default (worst first). The 数据安全态势大屏 needs
+    # the newest rows instead, because "实时安全事件" means time order; keeping it
+    # a parameter avoids a second list route that would drift from this one.
+    if order == "recent":
+        ordered = query.order_by(Alert.last_seen.desc(), Alert.id.desc())
+    else:
+        ordered = query.order_by(Alert.risk_score.desc(), Alert.last_seen.desc())
+    result = paginate(db, ordered, page, page_size)
     return page_response(
         [serialize_alert(item) for item in result["items"]], page, page_size, result["total"]
     )

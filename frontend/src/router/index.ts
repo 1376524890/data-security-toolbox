@@ -9,9 +9,17 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录', public: true },
   },
   {
+    // 数据安全态势大屏: the platform-wide homepage, drawn without the console
+    // shell (the sidebar and header step aside for the wall view).
     path: '/',
-    component: () => import('../modules/dashboard/Dashboard.vue'),
-    meta: { title: 'Dashboard', group: 'Overview' },
+    component: () => import('../modules/dashboard/DashboardScreen.vue'),
+    meta: { title: '数据安全态势大屏', group: 'Overview', layout: 'screen' },
+  },
+  {
+    // 数据安全综合驾驶舱: the daily-use page, inside the console shell.
+    path: '/cockpit',
+    component: () => import('../modules/dashboard/cockpit/DashboardCockpit.vue'),
+    meta: { title: '数据安全驾驶舱', group: 'Overview' },
   },
   // Asset & Data Security
   // 任务中心 owns dispatch + progress + sources + scan config.
@@ -39,6 +47,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/threat/offline', redirect: { path: '/collection-rules' } },
   { path: '/engines', redirect: { path: '/collection-rules' } },
   { path: '/algorithms', redirect: { path: '/collection-rules' } },
+  // 数据大屏 used to live at '/screen'; '/' is the wall view again, so old links
+  // land on the same page instead of falling through the catch-all.
+  { path: '/screen', redirect: { path: '/' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

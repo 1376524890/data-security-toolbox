@@ -374,7 +374,24 @@ def dlp_transfers(pcap_id: int | None = None, db: Session = Depends(get_db)):
         seen.add(capture)
         coverage.append({'pcap_id': capture, **result.content.get('coverage', {})})
         items.extend({**item, 'pcap_id': capture, 'task_id': task.id} for item in result.content.get('objects', []) if not item.get('is_header') or item.get('matches'))
-    return {'items': items[:2000], 'coverage': coverage, 'mode': 'passive', 'tls_decryption': False}
+    items = items[:2000]
+    # A network object is identified by the hash of its bytes, so the same hash
+    # on an inventoried file is the *same content*: bind the transfer to the
+    # concrete files instead of leaving an anonymous risk point.
+    from app.services.data_objects.queries import files_by_content_hash
+
+    bound = files_by_content_hash(db, (item.get('sha256') for item in items))
+    for item in items:
+        matches = bound.get(str(item.get('sha256') or '').lower(), [])
+        item['files'] = matches
+        item['file_bound'] = bool(matches)
+    return {
+        'items': items,
+        'coverage': coverage,
+        'mode': 'passive',
+        'tls_decryption': False,
+        'file_bound_objects': sum(1 for item in items if item.get('file_bound')),
+    }
 
 @router.get('/dlp/transfers/{task_id}/{object_id}/content')
 def dlp_transfer_content(task_id: int, object_id: int, download: bool = False, db: Session = Depends(get_db)):

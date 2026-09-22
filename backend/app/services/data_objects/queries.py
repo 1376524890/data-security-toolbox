@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,6 +17,64 @@ from app.services.data_objects.definitions import (
     MAX_SUMMARY_ROWS,
 )
 from app.services.data_objects.values import _float, _iso
+
+#: One transfer page asks about at most this many distinct digests at once: the
+#: lookup is bounded by the capture, not by the inventory it is compared to.
+MAX_HASH_LOOKUPS = 500
+_HEX64 = re.compile(r"^[a-f0-9]{64}$")
+
+
+def files_by_content_hash(
+    db: Session, digests: Iterable[Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """Active files whose stored content hash equals one of ``digests``.
+
+    A captured network object is named by the SHA256 of the bytes it carried,
+    so the same digest on an inventoried file says the two *are* the same
+    content. That is what turns "a sensitive stream left the host" into "this
+    file left the host" — the report can point at a concrete file instead of
+    leaving an anonymous risk point.
+
+    Identity here is the content, not the path: the same file observed by two
+    collectors is one answer, and every matching instance is returned so the
+    report can say where else that content lives.
+    """
+    wanted: list[str] = []
+    for value in digests:
+        item = str(value or "").strip().lower()
+        if _HEX64.match(item) and item not in wanted:
+            wanted.append(item)
+        if len(wanted) >= MAX_HASH_LOOKUPS:
+            break
+    if not wanted:
+        return {}
+    rows = db.scalars(
+        select(AssetInstance)
+        .where(
+            AssetInstance.status == INSTANCE_ACTIVE,
+            AssetInstance.content_hash.in_(wanted),
+        )
+        .order_by(AssetInstance.id)
+    ).all()
+    found: dict[str, list[dict[str, Any]]] = {}
+    for instance in rows:
+        digest = str(instance.content_hash or "").lower()
+        extra = dict(instance.extra or {})
+        found.setdefault(digest, []).append(
+            {
+                "instance_id": instance.id,
+                "path": instance.path,
+                "name": instance.name,
+                "source_kind": instance.source_kind or "file",
+                "source_name": extra.get("source_name") or "",
+                "host": extra.get("host") or "",
+                "owner_key": owner_key_of(instance.probe_id, instance.owner_key),
+                "size": instance.size,
+                "sensitivity": instance.sensitivity,
+                "categories": list(instance.categories or []),
+            }
+        )
+    return found
 
 
 def owner_key_of(probe_id: Any, owner_key: Any) -> str:

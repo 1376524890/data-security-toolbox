@@ -6,11 +6,12 @@ import RuleVersions from './RuleVersions.vue'
 import PolicyGroups from './PolicyGroups.vue'
 import EgressPolicyForm from './EgressPolicyForm.vue'
 import FingerprintCandidates from './FingerprintCandidates.vue'
+import VulnerabilityLibrary from './VulnerabilityLibrary.vue'
 
 // 采集与规则 owns every rule configuration and nothing else: the rule set (the
 // regexes for sensitive-data discovery and traffic monitoring), the versioned
-// rule packages handed to probes, the dispatch-time policy groups, and the
-// egress allow/deny lists. Task dispatch lives in 任务中心; results live in
+// rule packages handed to probes, the dispatch-time policy groups, the egress
+// allow/deny lists, and the CVE library a scan's fingerprint is matched against. Task dispatch lives in 任务中心; results live in
 // 数据流动与防护 / 文件证据.
 const route = useRoute()
 const router = useRouter()
@@ -40,6 +41,9 @@ function onChange(name: string): void {
       </el-tab-pane>
       <el-tab-pane label="出境判定名单" name="egress">
         <EgressPolicyForm v-if="active === 'egress'" />
+      </el-tab-pane>
+      <el-tab-pane label="漏洞库" name="vulnerabilities">
+        <VulnerabilityLibrary v-if="active === 'vulnerabilities'" />
       </el-tab-pane>
     </el-tabs>
   </div>

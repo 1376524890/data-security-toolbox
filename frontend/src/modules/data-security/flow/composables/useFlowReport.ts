@@ -10,6 +10,12 @@ import { ElMessage } from 'element-plus'
 import { apiGet, apiPost } from '../../../../api/client'
 
 export interface MatchedText { value: string; context?: string }
+/** One inventoried file whose content hash equals the transferred object's:
+ *  the transfer is this file, so the report names the file, not a risk point. */
+export interface BoundFile {
+  instance_id: number; path: string; name: string; source_kind: string; source_name: string
+  host: string; owner_key: string; size: number; sensitivity: string; categories: string[]
+}
 export interface FlowHit {
   kind: string; count: number; confidence?: number; sensitive?: boolean
   rule_id?: string; rule_ids?: string[]; rule_source?: string; rule_sources?: string[]
@@ -20,6 +26,7 @@ export interface Transfer {
   src_ip: string; src_port: number; dst_ip: string; dst_port: number
   size: number; sha256: string; complete: boolean; content_type: string
   binary_available?: boolean; matches: FlowHit[]
+  files?: BoundFile[]; file_bound?: boolean
 }
 
 export function useFlowReport() {
@@ -50,6 +57,9 @@ export function useFlowReport() {
     return hit.sensitive !== false && (hit.confidence ?? 1) >= threshold.value
   }
   const riskyCount = computed(() => transfers.value.filter((row) => row.matches.some(alertable)).length)
+  /** Objects whose bytes are the same content as a file we inventoried: the
+   *  ones the report can attach to a concrete file instead of a bare hash. */
+  const fileBoundCount = computed(() => transfers.value.filter((row) => row.file_bound).length)
 
   async function load(): Promise<void> {
     loading.value = true
@@ -105,6 +115,6 @@ export function useFlowReport() {
 
   onMounted(load)
   return { loading, error, transfers, coverage, enabled, threshold, busy, selected, drawer,
-    binary, binaryError, binaryLoading, riskyCount, matchedText, alertable, load, toggleRuleSet,
-    openTransfer }
+    binary, binaryError, binaryLoading, riskyCount, fileBoundCount, matchedText, alertable, load,
+    toggleRuleSet, openTransfer }
 }

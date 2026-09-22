@@ -163,6 +163,117 @@ def _upsert_iocs(db: Session, records: list[dict[str, Any]]) -> tuple[int, int]:
     return imported, duplicates
 
 
+#: NVD publishes affected products as CPE 2.3 strings, optionally with an open
+#: version interval. Only a structured interval can *confirm* a fingerprint hit
+#: (``ThreatIntelEngine._version_affected``), so the import keeps it instead of
+#: flattening the record into free text.
+_CPE_VENDOR = 3
+_CPE_PRODUCT = 4
+_CPE_VERSION = 5
+
+
+def _cpe_product(criteria: str) -> str:
+    """The product half of a CPE 2.3 string (``cpe:2.3:a:vendor:product:...``)."""
+    parts = str(criteria).split(":")
+    if len(parts) <= _CPE_PRODUCT:
+        return ""
+    product = parts[_CPE_PRODUCT].replace("\\", "").strip()
+    return "" if product in {"", "*", "-"} else product
+
+
+def _cpe_version_spec(entry: dict[str, Any], criteria: str) -> str:
+    """One CPE match entry as a comma-separated constraint list.
+
+    Returns "" when the entry pins no version: an unbounded match cannot confirm
+    anything, so it must stay a candidate rather than become a false positive.
+    """
+    low = str(entry.get("versionStartIncluding") or entry.get("versionStartExcluding") or "")
+    high = str(entry.get("versionEndIncluding") or entry.get("versionEndExcluding") or "")
+    parts: list[str] = []
+    if low:
+        operator = ">=" if entry.get("versionStartIncluding") else ">"
+        parts.append(f"{operator}{low}")
+    if high:
+        operator = "<=" if entry.get("versionEndIncluding") else "<"
+        parts.append(f"{operator}{high}")
+    if parts:
+        return ",".join(parts)
+    fixed = str(entry.get("criteria") or criteria).split(":")
+    version = fixed[_CPE_VERSION] if len(fixed) > _CPE_VERSION else ""
+    version = version.replace("\\", "").strip()
+    return "" if version in {"", "*", "-"} else f"=={version}"
+
+
+def _structured_versions(record: dict[str, Any], cve_obj: dict[str, Any]) -> dict[str, Any]:
+    """Product + affected-version constraints carried by a CVE record.
+
+    Two shapes are accepted: our own flat ``product`` / ``affected_versions``
+    keys, and the NVD configuration tree. A record that carries neither keeps
+    only its text, which is exactly what makes it a candidate.
+
+    Ranges stay scoped to the CPE product they were published for. NVD lists
+    *every* product a CVE configuration covers -- CVE-2016-0746 carries
+    ``nginx <=1.8.0`` next to ``android <13.0`` and ``ubuntu_linux ==14.04`` --
+    so flattening them into one list confirmed ``nginx 1.27.5`` against the
+    Android bound. ``product_ranges`` keeps the other products addressable
+    without letting their bounds leak into the primary product.
+    """
+    declared = str(record.get("product") or cve_obj.get("product") or "").strip()
+    specs = [str(item).strip() for item in (record.get("affected_versions")
+                                            or record.get("version_ranges") or []) if str(item).strip()]
+    by_product: dict[str, list[str]] = {}
+    if declared and specs:
+        by_product[declared] = list(dict.fromkeys(specs))
+    for configuration in cve_obj.get("configurations") or []:
+        nodes = configuration.get("nodes") if isinstance(configuration, dict) else None
+        for node in nodes or []:
+            for entry in (node or {}).get("cpeMatch") or []:
+                if not isinstance(entry, dict) or not entry.get("vulnerable", True):
+                    continue
+                criteria = str(entry.get("criteria") or "")
+                product = _cpe_product(criteria)
+                if not product:
+                    continue
+                # The product is recorded even without a bound: it is what makes
+                # the record a lead for that fingerprint instead of invisible.
+                bucket = by_product.setdefault(product, [])
+                spec = _cpe_version_spec(entry, criteria)
+                if spec and spec not in bucket:
+                    bucket.append(spec)
+    primary = declared or next(iter(by_product), "")
+    if not primary:
+        return {}
+    structured: dict[str, Any] = {"product": primary}
+    ranges = by_product.get(primary) or []
+    if ranges:
+        structured["affected_versions"] = list(dict.fromkeys(ranges))
+    others = {name: items for name, items in by_product.items() if name != primary and items}
+    if others:
+        structured["product_ranges"] = others
+    return structured
+
+
+def _severity_for(score: float) -> str:
+    """The platform's CVSS bands (Critical/High/Medium/Low), used when a record
+    carries a score but no explicit level."""
+    if score >= 9:
+        return "Critical"
+    if score >= 7:
+        return "High"
+    if score >= 4:
+        return "Medium"
+    return "Low"
+
+
+def import_cve_records(db: Session, records: list[dict[str, Any]]) -> tuple[int, int]:
+    """Public entry point for every CVE source (offline bundle, NVD sync).
+
+    One canonical importer keeps the structured affected-version data and the
+    text in the same shape, no matter which adapter produced the record.
+    """
+    return _import_cves(db, records)
+
+
 def _import_cves(db: Session, records: list[dict[str, Any]]) -> tuple[int, int]:
     imported = 0
     duplicates = 0
@@ -174,10 +285,20 @@ def _import_cves(db: Session, records: list[dict[str, Any]]) -> tuple[int, int]:
         description = record.get("description") or cve_obj.get("description") or {}
         if isinstance(description, list):
             description = " ".join(str(item.get("value", item)) for item in description if isinstance(item, dict))
-        severity = str(record.get("severity") or cve_obj.get("severity") or "Medium")
         metrics = cve_obj.get('metrics') or {}
-        metric_score = (metrics.get('cvssMetricV31') or [{}])[0].get('cvssData', {}).get('baseScore', 0)
+        # NVD publishes CVSS under one of three metric generations depending on
+        # when the record was written; reading only v3.1 silently scored every
+        # older CVE at 0.
+        metric_score = 0
+        for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+            entries = metrics.get(key) or []
+            if entries:
+                metric_score = (entries[0].get('cvssData') or {}).get('baseScore', 0) or 0
+                break
         cvss_score = float(record.get('cvss_score') or record.get('cvss') or cve_obj.get('cvssScore') or metric_score)
+        # An imported record without an explicit level takes the CVSS band the
+        # rest of the platform uses instead of defaulting everything to Medium.
+        severity = str(record.get("severity") or cve_obj.get("severity") or "").strip() or _severity_for(cvss_score)
         if not re.fullmatch(r'CVE-\d{4}-\d{4,}', cve_id) or not 0 <= cvss_score <= 10:
             raise ValueError('CVE ID 或 CVSS 分数无效')
         existing = db.scalar(select(LocalCve).where(LocalCve.cve_id == cve_id))
@@ -185,7 +306,10 @@ def _import_cves(db: Session, records: list[dict[str, Any]]) -> tuple[int, int]:
             existing.source = str(record.get('source') or 'offline')
             existing.severity = severity
             existing.cvss_score = cvss_score
-            existing.description = {"text": description} if isinstance(description, str) else description
+            existing.description = {
+                **(dict(description) if isinstance(description, dict) else {"text": description}),
+                **_structured_versions(record, cve_obj),
+            }
             duplicates += 1
         else:
             db.add(LocalCve(
@@ -195,10 +319,27 @@ def _import_cves(db: Session, records: list[dict[str, Any]]) -> tuple[int, int]:
                 cvss_score=cvss_score,
                 published=str(record.get("published") or cve_obj.get("published") or ""),
                 modified=str(record.get("modified") or cve_obj.get("lastModified") or ""),
-                description={"text": description} if isinstance(description, str) else description,
+                description={
+                    **(dict(description) if isinstance(description, dict) else {"text": description}),
+                    **_structured_versions(record, cve_obj),
+                },
             ))
             imported += 1
     return imported, duplicates
+
+
+def import_cve_record(db: Session, record: dict[str, Any]) -> bool:
+    """Import exactly one record; False when it is not a usable CVE.
+
+    Batch import keeps its all-or-nothing behaviour; the online sync uses this
+    so one malformed record out of a few hundred does not lose the rest.
+    """
+    try:
+        imported, duplicates = _import_cves(db, [record])
+    except ValueError:
+        return False
+    # An update is a success too: the batch importer reports it as a duplicate.
+    return bool(imported or duplicates)
 
 
 def _import_models(db: Session, records: list[dict[str, Any]]) -> tuple[int, int]:

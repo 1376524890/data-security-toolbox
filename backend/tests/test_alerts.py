@@ -327,3 +327,60 @@ def test_repeat_hits_keep_first_latest_and_highest_risk_evidence() -> None:
         assert hits[0]["is_first"] is True and hits[0]["is_latest"] is False
         assert hits[1]["is_latest"] is True and hits[1]["is_highest_risk"] is True
     _cleanup_rule(rule_id)
+
+
+ORDER_TITLES = ("TEST_ALERT_ORDER_OLD", "TEST_ALERT_ORDER_NEW")
+
+
+def _cleanup_order_rows() -> None:
+    with SessionLocal() as db:
+        db.execute(delete(Alert).where(Alert.title.in_(ORDER_TITLES)))
+        db.commit()
+
+
+def test_alert_list_orders_by_time_when_recent_is_requested() -> None:
+    """``order=recent`` is what the 态势大屏's 实时安全事件 list reads.
+
+    The console default stays worst-first; the screen needs the newest rows, and
+    asking for them through a parameter keeps one list route instead of two that
+    could drift apart.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    _cleanup_order_rows()
+    now = datetime.now(UTC)
+    with SessionLocal() as db:
+        db.add(
+            Alert(
+                fingerprint="TEST_ALERT_ORDER_OLD",
+                title=ORDER_TITLES[0],
+                severity="High",
+                risk_score=99,
+                source="test",
+                last_seen=now - timedelta(hours=3),
+                created_at=now - timedelta(hours=3),
+            )
+        )
+        db.add(
+            Alert(
+                fingerprint="TEST_ALERT_ORDER_NEW",
+                title=ORDER_TITLES[1],
+                severity="Medium",
+                risk_score=5,
+                source="test",
+                last_seen=now,
+                created_at=now,
+            )
+        )
+        db.commit()
+    query = {"page": 1, "page_size": 50, "search": "TEST_ALERT_ORDER"}
+    try:
+        with TestClient(app) as client:
+            recent = client.get("/api/v1/alerts", params={**query, "order": "recent"}).json()
+            default = client.get("/api/v1/alerts", params=query).json()
+        assert [item["title"] for item in recent["items"]] == list(ORDER_TITLES[::-1])
+        assert [item["title"] for item in default["items"]] == list(ORDER_TITLES)
+    finally:
+        _cleanup_order_rows()

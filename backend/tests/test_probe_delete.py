@@ -100,3 +100,39 @@ def test_delete_preserves_alert_hits_and_clears_their_probe_reference():
             assert db.get(AlertHit, hit_id).probe_id is None
             assert db.get(AlertHit, hit_id).alert_id == alert_id
             assert db.get(Alert, alert_id) is not None
+
+
+def test_delete_retires_the_probes_monitoring_task():
+    """A probe that ever captured could never be deleted: its monitoring row is
+    created by the capture and never reaches a terminal state by itself, so the
+    active-task guard kept refusing. Retiring the probe must end that row."""
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            probe = Probe(name='delete-monitor')
+            db.add(probe)
+            db.flush()
+            probe_id = probe.id
+            monitor = Task(kind='monitoring', status='Running', progress=100,
+                           current_stage='持续监测中', payload={'probe_id': probe_id})
+            db.add(monitor)
+            db.commit()
+            monitor_id = monitor.id
+        assert client.delete(f'/api/v1/probes/{probe_id}').status_code == 200
+        with SessionLocal() as db:
+            assert db.get(Probe, probe_id) is None
+            monitor = db.get(Task, monitor_id)
+            assert monitor.status == 'Cancelled'
+            assert monitor.finished_at is not None
+
+
+def test_delete_still_refuses_a_real_active_job_beside_a_monitor():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            probe = Probe(name='delete-monitor-busy')
+            db.add(probe)
+            db.flush()
+            probe_id = probe.id
+            db.add(Task(kind='monitoring', status='Running', payload={'probe_id': probe_id}))
+            db.add(Task(kind='data_asset_scan', status='Running', payload={'probe_id': probe_id}))
+            db.commit()
+        assert client.delete(f'/api/v1/probes/{probe_id}').status_code == 409

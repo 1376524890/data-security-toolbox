@@ -52,6 +52,23 @@ export const statusColors: Record<string, string> = {
   ONLINE: '#16a34a',
 }
 
+// Platform asset types as the scanner/inventory writes them. An unknown slug
+// falls through to the raw value on purpose - a label invented here would be a
+// claim about data the platform never classified.
+export const assetTypeLabels: Record<string, string> = {
+  web: 'Web 应用',
+  app: '业务应用',
+  database: '数据库',
+  db: '数据库',
+  file: '文件服务器',
+  service: '网络服务',
+  network: '网络设备',
+  host: '主机',
+  endpoint: '终端',
+  terminal: '终端',
+  cloud: '云平台',
+}
+
 export const nodeTypeColors: Record<string, string> = {
   probe: '#0ea5e9',
   host: '#2563eb',

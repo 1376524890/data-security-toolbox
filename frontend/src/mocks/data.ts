@@ -319,3 +319,80 @@ export const graph = {
 }
 
 export const auditSummary = { asset_count: 128, file_count: 342, pcap_count: 56, anomaly_count: 87, high_risk_count: 64, overall_risk: 'High' }
+
+// ---------------------------------------------------------------------------
+// 数据安全态势大屏 (demo mode only)
+// ---------------------------------------------------------------------------
+
+export const dashboardOverview = {
+  generated_at: iso(now),
+  alerts: { total: 162, today: 18, yesterday: 12, delta_pct: 50, open: 37, critical_high: 46 },
+  incidents: { total: 97, today: 6, yesterday: 6, delta_pct: 0, open: 21 },
+  findings: { total: 979, today: 64, yesterday: 51, delta_pct: 25, high_risk: 152 },
+  assets: { total: 3685, high_risk: 126, sensitive: 771, data_assets: 1280 },
+  loop: { assets: 3685, findings: 979, incidents: 97, alerts: 162, reports: 18 },
+  probes: { total: 12, online: 9, degraded: 1, offline: 2 },
+  integrations: { total: 8, healthy: 6 },
+}
+
+export const riskDistribution = {
+  risk_levels: [
+    { level: 'Critical', count: 24 }, { level: 'High', count: 86 },
+    { level: 'Medium', count: 412 }, { level: 'Low', count: 457 },
+  ],
+  severity: [
+    { severity: 'Critical', count: 18 }, { severity: 'High', count: 214 },
+    { severity: 'Medium', count: 388 }, { severity: 'Low', count: 359 },
+  ],
+  asset_types: [
+    { type: 'database', count: 1482 }, { type: 'file', count: 892 },
+    { type: 'host', count: 687 }, { type: 'web', count: 326 },
+    { type: 'network', count: 298 },
+  ],
+  sensitivity: [{ sensitivity: 'High', count: 512 }, { sensitivity: 'Medium', count: 259 }],
+  total_findings: 979,
+  total_assets: 3685,
+}
+
+export const detectionTrend = {
+  range: '7d',
+  items: Array.from({ length: 7 }, (_, index) => ({
+    time: iso(now - (6 - index) * 86_400_000).slice(0, 10),
+    findings: [82, 96, 74, 121, 108, 143, 64][index],
+    incidents: [8, 12, 9, 15, 11, 17, 6][index],
+    alerts: [18, 22, 16, 27, 24, 31, 18][index],
+  })),
+}
+
+export const trafficFlow = {
+  generated_at: iso(now),
+  days: 7,
+  totals: {
+    sessions: 31_027, bytes: 27_527_592_131, packets: 2_292_182,
+    internal: 24_385, external: 5_996, unknown: 646,
+    bytes_by_direction: { internal: 26_240_804_819, external: 286_744_388, unknown: 42_924 },
+  },
+  nodes: [
+    { id: 'ip:10.10.0.10', ip: '10.10.0.10', name: 'core-db-01', kind: 'asset', bucket: 'internal', asset_id: 1, hostname: 'core-db-01', os: 'CentOS 7', port: 3306, service: 'mysql', asset_type: 'database', risk_level: 'High', sensitive_categories: ['personal', 'finance'], sessions: 8210, bytes: 9_203_871_234, packets: 421_002, external_sessions: 0, data_assets: 12, findings: 42, high_risk_findings: 11, incidents: 3 },
+    { id: 'ip:10.10.0.21', ip: '10.10.0.21', name: 'app-web-02', kind: 'asset', bucket: 'internal', asset_id: 2, hostname: 'app-web-02', os: 'Ubuntu 22.04', port: 443, service: 'https', asset_type: 'web', risk_level: 'Medium', sensitive_categories: ['personal'], sessions: 5120, bytes: 3_881_204_112, packets: 208_331, external_sessions: 210, data_assets: 4, findings: 18, high_risk_findings: 3, incidents: 1 },
+    { id: 'ip:10.10.4.7', ip: '10.10.4.7', name: '10.10.4.7', kind: 'host', bucket: 'internal', asset_id: null, hostname: '', os: '', port: 0, service: '', asset_type: '', risk_level: '', sensitive_categories: [], sessions: 3180, bytes: 1_204_881_223, packets: 96_221, external_sessions: 0, data_assets: 0, findings: 6, high_risk_findings: 0, incidents: 0 },
+    { id: 'ip:10.10.7.33', ip: '10.10.7.33', name: 'file-srv-01', kind: 'asset', bucket: 'internal', asset_id: 3, hostname: 'file-srv-01', os: 'Windows Server 2019', port: 445, service: 'smb', asset_type: 'file', risk_level: 'Critical', sensitive_categories: ['personal', 'contract'], sessions: 2410, bytes: 902_331_004, packets: 71_004, external_sessions: 0, data_assets: 31, findings: 55, high_risk_findings: 22, incidents: 5 },
+    { id: 'ip:10.10.2.5', ip: '10.10.2.5', name: 'share-srv-03', kind: 'asset', bucket: 'internal', asset_id: 4, hostname: 'share-srv-03', os: 'CentOS 8', port: 2049, service: 'nfs', asset_type: 'file', risk_level: 'Low', sensitive_categories: [], sessions: 1420, bytes: 480_221_003, packets: 33_120, external_sessions: 0, data_assets: 7, findings: 4, high_risk_findings: 1, incidents: 0 },
+    { id: 'ip:203.0.113.24', ip: '203.0.113.24', name: '203.0.113.24', kind: 'external', bucket: 'country', asset_id: null, hostname: '', os: '', port: 443, service: 'https', asset_type: '', risk_level: '', sensitive_categories: [], sessions: 412, bytes: 188_221_004, packets: 12_884, external_sessions: 412, data_assets: 0, findings: 9, high_risk_findings: 6, incidents: 2 },
+    { id: 'ip:198.51.100.19', ip: '198.51.100.19', name: '198.51.100.19', kind: 'external', bucket: 'country', asset_id: null, hostname: '', os: '', port: 443, service: 'https', asset_type: '', risk_level: '', sensitive_categories: [], sessions: 128, bytes: 54_002_887, packets: 4_031, external_sessions: 128, data_assets: 0, findings: 2, high_risk_findings: 1, incidents: 0 },
+  ],
+  links: [
+    { source: 'ip:10.10.0.10', target: 'ip:10.10.0.21', src_ip: '10.10.0.10', dst_ip: '10.10.0.21', sessions: 1830, bytes: 4_204_881_233, packets: 190_004, direction: 'internal', bucket: 'internal' },
+    { source: 'ip:10.10.0.21', target: 'ip:10.10.0.10', src_ip: '10.10.0.21', dst_ip: '10.10.0.10', sessions: 1610, bytes: 3_102_884_112, packets: 174_221, direction: 'internal', bucket: 'internal' },
+    { source: 'ip:10.10.0.10', target: 'ip:10.10.7.33', src_ip: '10.10.0.10', dst_ip: '10.10.7.33', sessions: 902, bytes: 1_802_331_004, packets: 88_004, direction: 'internal', bucket: 'internal' },
+    { source: 'ip:10.10.4.7', target: 'ip:10.10.2.5', src_ip: '10.10.4.7', dst_ip: '10.10.2.5', sessions: 640, bytes: 802_221_003, packets: 44_120, direction: 'internal', bucket: 'internal' },
+    { source: 'ip:10.10.4.7', target: 'ip:203.0.113.24', src_ip: '10.10.4.7', dst_ip: '203.0.113.24', sessions: 412, bytes: 188_221_004, packets: 12_884, direction: 'external', bucket: 'country' },
+    { source: 'ip:10.10.0.21', target: 'ip:198.51.100.19', src_ip: '10.10.0.21', dst_ip: '198.51.100.19', sessions: 128, bytes: 54_002_887, packets: 4_031, direction: 'external', bucket: 'country' },
+  ],
+  trend: Array.from({ length: 7 }, (_, index) => ({
+    time: iso(now - (6 - index) * 86_400_000).slice(5, 10),
+    internal: [18_420, 19_880, 20_140, 22_310, 21_940, 24_385, 20_110][index],
+    external: [4_120, 4_680, 4_910, 5_240, 5_610, 5_996, 4_980][index],
+    unknown: [320, 410, 380, 460, 590, 646, 502][index],
+  })),
+}

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import threading
 from bisect import bisect_right
 from functools import lru_cache
 from pathlib import Path
@@ -47,6 +48,11 @@ SPECIAL_USE: tuple[tuple[str, str], ...] = (
     ("fc00::/7", "internal"),
     ("fe80::/10", "link_local"),
 )
+
+#: The three flow classes the console may draw. There is deliberately no
+#: "跨域访问" bucket: the database has no zone table, so a synonym would be a
+#: guess dressed as a fact.
+DIRECTIONS: tuple[str, ...] = ("internal", "external", "unknown")
 
 EGRESS_POLICY_KEY = "egress_policy"
 
@@ -95,8 +101,11 @@ def country_table(path: Path | None = None) -> dict[str, Any]:
             "count": int(payload.get("count", 0) or 0), "regions": regions}
 
 
-@lru_cache(maxsize=1)
-def _country_ranges() -> tuple[tuple[int, ...], tuple[tuple[int, int, str], ...]]:
+_country_ranges_lock = threading.Lock()
+_country_ranges_cache: tuple[tuple[int, ...], tuple[tuple[int, int, str], ...]] | None = None
+
+
+def _flatten_country_ranges() -> tuple[tuple[int, ...], tuple[tuple[int, int, str], ...]]:
     """Flattened, sorted ``(starts, (start, end, country))`` for a bisect lookup.
 
     A linear scan of ~260k registry blocks per address would be unusable, so the
@@ -116,6 +125,53 @@ def _country_ranges() -> tuple[tuple[int, ...], tuple[tuple[int, int, str], ...]
             flat.append((int(network.network_address), int(network.broadcast_address), code))
     flat.sort()
     return tuple(item[0] for item in flat), tuple(flat)
+
+
+def _country_ranges() -> tuple[tuple[int, ...], tuple[tuple[int, int, str], ...]]:
+    """The flattened table, built at most once even under concurrency.
+
+    Flattening is expensive and sits on the console homepage's request path.
+    ``lru_cache`` only dedupes calls that have already *returned*, so a burst of
+    concurrent first requests each rebuilt the index while holding a DB
+    connection - a CPU stampede that exhausted the pool and timed the rest of the
+    console out. The lock makes the build happen exactly once.
+
+    The cache is read before taking the lock: a warm lookup is the hot path
+    (~one call per distinct destination, per request) and must not serialise
+    threads behind a mutex.
+    """
+    global _country_ranges_cache
+    cached = _country_ranges_cache
+    if cached is None:
+        with _country_ranges_lock:
+            # Re-check under the lock: a thread that waited here must reuse the
+            # winner's table instead of flattening it a second time.
+            if _country_ranges_cache is None:
+                _country_ranges_cache = _flatten_country_ranges()
+            cached = _country_ranges_cache
+    return cached
+
+
+def reset_country_ranges() -> None:
+    """Drop the flattened table so the next lookup re-reads it.
+
+    Used by tests, and by a reload of the country table.
+    """
+    global _country_ranges_cache
+    with _country_ranges_lock:
+        _country_ranges_cache = None
+
+
+def warm() -> None:
+    """Build the country index now, off the request path.
+
+    Flattening ~260k registry blocks takes seconds. Loaded lazily it happened
+    inside the first page views, each of which holds a pooled DB connection for
+    the whole request: a burst of concurrent first loads then held every
+    connection through the build and timed the rest of the console out. Called
+    once at startup so a request never pays for it.
+    """
+    _country_ranges()
 
 
 def _country_of(value: str) -> str:
@@ -206,6 +262,21 @@ def normalize_policy(value: dict[str, Any] | None) -> dict[str, Any]:
                 seen.append(text)
         cleaned[key] = seen
     return cleaned
+
+
+def direction_of(bucket: str) -> str:
+    """Map a classifier bucket onto the three flow classes the console shows.
+
+    ``internal`` is the RFC1918/special-use set, ``external`` is a destination
+    the country table proved is outside (plus operator blacklist hits), and
+    everything else - no region table loaded, unknown destination, whitelisted
+    destination - stays ``unknown`` instead of being reported as egress.
+    """
+    if bucket == "internal":
+        return "internal"
+    if bucket in ("country", "blacklist"):
+        return "external"
+    return "unknown"
 
 
 def classify(ip: str | None, *, blacklist: list[str], whitelist: list[str],

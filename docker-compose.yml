@@ -109,8 +109,11 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
-      interval: 15s
-      timeout: 5s
+      # /health is deliberately thorough (Celery control-bus queue depth alone
+      # takes ~2s, and rule counts + probe histogram add a few more), so a 5s
+      # timeout reported the container unhealthy while the endpoint was fine.
+      interval: 30s
+      timeout: 20s
       retries: 10
     restart: unless-stopped
     # never = a fully offline stack must fail fast instead of reaching a registry.

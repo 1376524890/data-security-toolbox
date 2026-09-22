@@ -43,6 +43,9 @@
   /* Metrics */
   --soc-radius: 8px;
   --soc-radius-sm: 6px;
+  /* The card radius the 驾驶舱's panels are drawn with; the wall screen uses
+     the smaller one. Declared here so a fallback is never needed. */
+  --soc-radius-lg: 10px;
   --soc-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   --soc-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
   --soc-font-mono: 'SFMono-Regular', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
@@ -55,24 +58,53 @@ html.dark {
   color-scheme: dark;
 }
 
-/* Light theme: the same tokens with light surfaces. Element Plus keeps its own
- * light defaults, because its dark overrides live under html.dark. */
+/* Light theme: the 数据安全综合驾驶舱 palette - white cards on a pale
+ * blue-grey page, one blue accent, hairline borders. Element Plus is re-mapped
+ * to these tokens below so tables, tabs, dialogs and toasts are drawn from the
+ * same colours as the page instead of Element's own blue/grey scale. */
 html.light {
   color-scheme: light;
-  --soc-bg: #f3f5f9;
-  --soc-bg-2: #eef1f6;
+  --soc-bg: #f5f7fb;
+  --soc-bg-2: #f9fbfe;
   --soc-panel: #ffffff;
   --soc-panel-2: #f8fafc;
-  --soc-panel-hover: #eef2f7;
-  --soc-border: #e2e8f0;
-  --soc-border-2: #d7dee8;
-  --soc-text: #1f2937;
+  --soc-panel-hover: #f1f5f9;
+  --soc-border: #e8eef7;
+  --soc-border-2: #dbe4f0;
+  --soc-text: #334155;
   --soc-text-strong: #0f172a;
   --soc-text-muted: #64748b;
   --soc-text-dim: #94a3b8;
-  --soc-primary-dim: rgba(14, 165, 233, 0.12);
-  --soc-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
-  --soc-shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.12);
+
+  --soc-primary: #2563eb;
+  --soc-primary-2: #0ea5e9;
+  --soc-primary-dim: rgba(37, 99, 235, 0.10);
+  --soc-success: #10b981;
+  --soc-warning: #f59e0b;
+  --soc-danger: #ef4444;
+  --soc-info: #6366f1;
+
+  --soc-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --soc-shadow-lg: 0 6px 16px rgba(15, 23, 42, 0.08), 0 12px 32px rgba(15, 23, 42, 0.06);
+}
+
+/* The console sidebar keeps the dark navy of the wall screen in light mode too:
+ * a light page inside a light frame loses the section structure entirely. */
+html.light .app-aside {
+  background: #0f172a;
+  border-right-color: #16233c;
+}
+html.light .app-aside .brand { border-bottom-color: #1c2a44; }
+html.light .app-aside .brand-name { color: #f8fafc; }
+html.light .app-aside .brand-sub,
+html.light .app-aside .side-menu .menu-group-title { color: #7d8ba5; }
+html.light .app-aside .el-menu { background: transparent; border-right: 0; }
+html.light .app-aside .side-menu .el-menu-item { color: #c3cddf; }
+html.light .app-aside .side-menu .el-menu-item:hover { background: rgba(148, 163, 184, 0.14); color: #fff; }
+html.light .app-aside .side-menu .el-menu-item.is-active {
+  background: linear-gradient(90deg, #2563eb, #0ea5e9);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.35);
 }
 
 /* Element Plus dark theme variable overrides */
@@ -99,6 +131,130 @@ html.dark {
   --el-color-info: var(--soc-info);
   --el-border-radius-base: var(--soc-radius-sm);
 }
+
+/* Element Plus, light: same mapping as the dark block above, pointed at the
+ * light tokens. The ``-light-N`` steps are the hover/disabled fills Element
+ * derives from a colour, mixed here so they stay in the page's blue family. */
+html.light {
+  --el-bg-color: var(--soc-panel);
+  --el-bg-color-page: var(--soc-bg);
+  --el-bg-color-overlay: #ffffff;
+  --el-text-color-primary: var(--soc-text-strong);
+  --el-text-color-regular: var(--soc-text);
+  --el-text-color-secondary: var(--soc-text-muted);
+  --el-text-color-placeholder: var(--soc-text-dim);
+  --el-border-color: var(--soc-border);
+  --el-border-color-light: var(--soc-border);
+  --el-border-color-lighter: var(--soc-border);
+  --el-border-color-extra-light: var(--soc-border);
+  --el-fill-color: var(--soc-panel-hover);
+  --el-fill-color-light: var(--soc-panel-2);
+  --el-fill-color-lighter: var(--soc-panel-2);
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-dark: var(--soc-border);
+  --el-border-radius-base: 6px;
+  --el-box-shadow: var(--soc-shadow-lg);
+  --el-box-shadow-light: var(--soc-shadow);
+  --el-box-shadow-lighter: var(--soc-shadow);
+
+  --el-color-primary: var(--soc-primary);
+  --el-color-primary-light-3: color-mix(in srgb, var(--soc-primary) 70%, #ffffff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--soc-primary) 50%, #ffffff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--soc-primary) 30%, #ffffff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--soc-primary) 20%, #ffffff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--soc-primary) 10%, #ffffff);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--soc-primary) 80%, #000000);
+
+  --el-color-success: var(--soc-success);
+  --el-color-success-light-3: color-mix(in srgb, var(--soc-success) 70%, #ffffff);
+  --el-color-success-light-5: color-mix(in srgb, var(--soc-success) 50%, #ffffff);
+  --el-color-success-light-7: color-mix(in srgb, var(--soc-success) 30%, #ffffff);
+  --el-color-success-light-8: color-mix(in srgb, var(--soc-success) 20%, #ffffff);
+  --el-color-success-light-9: color-mix(in srgb, var(--soc-success) 10%, #ffffff);
+  --el-color-success-dark-2: color-mix(in srgb, var(--soc-success) 80%, #000000);
+
+  --el-color-warning: var(--soc-warning);
+  --el-color-warning-light-3: color-mix(in srgb, var(--soc-warning) 70%, #ffffff);
+  --el-color-warning-light-5: color-mix(in srgb, var(--soc-warning) 50%, #ffffff);
+  --el-color-warning-light-7: color-mix(in srgb, var(--soc-warning) 30%, #ffffff);
+  --el-color-warning-light-8: color-mix(in srgb, var(--soc-warning) 20%, #ffffff);
+  --el-color-warning-light-9: color-mix(in srgb, var(--soc-warning) 10%, #ffffff);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--soc-warning) 80%, #000000);
+
+  --el-color-danger: var(--soc-danger);
+  --el-color-danger-light-3: color-mix(in srgb, var(--soc-danger) 70%, #ffffff);
+  --el-color-danger-light-5: color-mix(in srgb, var(--soc-danger) 50%, #ffffff);
+  --el-color-danger-light-7: color-mix(in srgb, var(--soc-danger) 30%, #ffffff);
+  --el-color-danger-light-8: color-mix(in srgb, var(--soc-danger) 20%, #ffffff);
+  --el-color-danger-light-9: color-mix(in srgb, var(--soc-danger) 10%, #ffffff);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--soc-danger) 80%, #000000);
+
+  --el-color-error: var(--soc-danger);
+  --el-color-info: var(--soc-info);
+  --el-color-info-light-3: color-mix(in srgb, var(--soc-info) 70%, #ffffff);
+  --el-color-info-light-5: color-mix(in srgb, var(--soc-info) 50%, #ffffff);
+  --el-color-info-light-7: color-mix(in srgb, var(--soc-info) 30%, #ffffff);
+  --el-color-info-light-8: color-mix(in srgb, var(--soc-info) 20%, #ffffff);
+  --el-color-info-light-9: color-mix(in srgb, var(--soc-info) 10%, #ffffff);
+  --el-color-info-dark-2: color-mix(in srgb, var(--soc-info) 80%, #000000);
+}
+
+/* Popups in the light theme: white cards with the page's border, radius and
+ * shadow, so a dialog reads as the same material as the panel behind it. */
+html.light .el-dialog,
+html.light .el-drawer,
+html.light .el-message-box {
+  background: var(--soc-panel);
+  border: 1px solid var(--soc-border);
+  border-radius: 12px;
+  box-shadow: var(--soc-shadow-lg);
+}
+html.light .el-drawer { border-radius: 12px 0 0 12px; border-right: 0; }
+html.light .el-dialog__header,
+html.light .el-message-box__header { padding-bottom: 12px; }
+html.light .el-dialog__title,
+html.light .el-message-box__title { color: var(--soc-text-strong); font-weight: 600; font-size: 15px; }
+html.light .el-message-box__content { color: var(--soc-text); }
+html.light .el-message {
+  background: #ffffff;
+  border: 1px solid var(--soc-border);
+  border-radius: 8px;
+  box-shadow: var(--soc-shadow-lg);
+}
+html.light .el-notification {
+  background: #ffffff;
+  border: 1px solid var(--soc-border);
+  border-radius: 10px;
+  box-shadow: var(--soc-shadow-lg);
+}
+html.light .el-notification__title { color: var(--soc-text-strong); }
+html.light .el-popper.is-light {
+  background: #ffffff;
+  border-color: var(--soc-border);
+  box-shadow: var(--soc-shadow-lg);
+  border-radius: 8px;
+}
+html.light .el-popper.is-light .el-popper__arrow::before {
+  background: #ffffff;
+  border-color: var(--soc-border);
+}
+html.light .el-dropdown-menu { padding: 4px; }
+html.light .el-dropdown-menu__item { border-radius: 6px; color: var(--soc-text); }
+html.light .el-dropdown-menu__item:not(.is-disabled):hover {
+  background: var(--soc-primary-dim);
+  color: var(--soc-primary);
+}
+html.light .el-select-dropdown__item.is-selected { color: var(--soc-primary); font-weight: 600; }
+html.light .el-tabs__item.is-active { color: var(--soc-primary); font-weight: 600; }
+html.light .el-tabs__active-bar { background-color: var(--soc-primary); border-radius: 2px; }
+html.light .el-table {
+  --el-table-header-bg-color: var(--soc-panel-2);
+  --el-table-row-hover-bg-color: var(--soc-panel-hover);
+}
+html.light .el-card,
+html.light .el-descriptions__body { background: var(--soc-panel); }
+html.light .el-button { border-radius: 6px; }
+html.light .el-tag { border-radius: 4px; }
 
 /* Global reset & base */
 * { box-sizing: border-box; }

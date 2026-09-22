@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -13,10 +13,12 @@ from app.api.pagination import page_response, paginate
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import require_active_admin
+from app.deployment.enrollment import create_enrollment
 from app.deployment.package import list_packages
 from app.deployment.preflight import run_preflight
 from app.deployment.record import ACTIVE_STATUSES, DeploymentError, store_credential
 from app.deployment.removal import create_removal_deployment
+from app.deployment.service import build_probe_toml
 from app.deployment.ssh_client import SshClient, SshError
 from app.models import Probe, ProbeDeployment, ProbeDeploymentEvent, User
 from app.schemas import (
@@ -28,6 +30,16 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api/v1/probe-deployments", tags=["probe-deployments"])
+
+#: A hand install is driven by a human on the console's clock, not by an SSH
+#: push that finishes in seconds, so the one-time token lives long enough to be
+#: copied over, not the fifteen minutes an automated enrollment takes.
+MANUAL_ENROLLMENT_TTL = timedelta(hours=24)
+
+#: States in which the worker still owns the SSH session. Minting a second
+#: enrollment token during these would invalidate the one the running install
+#: is about to use, so the hand install waits for the row to settle first.
+MANUAL_BLOCKED_STATUSES = ("CONNECTING", "PREFLIGHT", "UPLOADING", "INSTALLING", "STARTING", "REMOVING")
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -327,3 +339,72 @@ def retry_deployment(payload: ProbeDeploymentCreate, deployment_id: int, db: Ses
     db.commit()
     _dispatch(deployment.id)
     return _serialize(deployment)
+
+
+@router.get("/packages/{version}/{arch}/download", response_model=None)
+def download_package(version: str, arch: str, user: User = Depends(require_active_admin)):
+    """Serve one probe package artifact so a hand install has something to copy.
+
+    The auto-deploy path pushes this same artifact over SFTP; when SSH from the
+    platform is what is blocked, the operator still needs the bytes on the
+    target host, and the console is the only place they can get them.
+    """
+    from fastapi.responses import FileResponse
+
+    from app.deployment.package import PackageError, find_package
+
+    try:
+        pkg = find_package(arch, version)
+    except PackageError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    artifact = pkg["artifact"]
+    return FileResponse(
+        artifact,
+        media_type="application/gzip",
+        filename=artifact.name,
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.post("/{deployment_id}/manual-bootstrap", response_model=None)
+def manual_bootstrap(deployment_id: int, db: Session = Depends(get_db), user: User = Depends(require_active_admin)) -> dict[str, Any]:
+    """Mint a hand-install config so a failed auto-deployment can still connect.
+
+    Automatic deployment needs the platform to reach the host over SSH. When
+    that path is blocked the operator can install the packaged probe directly;
+    this returns a ready ``probe.toml`` carrying a *fresh* one-time enrollment
+    token bound to the same deployment row, so the hand-installed probe reports
+    back as this task's probe rather than as an unmanaged stranger.
+    """
+    deployment = db.get(ProbeDeployment, deployment_id)
+    if not deployment:
+        raise HTTPException(404, "deployment not found")
+    if deployment.action != "install":
+        raise HTTPException(409, "only install rows can be handed out for a manual install")
+    if deployment.probe_id or deployment.registered_at:
+        raise HTTPException(409, "该部署已回连，无需手动安装")
+    if deployment.status in MANUAL_BLOCKED_STATUSES:
+        raise HTTPException(409, "该部署正在自动安装，请等这一轮结束后再手动安装")
+    if not settings.deployment_secret_key:
+        raise HTTPException(503, "deployment encryption key not configured")
+    backend_url = deployment.backend_url or settings.deployment_backend_url
+    if not backend_url:
+        raise HTTPException(400, "deployment backend url not configured")
+    token = create_enrollment(db, deployment, ttl=MANUAL_ENROLLMENT_TTL)
+    toml = build_probe_toml(deployment, token, settings.deployment_ca_file or None)
+    version = settings.probe_agent_version
+    return {
+        "deployment_id": deployment.id,
+        "backend_url": backend_url,
+        "version": version,
+        "expires_at": (datetime.now(UTC) + MANUAL_ENROLLMENT_TTL).isoformat(),
+        "toml": toml,
+        "packages": list_packages(),
+        "steps": [
+            f"下载并上传探针包 probe-{version}-<arch>.tar.gz 到目标主机，例如 scp 到 /tmp/",
+            "解包并写入下方配置：tar -xzf probe-*.tar.gz -C probe-pkg && "
+            "install -m600 /dev/stdin probe-pkg/probe.toml <<'TOML' … TOML",
+            "执行 sudo bash probe-pkg/install.sh --install-only --config probe-pkg/probe.toml",
+            "回本页点「检测回连」；探针注册后此处会显示在线",
+        ],
+    }

@@ -30,6 +30,8 @@ reports/
 dist-deploy/
 dist-deploy.zip
 dist-deploy.tar
+# 离线镜像包（多 GB，构建产物不入库；由 scripts/offline_bundle.py --save 生成）
+dist-offline/security-toolbox-images.tar
 .local/
 probe_packages/
 

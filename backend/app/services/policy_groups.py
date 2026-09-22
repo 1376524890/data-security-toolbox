@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import PolicyGroup
@@ -123,3 +124,43 @@ def get_or_404(db: Session, group_id: int) -> PolicyGroup:
     if group is None:
         raise PolicyGroupError(f"策略组 {group_id} 不存在")
     return group
+
+
+def network_rule_overlay(db: Session) -> dict[str, list[str]]:
+    """The rules enabled, network-scoped policy groups add to the passive DLP stage.
+
+    The file scan and the network stage have to enforce the same rules: a
+    fingerprint an operator accepted from a file scan is a statement about that
+    content wherever it shows up, traffic included. Until this existed, an
+    accepted hash only ever reached the file side and the network side kept
+    running its own separate fingerprint list, which is exactly how the two
+    halves drifted.
+
+    Only enabled groups whose scope names ``network`` contribute, so a group an
+    operator scoped to files keeps governing files alone. Analyst-authored rules
+    (``rule_ids``) need no copy here: the rule store is global and every stage
+    already scans with it.
+    """
+    fingerprints: list[str] = []
+    keywords: list[str] = []
+    categories: list[str] = []
+    for group in db.scalars(select(PolicyGroup).where(PolicyGroup.enabled.is_(True))).all():
+        if "network" not in (group.scope or []):
+            continue
+        fingerprints.extend(str(item).lower() for item in (group.fingerprints or []))
+        keywords.extend(str(item) for item in (group.keywords or []))
+        categories.extend(str(item) for item in (group.categories or []))
+    return {
+        "fingerprints": list(dict.fromkeys(item for item in fingerprints if _SHA256.match(item))),
+        "keywords": list(dict.fromkeys(item for item in keywords if item.strip())),
+        "categories": list(dict.fromkeys(item for item in categories if item.strip())),
+    }
+
+
+def merge_network_rules(policy: dict[str, Any], overlay: dict[str, list[str]]) -> dict[str, Any]:
+    """Fold the group overlay into a DLP policy without dropping what it had."""
+    merged = dict(policy)
+    for key in ("fingerprints", "keywords", "categories"):
+        current = [str(item) for item in (merged.get(key) or [])]
+        merged[key] = list(dict.fromkeys([*current, *overlay.get(key, [])]))
+    return merged

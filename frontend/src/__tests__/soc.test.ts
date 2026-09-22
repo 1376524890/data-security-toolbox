@@ -45,10 +45,23 @@ describe('navigation menu', () => {
       expect(flat.some((m) => m.path === gone)).toBe(false)
     }
   })
-  it('has exactly the six data-security sections', () => {
+  it('keeps the dashboard section-less above the five named sections', () => {
+    // 数据大屏 has no group on purpose: it is the platform-wide overview, not a
+    // section of its own, so the sidebar renders it without a label.
     expect(menuGroups.map((g) => g.group)).toEqual([
-      '资产中心', '任务中心', '数据资产', '数据流动与防护', '文件证据', '采集与规则',
+      '', '任务中心', '资产中心', '数据流动与防护', '文件证据', '采集与规则',
     ])
+    // 数据大屏 stays the landing page at '/', 驾驶舱 the daily-use page in shell.
+    expect(menuGroups[0].items.map((item) => item.title)).toEqual(['数据大屏', '数据安全驾驶舱'])
+    expect(menuGroups[0].items.map((item) => item.path)).toEqual(['/', '/cockpit'])
+  })
+
+  it('lists 网络资产 and 漏洞库 under the section that owns them', () => {
+    const assetSection = menuGroups.find((g) => g.group === '资产中心')!
+    expect(assetSection.items.map((item) => item.title)).toEqual(['数据资产', '网络资产'])
+    expect(assetSection.items[1].query).toEqual({ view: 'network' })
+    const ruleSection = menuGroups.find((g) => g.group === '采集与规则')!
+    expect(ruleSection.items.some((item) => item.title === '漏洞库')).toBe(true)
   })
 
   it('never leaves a sub-item without a home section', () => {

@@ -25,17 +25,42 @@ def _version_tuple(text: object) -> tuple[int, ...]:
     return tuple(int(token) for token in re.findall(r"\d+", str(text))[:4])
 
 
+def _ranges_for_product(description: dict[str, Any], product: str, keyword: str) -> list[str]:
+    """The affected-version constraints the record published *for this product*.
+
+    A CVE whose configuration covers several products keeps the other products'
+    bounds under ``product_ranges``; testing the scanned product against them
+    would confirm it against a range that never applied to it.
+    """
+    by_product = description.get("product_ranges") or {}
+    if by_product:
+        tokens = {token.lower() for token in
+                  re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{2,}", f"{product} {keyword}")}
+        for name, specs in by_product.items():
+            if str(name).lower() in tokens:
+                return [str(spec) for spec in specs]
+    return [str(spec) for spec in (description.get("affected_versions") or [])]
+
+
 def _version_in_range(version: str, spec: str) -> bool:
     """Evaluate a comma-separated constraint list such as ``>=1.2,<1.4.3``."""
     current = _version_tuple(version)
     if not current:
         return False
+    # A constraint list is an AND chain. A constraint we cannot parse must not
+    # be skipped: dropping it made the whole list vacuously true, so an
+    # unparsable spec such as "==3.7.1p1" confirmed every version it was tested
+    # against. Unparsable means "cannot confirm", i.e. False.
+    evaluated = 0
     for constraint in str(spec).split(","):
-        match = re.match(r"^(>=|<=|>|<|==|!=)?\s*v?([\d][\d.]*)$", constraint.strip())
+        match = re.match(r"^(>=|<=|>|<|==|!=)?\s*v?([\d][\dA-Za-z._-]*)$", constraint.strip())
         if not match:
-            continue
+            return False
+        evaluated += 1
         operator = match.group(1) or "=="
         target = _version_tuple(match.group(2))
+        if not target:
+            return False
         width = max(len(current), len(target))
         left = current + (0,) * (width - len(current))
         right = target + (0,) * (width - len(target))
@@ -51,16 +76,17 @@ def _version_in_range(version: str, spec: str) -> bool:
             return False
         if operator == "!=" and left == right:
             return False
-    return True
+    return evaluated > 0
 
 
 class ThreatIntelEngine(DetectionEngine):
     name = "threat_intel"
     version = "1.0.0"
 
-    def cve_lookup(self, keyword: str, api_key: str = "") -> list[dict[str, Any]]:
+    def cve_lookup(self, keyword: str, api_key: str = "",
+                   product: str = "") -> list[dict[str, Any]]:
         rule = rule_params("threat_intel", "CVE_LOOKUP", CVE_RULE_DEFAULTS)
-        local = self._local_cve_lookup(keyword, int(rule.get("local_limit") or 10))
+        local = self._local_cve_lookup(keyword, int(rule.get("local_limit") or 10), product)
         if local:
             return local
         headers = {"apiKey": api_key} if api_key else {}
@@ -75,18 +101,37 @@ class ThreatIntelEngine(DetectionEngine):
         except Exception:
             return []
 
-    def _local_cve_lookup(self, keyword: str, limit: int = 10) -> list[dict[str, Any]]:
+    def _local_cve_lookup(self, keyword: str, limit: int = 10,
+                          product: str = "") -> list[dict[str, Any]]:
+        """Local library first: an offline deployment has no NVD to fall back to.
+
+        The scanned fingerprint is ``"<product> <version>"`` ("Apache httpd
+        2.4.68"), while the library indexes the CPE product ("httpd"), so the
+        query matches on the product *tokens* rather than the whole string. A
+        token hit is still only a lead — ``_version_affected`` decides whether it
+        is a confirmed vulnerability.
+        """
         from sqlalchemy import or_, select
         from app.core.database import SessionLocal
         from app.models import LocalCve
+        name = (product or keyword).strip()
+        if not name:
+            return []
+        patterns = [f'%{token}%' for token in re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{2,}", name)]
+        conditions = [LocalCve.cve_id == keyword.strip().upper()]
+        conditions += [LocalCve.description['product'].as_string().ilike(pattern)
+                       for pattern in patterns]
+        conditions.append(LocalCve.description['text'].as_string().ilike(f'%{keyword}%'))
         with SessionLocal() as db:
-            rows = db.scalars(select(LocalCve).where(or_(
-                LocalCve.cve_id.ilike(f'%{keyword}%'),
-                LocalCve.description['text'].as_string().ilike(f'%{keyword}%'),
-            )).order_by(LocalCve.cvss_score.desc()).limit(max(1, limit))).all()
+            rows = db.scalars(select(LocalCve).where(or_(*conditions))
+                              .order_by(LocalCve.cvss_score.desc()).limit(max(1, limit))).all()
             if rows:
-                return [{'cve_id': row.cve_id, 'published': row.published, 'description': row.description.get('text', ''),
-                         'severity': row.severity, 'cvss_score': row.cvss_score, 'source': row.source} for row in rows]
+                return [{'cve_id': row.cve_id, 'published': row.published,
+                         'description': row.description.get('text', ''),
+                         'severity': row.severity, 'cvss_score': row.cvss_score, 'source': row.source,
+                         'product': row.description.get('product', ''),
+                         'affected_versions': _ranges_for_product(row.description, name, keyword)}
+                        for row in rows]
         cve_dir = settings.integration_dir / "cves"
         if not cve_dir.exists():
             return []
@@ -199,11 +244,12 @@ class ThreatIntelEngine(DetectionEngine):
             candidates: list[dict[str, Any]] = []
             confirmed: list[tuple[dict[str, Any], dict[str, Any], str]] = []
             for service in context.assets:
-                keyword = f"{service.get('service', '')} {service.get('version', '')}".strip()
+                product = str(service.get("product") or "").strip()
+                version = str(service.get("version") or "").strip()
+                keyword = f"{product or service.get('service', '')} {version}".strip()
                 if not keyword:
                     continue
-                version = str(service.get("version") or "")
-                for cve in self.cve_lookup(keyword, context.data.get("nvd_api_key", "")):
+                for cve in self.cve_lookup(keyword, context.data.get("nvd_api_key", ""), product):
                     affected, reason = self._version_affected(version, cve)
                     if affected:
                         confirmed.append((cve, service, reason))

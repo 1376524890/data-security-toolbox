@@ -156,3 +156,19 @@ export interface PreflightResult {
   capability_score: number
   recommended_profile: string
 }
+
+/** A hand-install config minted for a deployment the platform could not push.
+ *
+ * `toml` is a complete `probe.toml` carrying a fresh one-time enrollment token
+ * bound to `deployment_id`, so a probe installed by an operator reconnects as
+ * this task's probe. `steps` is the install procedure the platform expects,
+ * written by the backend so the console does not keep a second copy. */
+export interface ManualBootstrap {
+  deployment_id: number
+  backend_url: string
+  version: string
+  expires_at: string
+  toml: string
+  packages: { version: string; arch: string; sha256: string }[]
+  steps: string[]
+}

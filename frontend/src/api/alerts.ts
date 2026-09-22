@@ -10,6 +10,8 @@ export interface AlertQuery {
   start?: string
   end?: string
   search?: string
+  /** ``risk`` (default, worst first) or ``recent`` (newest first, for the 态势大屏). */
+  order?: 'risk' | 'recent'
   page: number
   page_size: number
 }

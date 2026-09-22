@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
@@ -7,7 +7,7 @@ import StatusBadge from '../../components/security/StatusBadge.vue'
 import { deleteTask, getTask, listTasks, stopTask } from '../../api/tasks'
 import type { Task } from '../../types/task'
 import { formatDateTime } from '../../utils/format'
-import { useTaskWizard } from './composables/useTaskWizard'
+import { TASK_TYPES, useTaskWizard } from './composables/useTaskWizard'
 
 // 任务中心: the task list (progress + health, expandable to a detail and a short
 // problem summary) and the only place a scan is dispatched — the "新建任务"
@@ -22,19 +22,28 @@ const detail = ref<Task | null>(null)
 const wizardOpen = ref(false)
 const wizard = useTaskWizard()
 
-// el-tree hands the handler its own node object; the wizard only needs the
-// checked keys, so the binding is built per host instead of in the template.
-const checkFor = (host: { key: number } & Record<string, unknown>) =>
-  (_node: unknown, state: { checkedKeys: string[] }): void =>
-    wizard.onCheck(host as never, state.checkedKeys)
+type TreeInstance = {
+  setCheckedKeys: (keys: string[]) => void
+  getCheckedKeys: (leafOnly?: boolean) => string[]
+}
 
 // Each host owns an el-tree; keeping the instance lets "清空选择" reset the
 // checkboxes themselves instead of only the stored keys (the two drifted apart).
-const trees = new Map<number, { setCheckedKeys: (keys: string[]) => void }>()
+const trees = new Map<number, TreeInstance>()
 function registerTree(key: number, instance: unknown): void {
-  if (instance && typeof (instance as { setCheckedKeys?: unknown }).setCheckedKeys === 'function') {
-    trees.set(key, instance as { setCheckedKeys: (keys: string[]) => void })
+  const tree = instance as Partial<TreeInstance> | null | undefined
+  if (typeof tree?.setCheckedKeys === 'function' && typeof tree.getCheckedKeys === 'function') {
+    trees.set(key, tree as TreeInstance)
   }
+}
+
+// el-tree hands its handler the checked keys, but only to a function — binding
+// `onTreeCheck(host)` to @check is exactly that, and the keys can be read back
+// from the instance we already registered. (Binding a handler *factory* here
+// instead would silently do nothing: Vue compiles any non-function handler
+// expression into `$event => { … }` and drops what the factory returns.)
+function onTreeCheck(host: { key: number } & Record<string, unknown>): void {
+  wizard.onCheck(host as never, trees.get(host.key)?.getCheckedKeys() ?? [])
 }
 function clearHostSelection(host: { key: number } & Record<string, unknown>): void {
   trees.get(host.key)?.setCheckedKeys([])
@@ -43,8 +52,13 @@ function clearHostSelection(host: { key: number } & Record<string, unknown>): vo
 
 // 'monitoring' is the long-lived task a probe's capture segments hang under;
 // 'pcap' reaches the individual segments when they are needed.
-const KINDS = ['monitoring', 'pcap', 'probe_scan', 'data_asset_scan', 'network_scan',
+const KINDS = ['monitoring', 'pcap', 'probe_scan', 'data_asset_scan', 'scan',
   'file_source_scan', 'database_scan']
+
+// A monitoring target that is not registered yet: the wizard keeps the dialog
+// open for these so the hand-install steps stay on screen until it calls back.
+const failedHosts = computed(() => wizard.hosts.value.filter(
+  (host) => !host.registered && (host.deployError || host.manual)))
 
 async function load(): Promise<void> {
   loading.value = true
@@ -100,10 +114,12 @@ async function openWizard(): Promise<void> {
 
 async function submitWizard(): Promise<void> {
   const result = await wizard.submit()
-  if (result.ok) {
+  // Keep the dialog open while any target still needs the operator (a probe
+  // that has not called back), so the hand-install steps are not thrown away.
+  if (result.ok && !result.failed) {
     wizardOpen.value = false
-    await load()
   }
+  if (result.ok) await load()
 }
 
 onMounted(load)
@@ -180,6 +196,7 @@ onMounted(load)
 
     <el-dialog v-model="wizardOpen" title="新建任务" width="980px" top="6vh">
       <el-steps :active="wizard.step.value" simple finish-status="success" style="margin-bottom: 14px">
+        <el-step title="任务类型" />
         <el-step title="目标主机" />
         <el-step title="连接方式" />
         <el-step title="连通性测试" />
@@ -187,64 +204,69 @@ onMounted(load)
         <el-step title="任务属性" />
       </el-steps>
 
-      <!-- 1. 目标主机（IP/端口） -->
+      <!-- 1. 任务类型：这次检查是一次性的还是要长期监测，决定后面是否下发探针 -->
       <template v-if="wizard.step.value === 0">
+        <el-radio-group v-model="wizard.taskType.value" class="type-picker">
+          <el-radio v-for="item in TASK_TYPES" :key="item.value" :value="item.value" border>
+            <div class="type-label">{{ item.label }}</div>
+            <div class="muted type-hint">{{ item.hint }}</div>
+          </el-radio>
+        </el-radio-group>
+        <el-alert type="info" :closable="false" show-icon style="margin-top: 12px"
+                  :title="wizard.taskType.value === 'monitoring'
+                    ? '监测任务必须在目标主机部署探针；自动部署失败时会给出手动安装与回连步骤。'
+                    : '检查任务不接触目标主机：平台直连读取勾选目录，并扫描其网络服务（指纹识别 + 漏洞库匹配），只执行一次。'" />
+      </template>
+
+      <!-- 2. 目标主机（IP/端口） -->
+      <template v-else-if="wizard.step.value === 1">
         <el-table :data="wizard.hosts.value" size="small">
-          <el-table-column label="IP / 主机" min-width="200"><template #default="{ row }"><el-input v-model="row.host" placeholder="10.0.0.10" /></template></el-table-column>
-          <el-table-column label="端口" width="110"><template #default="{ row }"><el-input-number v-model="row.port" :min="1" :max="65535" controls-position="right" style="width: 100%" /></template></el-table-column>
+          <el-table-column label="IP / 主机" min-width="200"><template #default="{ row }"><el-input v-model="row.host" placeholder="10.0.0.10" @change="wizard.invalidate(row)" /></template></el-table-column>
+          <el-table-column label="端口" width="110"><template #default="{ row }"><el-input-number v-model="row.port" :min="1" :max="65535" controls-position="right" style="width: 100%" @change="wizard.invalidate(row)" /></template></el-table-column>
           <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="danger" @click="wizard.removeHost(row.key)">删除</el-button></template></el-table-column>
         </el-table>
         <el-button style="margin-top: 8px" @click="wizard.addHost">添加主机</el-button>
       </template>
 
-      <!-- 2. 连接方式与凭据 -->
-      <template v-else-if="wizard.step.value === 1">
+      <!-- 3. 连接方式与凭据 -->
+      <template v-else-if="wizard.step.value === 2">
         <div v-for="host in wizard.hosts.value" :key="host.key" class="host-block">
           <div class="host-title">{{ host.host }}:{{ host.port }}</div>
           <el-form label-width="110px" size="small">
-            <!-- Data detection needs no probe: the platform reads the files over a
-                 remote protocol. Deploying a probe is for traffic monitoring on a
-                 core network device, so it is a checkbox rather than a mode. -->
-            <el-form-item label="探针">
-              <el-checkbox :model-value="host.mode === 'probe'"
-                           @change="(value: boolean | string | number) => { host.mode = value ? 'probe' : 'direct' }">
-                在该设备下发探针（用于抓取网络流量；不勾选则平台只读远程访问文件做数据检测）
-              </el-checkbox>
-            </el-form-item>
             <el-form-item label="用户名">
               <el-select v-model="host.username" filterable allow-create default-first-option
-                         placeholder="选择或输入用户名" style="width: 260px">
+                         placeholder="选择或输入用户名" style="width: 260px" @change="wizard.invalidate(host)">
                 <el-option v-for="user in ['root', 'admin', 'administrator', 'dstprobe']" :key="user"
                            :label="user" :value="user" />
               </el-select>
             </el-form-item>
-            <el-form-item v-if="host.mode === 'direct'" label="远程协议">
+            <el-form-item v-if="wizard.taskType.value === 'inspection'" label="远程协议">
               <el-select v-model="host.protocol" style="width: 240px"
-                         @change="(value: string) => { if (value !== 'sftp') host.port = 21 }">
+                         @change="(value: string) => { if (value !== 'sftp') host.port = 21; wizard.invalidate(host) }">
                 <el-option label="SFTP（SSH，端口 22）" value="sftp" />
                 <el-option label="FTPS（显式 TLS，端口 21）" value="ftps" />
                 <el-option label="FTP（明文，端口 21）" value="ftp" />
               </el-select>
             </el-form-item>
             <el-form-item label="认证方式">
-              <el-radio-group v-model="host.authType">
+              <el-radio-group v-model="host.authType" @change="wizard.invalidate(host)">
                 <el-radio-button value="password">密码</el-radio-button>
                 <el-radio-button value="private_key">私钥</el-radio-button>
               </el-radio-group>
             </el-form-item>
             <el-form-item v-if="host.authType === 'password'" label="密码">
-              <el-input v-model="host.password" type="password" show-password style="width: 320px" />
+              <el-input v-model="host.password" type="password" show-password style="width: 320px" @change="wizard.invalidate(host)" />
             </el-form-item>
             <template v-else>
-              <el-form-item label="私钥"><el-input v-model="host.privateKey" type="textarea" :rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" /></el-form-item>
-              <el-form-item label="私钥口令"><el-input v-model="host.keyPassphrase" type="password" show-password style="width: 260px" /></el-form-item>
+              <el-form-item label="私钥"><el-input v-model="host.privateKey" type="textarea" :rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" @change="wizard.invalidate(host)" /></el-form-item>
+              <el-form-item label="私钥口令"><el-input v-model="host.keyPassphrase" type="password" show-password style="width: 260px" @change="wizard.invalidate(host)" /></el-form-item>
             </template>
           </el-form>
         </div>
       </template>
 
-      <!-- 3. 连通性测试 -->
-      <template v-else-if="wizard.step.value === 2">
+      <!-- 4. 连通性测试 -->
+      <template v-else-if="wizard.step.value === 3">
         <el-table :data="wizard.hosts.value" size="small">
           <el-table-column label="目标" min-width="200"><template #default="{ row }">{{ row.host }}:{{ row.port }}</template></el-table-column>
           <el-table-column label="结果" min-width="260">
@@ -260,8 +282,8 @@ onMounted(load)
         <el-button style="margin-top: 8px" @click="wizard.hosts.value.forEach((h) => wizard.testHost(h))">全部测试</el-button>
       </template>
 
-      <!-- 4. 目录树（可展开）+ 级联勾选范围 -->
-      <template v-else-if="wizard.step.value === 3">
+      <!-- 5. 检测范围（可展开目录树 + 级联勾选） -->
+      <template v-else-if="wizard.step.value === 4">
         <div v-for="host in wizard.hosts.value" :key="host.key" class="host-block">
           <div class="host-title">{{ host.host }}：展开目录树并勾选检测范围</div>
           <div class="toolbar">
@@ -275,17 +297,22 @@ onMounted(load)
             <el-button size="small" @click="clearHostSelection(host)">清空选择</el-button>
           </div>
           <!-- Lazy tree: ticking a directory takes its whole subtree; children
-               load on expand, and files are shown but not tickable. -->
+               load on expand, and files are shown but not tickable.
+               @check has to stay an inline arrow: Vue compiles any non-function
+               handler expression into `$event => { … }`, so binding a handler
+               factory such as checkFor(host) calls it and drops the function it
+               returns — the tick would show up in the tree but never reach the
+               wizard, leaving 下发任务 greyed out. -->
           <el-tree :key="`${host.key}-${host.root}`" :ref="(el: unknown) => registerTree(host.key, el)"
                    lazy show-checkbox node-key="path"
                    :props="{ label: 'name', isLeaf: 'leaf', disabled: 'disabled' }"
                    :load="(node: any, resolve: any) => wizard.loadNode(host, node, resolve)"
-                   @check="checkFor(host)"
+                   @check="onTreeCheck(host)"
                    style="max-height: 260px; overflow: auto" />
         </div>
       </template>
 
-      <!-- 5. 任务属性 -->
+      <!-- 6. 任务属性 -->
       <template v-else>
         <el-form label-width="130px" size="small">
           <el-form-item label="检测项（策略组）">
@@ -293,30 +320,54 @@ onMounted(load)
               <el-option v-for="group in wizard.groups.value" :key="group.id" :label="group.name" :value="group.id" />
             </el-select>
           </el-form-item>
-          <el-form-item label="任务属性">
-            <el-radio-group v-model="wizard.taskMode.value">
-              <el-radio-button value="once">单次检测</el-radio-button>
-              <el-radio-button value="scheduled">定时持续监测</el-radio-button>
-            </el-radio-group>
+          <el-form-item v-if="wizard.taskType.value === 'inspection'" label="端口范围">
+            <el-select v-model="wizard.topPorts.value" style="width: 220px">
+              <el-option v-for="item in [{ l: 'Top 100 端口', v: 100 }, { l: 'Top 200 端口', v: 200 }, { l: 'Top 1000 端口', v: 1000 }]"
+                         :key="item.v" :label="item.l" :value="item.v" />
+            </el-select>
+            <span class="muted" style="margin-left: 10px">对目标网络服务做指纹识别与漏洞库匹配（nuclei 模板）</span>
           </el-form-item>
-          <el-form-item v-if="wizard.taskMode.value === 'scheduled'" label="间隔">
-            <el-select v-model="wizard.intervalSeconds.value" style="width: 200px">
-              <el-option v-for="item in [{ l: '每 5 分钟', v: 300 }, { l: '每 30 分钟', v: 1800 }, { l: '每小时', v: 3600 }, { l: '每 6 小时', v: 21600 }, { l: '每天', v: 86400 }]"
+          <el-form-item v-else label="数据采集间隔">
+            <el-select v-model="wizard.intervalSeconds.value" style="width: 220px">
+              <el-option :label="'不下发（仅抓流量）'" :value="0" />
+              <el-option v-for="item in [{ l: '每小时', v: 3600 }, { l: '每 6 小时', v: 21600 }, { l: '每天', v: 86400 }]"
                          :key="item.v" :label="item.l" :value="item.v" />
             </el-select>
           </el-form-item>
-          <el-form-item label="流量监控抓包">
-            <el-switch v-model="wizard.capture.value" />
-            <div class="muted">开启后请把探针部署在网络关键位置以抓取全局流量；每 30 秒一段抓包并自动分析。</div>
-          </el-form-item>
         </el-form>
-        <el-alert type="info" :closable="false" show-icon
-                  title="下发的探针是任务专属的：凭据加密保留至任务结束，任务到达终态后自动卸载并销毁凭据；同一主机若还有其它在用任务则不卸载。手工注册的探针永远不会被自动卸载。" />
+
+        <template v-if="wizard.taskType.value === 'monitoring' && failedHosts.length">
+          <div class="section-title">探针自动部署失败，可改为手动安装</div>
+          <div v-for="host in failedHosts" :key="host.key" class="host-block">
+            <div class="host-title">{{ host.host }}：{{ host.deployError || '自动部署未成功' }}</div>
+            <template v-if="host.manual">
+              <div class="muted">在目标主机上按下面步骤安装，探针会在启动后自动回连（凭据 {{ host.manual.expires_at }} 前有效）：</div>
+              <ol class="steps">
+                <li v-for="(line, index) in host.manual.steps" :key="index">{{ line }}</li>
+              </ol>
+              <el-input :model-value="host.manual.toml" type="textarea" :rows="6" readonly />
+              <div class="muted" style="margin: 6px 0">探针包：<span v-for="pkg in host.manual.packages" :key="`${pkg.version}-${pkg.arch}`" style="margin-right: 12px">
+                {{ pkg.version }} / {{ pkg.arch }}（sha256 {{ pkg.sha256.slice(0, 12) }}…）
+              </span></div>
+            </template>
+            <div class="toolbar" style="margin-top: 8px">
+              <el-button size="small" :loading="host.checking" @click="wizard.checkCallback(host)">检测回连</el-button>
+              <el-tag v-if="host.registered" size="small" type="success">已回连</el-tag>
+              <el-tag v-else size="small" type="info">{{ host.deployStatus || '等待回连' }}</el-tag>
+            </div>
+          </div>
+        </template>
+
+        <el-alert type="info" :closable="false" show-icon style="margin-top: 12px"
+                  :title="wizard.taskType.value === 'monitoring'
+                    ? '下发的探针是任务专属的：凭据加密保留至任务结束，任务到达终态后自动卸载并销毁凭据；同一主机若还有其它在用任务则不卸载。手工注册的探针永远不会被自动卸载。'
+                    : '检查任务只执行一次：平台读取勾选目录并扫描目标端口，不在目标主机上安装或改动任何东西。'" />
       </template>
 
       <template #footer>
+        <span v-if="!wizard.ready.value" class="muted block-reason">{{ wizard.blockReason.value }}</span>
         <el-button :disabled="wizard.step.value === 0" @click="wizard.step.value -= 1">上一步</el-button>
-        <el-button v-if="wizard.step.value < 4" type="primary" @click="wizard.step.value += 1">下一步</el-button>
+        <el-button v-if="wizard.step.value < 5" type="primary" @click="wizard.step.value += 1">下一步</el-button>
         <el-button v-else type="primary" :loading="wizard.busy.value" :disabled="!wizard.ready.value" @click="submitWizard">下发任务</el-button>
       </template>
     </el-dialog>
@@ -325,6 +376,13 @@ onMounted(load)
 
 <style scoped>
 .muted { color: var(--soc-text-dim); font-size: 12px; }
+.type-picker { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+.type-picker :deep(.el-radio) { margin-right: 0; height: auto; padding: 10px 14px; white-space: normal; }
+.type-picker :deep(.el-radio__label) { white-space: normal; line-height: 1.5; }
+.type-label { font-weight: 600; }
+.type-hint { margin-top: 2px; }
+.steps { margin: 6px 0; padding-left: 20px; font-size: 12px; line-height: 1.8; color: var(--soc-text-dim); }
+.block-reason { margin-right: 12px; }
 .host-block { border: 1px solid var(--soc-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .host-title { font-weight: 600; margin-bottom: 8px; }
 .detail { padding: 6px 12px; font-size: 12px; line-height: 1.8; color: var(--soc-text-dim); word-break: break-all; }

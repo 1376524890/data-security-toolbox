@@ -1,5 +1,93 @@
 # 项目状态
 
+2026-09-22 第三十九批（本轮）：**数据安全综合驾驶舱 + 浅色控制台**。
+
+**做了什么**：控制台现在有**两个首页**——`/` 仍是壁挂大屏（`DashboardScreen.vue`，`meta.layout='screen'`，
+隐藏侧边栏与顶栏、固定深色 1920×1080），新增 `/cockpit` **数据安全综合驾驶舱**作为日常页（在控制台壳层内）；
+`/screen` 重定向到 `/`，旧链接不落空。驾驶舱含 8 张 KPI 卡、数据安全健康度环、资产/风险两个分布环、
+合规进度板、本周重点关注、安全流水线、数据流动卡片与最近任务；投影与刷新全在
+`modules/dashboard/cockpit/composables/useDashboardCockpit.ts`（30 秒刷新、卸载清 timer、刷新失败保留
+上一次成功数据并显示过期提示，不把页面清空成 0）。控制台改为**默认浅色**。
+
+**接口**：`GET /dashboard/overview` 并入驾驶舱块（`_cockpit_blocks`，与大屏共用同一份组件/告警/事件口径，
+所以两页不可能对不上数字）；新增 `GET /dashboard/trend?range=7d|24h`（发现/事件/告警与三类流向共用一条
+零填充时间轴，流向按 `flows.start_time` 落桶）与 `GET /dashboard/tasks?limit=`（复用 `/tasks` 的
+`visible_tasks` + `default_task_filter` + `api/task_presenter.serialize_task`，只读、不做监控汇总）。
+判定口径集中在 `services/cockpit_service.py`，流向仍走 `services/egress_regions.direction_of`。
+
+**主题**：新增 `frontend/src/utils/theme.ts`（`themeMode` ref + `applyTheme` + `chartColors`），`main.ts` 默认浅色
+（只有 `dst-theme === 'dark'` 才深色）；`components/charts/{Bar,Donut,Gauge,Trend}Chart.vue` 监听 `themeMode`
+重建 ECharts option——option 在构建时就把颜色写死，不重建会在浅色页上留着深色网格与轴色。大屏不受主题影响。
+
+**复验**：前端 `vue-tsc` 干净、`vitest` **18 文件 / 89 项**全绿（新增 `dashboard-cockpit.test.ts` 6 项整页挂载、
+`dashboard-cockpit-state.test.ts` 10 项投影/竞态/失败态）；后端本批相关域 12 个文件 **61 项**（含
+`test_cockpit_api.py` 9 项）+ `test_transfer_file_binding.py` 3 项通过。全量对照：工作树 **43 项失败/错误**
+vs 干净 HEAD **50 项**，共同 41 项逐项一致；只在 HEAD 出现的 9 项全是需要 `probe_packages/`（gitignored）
+的探针包/分发用例，工作树多出的 2 项经单独复跑确认与本批无关（详见 `TASK.md` 第三十九批）——**本批未新增失败**。
+
+**交付**：三个应用镜像与提交修订一致（后端/worker 逐文件 md5 与工作树相同，前端为本轮重建）；
+`dist-offline/security-toolbox-images.tar` **2.95 GB**，6 个镜像全部 `arm64/linux`；另有 arm64 离线一键部署包
+（源码 + 探针包 + 镜像 + `deploy.sh`，见 `README-离线部署.md`）。
+
+2026-09-22 第三十八批：**控制台首页重做为「数据安全态势大屏」**。
+
+**做了什么**：`/` 由旧的统计型 `Dashboard.vue` 换成 `DashboardScreen.vue`（`meta.layout='screen'`，`App.vue`
+据此隐藏侧边栏与顶栏），固定 1920×1080 设计稿整体等比缩放，深色大屏版式：顶部品牌+标题+API/组件/探针/时钟，
+6 张 KPI 卡，中部「数据流动势态」拓扑（echarts 笛卡尔坐标 + 飞线粒子，中心为流量最大的内网节点、内环内网节点、
+外环外部端点，点节点出抽屉）、左右两条 7 天趋势与两个环形分布，底部引擎运行状态（8 个适配器分级）、探针健康、
+事件闭环与自动滚动的实时事件流。旧页与其 composable 已删除。
+
+**新增接口（全部按行实时聚合，无缓存、无造数）**：`GET /dashboard/overview`、`GET /dashboard/traffic-flow`、
+`GET /dashboard/risk-distribution`、`GET /dashboard/detection-trend`；`GET /alerts` 增 `order=recent`
+（默认顺序不变）；`api/integrations.py::integration_catalogue()` 抽出供 `/integrations` 与大屏共用一份
+「集成组件 x/y」口径。
+
+**口径选择（宁少一档也不造数）**：流向只报内部 / 外部 / 目的未识别三类——库里没有 zone 表，
+就不做「跨域访问」这一档；`external` 仅在地表或黑名单命中时成立，未证实一律黄灯。真机核对：
+`172.23.0.4` 判为私网 `internal`，红线只挂在四个地区表命中的公网地址上。
+
+**实机走查查出并修掉的 4 个真缺陷**（jsdom 单测看不见，是浏览器截图量出来的）：
+① `SecurityHeader` 的 `height:100%` 在纵向 flex 里拿到整列基准尺寸 → 实测 header 662px、中部整行塌成 0，
+改固定 76px；② `TrafficMap` 在 hidden 状态下被 echarts 初始化为 100×100 画布，拓扑被画进左上角一个角里，
+改 `ResizeObserver` 跟随容器；③ 底部引擎卡 226px 装不下 8 行（`scrollHeight 225 > clientHeight 202`），
+后两个适配器被切掉，收紧行距 + 底栏提到 250px，四块面板 `clipped=0`；④ 检测趋势横轴用完整 ISO 日导致末位
+刻度被裁，统一为 `09-22`。另修 `/dashboard/traffic-flow` 节点扫描只取两列，**1.6s → 1.06s**，返回逐字段一致。
+
+**复验**：前端 `vue-tsc` 干净 + `vitest` 16 文件/72 项通过（含整页挂载的 2 项）；后端相关 9 个文件 66 项通过；
+headless Chromium 带会话在 1920×1080 / 1366×768 / 2560×1440 三视口截图核对版式并点击节点验证抽屉；
+三个镜像已重建并切换。真机数字：告警 166、事件 97、发现 3313、资产 7、数据资产 0、在线探针 0、集成组件 8（健康 5）、
+会话 36481；没有数据的卡片就照实显示 0。
+
+2026-09-22 第三十七批：**CVE 规则库找回 + 网络资产页 + 出境报告明细，并复验 ARM 离线部署**。
+
+**背景**：控制台的 CVE 库界面在 `c83c7e7` 被删、导入器把 NVD 记录拍平成文本，`local_cves` 表为空，
+所以「网络扫描按指纹匹配漏洞库」这条链路在界面上和判定上都是断的——扫描只会给出「线索」，永远无法确认。
+
+**恢复的能力**：结构化受影响版本区间（含 `product`）、CVSS 三代指标、按 CVSS 分档的严重度；
+按扫描指纹在线更新 NVD（`GET /offline/cves/fingerprints` + `POST /offline/cves/sync`）与手动导入/添加；
+「采集与规则 → 漏洞库」页；`GET /network/assets{,/summary}` 与「资产中心 → 网络资产」页；
+菜单重排（数据大屏无标题、资产中心含数据资产+网络资产）；出境报告传输对象绑定文件、命中规则原文与报文解析。
+
+**实测查出并修掉的两个真实缺陷**（都是「确认」这一步判错，会把已打补丁的资产报成有漏洞）：
+① NVD 配置树里同一 CVE 覆盖的**其他产品**的版本区间被拍平进了主产品的区间，`nginx 1.27.5` 命中了
+android 的 `<13.0`；修法是把区间按 CPE 产品分桶（`affected_versions` / `product_ranges`）。
+② `_version_in_range` 对解析不了的约束 `continue`，整条 AND 链在循环结束时**空真返回 True**，
+`OpenSSH 8.2p1` 因此命中了只列 `3.7.1` 的 CVE；修法是解析不了就返回 `False`，正则放宽到带补丁后缀的版本号。
+
+**复验**：后端相关测试全绿（`test_cve_library` 10 项等）、前端 `vue-tsc` 干净 + `vitest` 15 文件/67 项通过；
+NVD 真实同步导入 150 条/更新 208 条；真机重扫 `192.168.110.168` → 8 个服务、**已确认命中 0**（修前是 4 条
+虚假「已确认」，已连同派生告警删除）；Playwright 实走网络资产页、漏洞库页与出境报告抽屉（含报文列表）。
+
+**ARM 离线部署（本机即 aarch64）**：6 个 compose 镜像全部 `arm64/linux`；`docker save` 出 3.2 GB
+`dist-offline/security-toolbox-images.tar`（包内 6 个镜像架构全部 arm64）并 `docker load` 回灌成功；
+`--no-build --pull never` 离线重建 5 个应用容器成功、backend 转 healthy。
+`scripts/offline_bundle.py` 重写为「读 compose 取镜像清单 + 架构校验 + 真实 README」，
+`docs/offline-deployment.md` 同步重写。数据都在宿主机 `deploy-data/` bind mount，无匿名卷，重建容器不丢数据。
+
+**教训（写给下一次）**：改检测引擎必须**同时重建 `source-backend` 与 `source-worker` 两个目标**——
+worker/beat/deployment-worker 共用 `source-worker:latest`，只重建 backend 会出现「API 手工调用判不命中、
+扫描结果却写着命中」的假复验。
+
 2026-09-21 第三十五批（已推送：`ca89348` → 本次）：**修复「一个坏目录中止整轮扫描」**。
 
 **现象**：用户用向导「直连」对 `192.168.110.168:/home` 下发扫描，任务 `#1` 只采到 57 个文件就结束，

@@ -3,6 +3,7 @@ import type { PageResult } from '../types/common'
 import type {
   CreateDeploymentPayload,
   CreateRemovalPayload,
+  ManualBootstrap,
   PreflightPayload,
   PreflightResult,
   ProbeDeployment,
@@ -46,4 +47,13 @@ export async function deleteDeployment(id: number): Promise<void> {
 
 export function listPackages(): Promise<{ items: { version: string; arch: string; sha256: string }[]; version: string }> {
   return apiGet('/probe-deployments/packages')
+}
+
+/**
+ * Mint a hand-install config for a deployment the platform could not push.
+ * The returned `toml` carries a fresh enrollment token for the same row, so a
+ * probe the operator installs themselves calls back as this task's probe.
+ */
+export function manualBootstrap(id: number): Promise<ManualBootstrap> {
+  return apiPost(`/probe-deployments/${id}/manual-bootstrap`)
 }

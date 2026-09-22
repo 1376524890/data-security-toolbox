@@ -30,11 +30,11 @@ def test_assessments_never_look_clean_without_the_region_table(monkeypatch) -> N
     from app.services import egress_regions
 
     monkeypatch.setattr(egress_regions, "country_table", lambda path=None: {"regions": {}})
-    egress_regions._country_ranges.cache_clear()
+    egress_regions.reset_country_ranges()
     try:
         with TestClient(app) as client:
             body = client.get("/api/v1/assessments/egress").json()
         assert body["caliber"]["region_table_present"] is False
         assert "无法判定" in body["conclusion"]
     finally:
-        egress_regions._country_ranges.cache_clear()
+        egress_regions.reset_country_ranges()

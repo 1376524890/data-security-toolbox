@@ -1,5 +1,239 @@
 # 当前任务：资产与数据安全增强
 
+## 第三十九批：数据安全综合驾驶舱与浅色控制台（2026-09-22）
+
+用户目标：首页不能只有一块演示用大屏，日常使用要有**综合驾驶舱**（数据安全健康度、合规进度、
+本周重点关注、流水线、最近任务），同时控制台整体改成**浅色**更好日常看；大屏继续保留给会议/演示。
+
+**已完成**
+
+- **两个首页**：`/` = 数据安全态势大屏（`DashboardScreen.vue`，`meta.layout='screen'`，`App.vue` 见
+  `screenLayout` 即不渲染侧边栏/顶栏，固定深色 1920×1080）；`/cockpit` = 数据安全综合驾驶舱
+  （`modules/dashboard/cockpit/DashboardCockpit.vue`，在控制台壳层内）。`/screen` 重定向到 `/`，
+  旧链接不落空；`menu.ts` 里两者是仅有的无分组标题条目。
+- **驾驶舱实现**：10 个面板组件（KPI 卡、健康度环、资产/风险分布环、合规板、本周重点关注、流水线、
+  流动卡片、最近任务）+ `CockpitCard` / `DistributionDonut` 两个通用件，投影与刷新全在
+  `composables/useDashboardCockpit.ts`（30 秒刷新、卸载清 timer、失败保留上一次成功数据并显示过期提示）。
+- **后端**：`services/cockpit_service.py` 集中健康度（`HIGH_SEVERITIES` 命中率等加权）、合规进度、
+  周环比（`week_pair`）与流向汇总；`api/dashboard.py` 把驾驶舱块作为 `_cockpit_blocks` 并入
+  `GET /dashboard/overview`（大屏与驾驶舱共用，不会两页两套数字），新增
+  `GET /dashboard/trend?range=7d|24h`（发现/事件/告警 + 三类流向，共用一条零填充时间轴）与
+  `GET /dashboard/tasks?limit=`（复用 `visible_tasks` + `default_task_filter` + `serialize_task`，只读）。
+- **浅色主题**：`frontend/src/utils/theme.ts` 提供 `themeMode` ref + `applyTheme` + `chartColors`，
+  默认浅色（`main.ts` 只在 `dst-theme === 'dark'` 时深色）；图表包装组件监听 `themeMode` 重建 option，
+  避免切主题后画布保留上一种主题的网格/轴色。大屏保持固定深色。
+
+**复验（真实执行）**
+
+- 前端：`npx vue-tsc --noEmit` 干净；`npx vitest run` 全量 **18 文件 / 89 项通过**，其中
+  `dashboard-cockpit.test.ts`（6 项，整页挂载）与 `dashboard-cockpit-state.test.ts`（10 项，投影/
+  竞态/失败态）是本批新增。
+- 后端：本批相关域 12 个文件 **61 项**（含 `test_cockpit_api.py` 9 项）+ `test_transfer_file_binding.py`
+  3 项通过。
+- 全量对照：工作树 **43 项失败/错误**、干净 HEAD 检出 **50 项**；两边共同的 41 项逐项一致（本机无 Redis → `/health` degraded、缺 amd64 探针包与原生导出器、`shared/scanning` 默认值与用例不一致、`test_database_scan_api` 的 teardown 等），只在 HEAD 出现的 9 项全是需要 `probe_packages/`（gitignored，干净检出里没有）的探针包/分发用例；工作树多出的 2 项经单独复跑确认与本批无关：`test_transfer_file_binding.py` 单独跑 3/3 通过（全量顺序下的数据污染），`test_create_deployment_persists_data_asset_config` 在干净 HEAD 上单独跑同样失败（`retain_credential` 口径不一致）。
+
+## 第三十八批：数据安全态势大屏（2026-09-22）
+
+用户目标：现有首页偏「传统后台统计页」，要重做成可用于**客户演示 / 会议 / 大屏展示**的**数据安全态势大屏**：
+16:9、默认 1920×1080、深色科技风；重点不是漏洞数量，而是①数据资产态势 ②数据流动可视化 ③敏感数据风险
+④探针采集状态 ⑤检测引擎运行状态 ⑥安全事件闭环。硬要求：**所有数据接真实来源，不得有任何虚假数据**。
+
+**已完成**
+
+- **换页**：`/` 从旧 `modules/dashboard/Dashboard.vue` 换成 `DashboardScreen.vue`（`meta.layout = 'screen'`），
+  `App.vue` 见 `screenLayout` 即隐藏侧边栏与顶栏；旧页与其 composable、旧 `dashboard-state.test.ts` 一并删除。
+  整页固定 1920×1080 设计稿 + `useScreenScale` 等比缩放（1920×1080 / 1366×768 / 2560×1440 实测均满屏无裁切）。
+- **组件拆分**（`modules/dashboard/components/`）：SecurityHeader（Logo/标题/副标题/API 状态/集成组件/在线探针/
+  时钟/管理员/全屏/返回控制台）、MetricCards（6 张 KPI，含图标、数值滚动、同比或「今日新增」）、
+  TrafficMap、TrendPanel、DonutPanel、RiskChart、AssetChart、EngineStatus、ProbeHealth、ClosedLoop、
+  EventStream（自动滚动、悬停暂停、尊重 prefers-reduced-motion），另有 AnimatedNumber、ScreenIcon、chartTheme。
+- **状态与刷新**：全部落在 `composables/useDashboardScreen.ts`（30 秒刷新 + 1 秒时钟，卸载清 timer）。
+  死数据、投影（`riskSlices`/`assetSlices`/`engineRows`/`engineSummary`）与「检测趋势」指标切换都在这一个文件里。
+- **四条新聚合**（`api/dashboard.py`，全部按行实时算、无缓存、无写死）：
+  `GET /dashboard/overview`、`GET /dashboard/traffic-flow?limit=&days=`、`GET /dashboard/risk-distribution`、
+  `GET /dashboard/detection-trend?range=`。边界清单已被 `tests/test_dashboard_boundaries.py` 冻结。
+- **一份「集成组件」口径**：把 `/integrations` 的函数体提成 `integration_catalogue()`，大屏 overview 与
+  `/integrations` 共用，避免一页两个「x/y」。
+- **实时事件**：`GET /alerts` 增加 `order=recent`（`last_seen desc, id desc`），默认 `risk` 顺序不变——屏幕要的是
+  最新而不是最严重。
+- **流向判定（口径决定不造数）**：只报三类——内部流量 / 外部流出 / 目的未识别。库里没有 zone 表，
+  所以**没有「跨域访问」这一档**，宁可少一档也不用同义词凑数；`external` 只在地区表命中或黑名单命中时成立，
+  未证实的一律黄灯 `unknown`，不当出境（红）报。
+
+**用真实浏览器走查后查出并修掉的 4 个真缺陷**（jsdom 单测看不到，都是实机截图量出来的）
+
+- **中间一行整行塌成 0**：`SecurityHeader` 的 `height: 100%` 让它在 1080 高的纵向 flex 里拿到整列基准尺寸，
+  实测 header 高 **662px**、`.ds-middle` 高 **0**，中部三块面板全被压没。改为固定 `76px` + `flex-shrink: 0`。
+- **拓扑画进一个角**：`TrafficMap` 在拿到数据前是 hidden 的，echarts 对 0×0 容器初始化成 **100×100** 画布，
+  之后没人告诉它盒子出现了（`flush:'post'` 也救不回来，实测无效），整张拓扑被画进左上角。
+  改为 `ResizeObserver` 观察容器（窗口 resize 从来不会触发）。
+- **引擎卡吃掉 2 行**：底部一行 226px 装不下 8 个适配器（表格 `scrollHeight 225 > clientHeight 202`），
+  Wazuh/OpenSCAP 被切掉，屏幕上却写着「共 8」。收紧行距并把底栏提到 250px，实测四个面板 `clipped = 0`。
+- **检测趋势横轴标签被裁**：`detection-trend` 回的是完整 ISO 日（`2026-09-22`），最后一个刻度被面板右边裁掉；
+  统一走新增的 `shortDay()` 显示成 `09-22`（与旁边的流量趋势一致）。
+- 另外：`EventStream` 的 `let paused` 被 vue-tsc 收窄成字面量 `false`，模板里的 `paused = true` 编译不过，
+  改用 `ref`；大屏接管标签页标题（`<title>` 仍是控制台的通用标题）。
+
+**顺带的性能修正**：`/dashboard/traffic-flow` 的节点风险扫描原来 `select(DetectionFinding)` 整行 hydrate 2000 行
+（findings 带大 payload），改成只取 `evidence` + `risk_level` 两列，实测 **1.6s → 1.06s**，返回内容逐字段一致。
+
+**复验（真实执行）**
+
+- 前端：`vue-tsc --noEmit` 干净；`vitest` **16 文件 / 72 项**全绿，其中新增
+  `dashboard-screen-state.test.ts`（11 项：KPI/拓扑/两个环形/引擎分级与排序/指标切换/失败态）与
+  `dashboard-screen.test.ts`（2 项：整页挂载断言六个 KPI、引擎卡、探针卡、闭环与事件流都渲染出真实形状；
+  失败时出「态势数据不可用」遮罩而不是空白大屏）。
+- 后端：`tests/test_dashboard_screen_api.py`（5）、`test_dashboard_boundaries.py`（8）、`test_alerts.py` 等
+  相关 9 个文件 **66 项通过**；`ruff check` + `ruff format --check` 对本批文件干净（`test_alerts.py` 余下
+  10 条 E501/F401 是历史存量，未动）。
+- **真机数据核对**（部署态，非 mock）：overview 返回 alert 166 / incident 97 / finding 3313 / asset 7 /
+  data_asset 0 / probe 0 / 集成组件 8（健康 5）；traffic-flow 出 36481 条会话、12 个节点、18 条链路，
+  `172.23.0.4` 正确判为 `internal`（私网不当出境），红线的四个目的地是地区表命中的公网地址；
+  「数据资产 0」「在线探针 0」就照实显示 0，没有补数。
+- **真浏览器走查**：headless Chromium 带会话 cookie 打开 `:8080/`，在 1920×1080 / 1366×768 / 2560×1440 三种
+  视口截图核对版式（帧尺寸与视口完全一致、`scrollHeight == clientHeight`）；并合成点击拓扑中心节点，
+  确认抽屉弹出且字段来自真实聚合（172.23.0.4：10953 会话 / 19.0 GB / 769400 包 / 928 检测发现 / 97 高危）。
+- 镜像已重建（`source-backend:latest`、`source-worker:latest`、`source-frontend:latest`）并用
+  `docker compose -p source up -d --no-build --force-recreate backend worker beat deployment-worker frontend` 切换。
+
+**与本批无关的既有失败（记录，未修）**：`tests/test_gap_fixes.py::test_integrations_reports_worker_zeek_suricata_capability`
+（API 容器里真装了 suricata，`not entry["healthy"]` 的守卫使 worker 的 `rule_count` 永不合并，HEAD 同）；
+`tests/integrations/test_adapter_pipeline.py`、`tests/test_dlp_detection_quality.py`（presidio/DLP 侧）；
+`tests/probe/*`（镜像内无 `probe` 包）、`tests/test_rule_libraries.py`（import `app.api.rules`，该模块在当前
+检出里不存在）。
+
+## 第三十七批：CVE 规则库找回、网络资产页与出境报告明细，以及 ARM 离线部署复验（2026-09-22）
+
+用户目标：① 网络扫描后**按指纹匹配 CVE 规则库**做风险检查，把 git 历史里丢掉的这个功能找回来并展示在
+「采集与规则」，支持**手动导入 + 在线更新**；② 数据资产板块加「网络资产」页展示端口扫描与 CVE 匹配结果，
+板块标题改为**资产中心**，原「资产中心」改为**数据大屏**并去掉板块标题，作为全部信息总览；
+③ 数据出境报告支持查看/解析**具体流量与 pcap 包**，并展示是否含敏感信息、命中了什么规则。
+
+**功能确实是被删的，不是没做**
+- 控制台的 CVE 库 UI（`modules/threat/CveCenter.vue` + `api/offline.ts`）在 `c83c7e7`（2026-09-21）被删，
+  同时 `_import_cves` 把 NVD 记录**拍平成纯文本**，受影响版本区间丢失 → `local_cves` 表为空，
+  扫描结果永远只能给出「线索」，无法确认任何 CVE。本批是把这条链路重新接起来，不是从零新做。
+
+**已完成**
+- **导入器恢复结构化区间**（`integrations/offline_manager.py`）：保留 `product` 与 `affected_versions`
+  （NVD `configurations[].nodes[].cpeMatch[]`，含 `versionStartIncluding` / `versionEndExcluding`）；
+  严重度改按 CVSS 分档（此前一律 Medium）；CVSS 三代指标（v3.1/v3.0/v2）都读（此前只读 v3.1，老 CVE 全 0 分）。
+- **在线更新 + 手动导入**：`services/cve_sync.py` 按**扫描到的指纹**（`assets.extra->product`，跳过
+  http/https/unknown 这类泛化名）查 NVD，单个关键字失败不影响其余；`api/integrations.py` 增加
+  `GET /offline/cves/fingerprints`（先看范围再决定要不要打）与 `POST /offline/cves/sync`。
+  前端 `modules/collection/VulnerabilityLibrary.vue` 进「采集与规则」的**漏洞库** tab：在线更新、手动导入
+  CVE 文件、手动添加单条、Grype DB 下载/导入，并显示「规则总数 / 可确认漏洞的规则 / 待更新指纹」。
+- **网络资产页**：`api/network_assets.py`（`GET /network/assets`、`/network/assets/summary`）按
+  `assets.extra->source ∈ {platform_scan,nmap_scan,probe_scan}` 出端口清单，CVE 命中来自已落库的
+  `CVE_*` findings，按 (ip, port) 归组；前端 `modules/data-security/NetworkAssets.vue` 作为
+  **资产中心**的新 tab（`/data-assets?view=network`）。
+- **菜单重排**（`router/menu.ts` + `App.vue`）：`数据大屏` 分组标题置空（`v-if="section.group"` 不再渲染
+  标题）作为总览；`资产中心` 分组下是 `数据资产` + `网络资产`；`采集与规则` 增 `漏洞库`。
+- **出境报告明细**（`services/assessments/egress.py` + `flow/EgressReport.vue`）：传输对象补
+  `object_id / src_ip:port → dst_ip:port / sha256 / complete / content_type / binary_available /
+  sensitive / matches(含命中值样本) / rule_ids / files / file_bound`，新增「命中的敏感规则」段落与
+  KPI；详情抽屉展示具体流量、是否含敏感信息、命中了哪条规则与**命中的原文**、对应文件、该会话的
+  **报文列表**（`getPcapFlowPackets` 精确匹配五元组）与单包解析、对象二进制下载。
+
+**实测中查出并修掉的两个真实缺陷（才是这轮的关键）**
+- **区间跨产品拍平**：NVD 会把一个 CVE 覆盖的**所有**产品都列进配置树，`CVE-2016-0746` 的配置里
+  nginx `<=1.8.0` 与 android `<13.0`、ubuntu_linux `==14.04` 并列。拍平后 `nginx 1.27.5` 会被
+  android 的 `<13.0` 判为「已确认」。修法：区间按 CPE 产品分桶，主产品进 `affected_versions`，
+  其余进 `product_ranges`，引擎按指纹产品取对应那一份。
+- **无法解析的约束被静默跳过 → 整条规则空真通过**：`_version_in_range` 对 `==3.7.1p1` 这类带补丁后缀的
+  约束 `continue`，循环结束时返回 `True`，于是 `OpenSSH 8.2p1` 命中了只列 `3.7.1` 的 CVE。修法：
+  约束解析不了就返回 `False`（不能确认 ≠ 已确认），正则也放宽到带后缀的版本号。
+- 还顺手修了两处展示问题：候选线索行**不带自己的 CVE 号**（抽屉里全是匿名「candidate」），
+  以及同一规则被每次扫描重复列出（按 `(rule_id, cve_id)` 去重，保留最新一条）。
+
+**复验（真实执行，非断言）**
+- 单元/边界测试：`tests/test_cve_library.py`（10）、`tests/test_network_assets_api.py`（1）、
+  `tests/test_network_asset_boundaries.py`（5）、`tests/test_egress_flow_detail.py`（1）、
+  `tests/test_integration_offline_boundaries.py`、`tests/engine/test_threat_intel_cve.py` 全绿；
+  前端 `vue-tsc` 干净、`vitest` 15 文件 / 67 项通过。
+- **旧 worker 镜像导致过一次假复验**（值得记）：改完引擎只重建了 `source-backend`，扫描任务跑在
+  `source-worker` 里，用的仍是旧引擎（`source-worker` / `source-beat` / `source-deployment-worker`
+  共用 `source-worker:latest`）。症状是「API 里手工调用判不命中，扫描结果却写着命中」。
+  **改引擎必须同时重建 backend 与 worker 两个目标。**
+- 在线更新真实拉取：NVD 可达，按 9 个指纹导入 150 条、更新 208 条，本地库 300 条（可确认规则的 191 条）。
+- 扫描复验：对 `192.168.110.168` 重跑检查任务 → 8 个服务、**已确认命中 0 条**（这批资产确实打到了新版，
+  修掉误报后不该再有「已确认」）、候选线索带真实 CVE 号；修前同一批扫描会报出 4 条虚假「已确认」，
+  已连同其派生告警一并删除（`detections` 无 FK，`alerts` 有，故先删告警再删 finding）。
+- 前端走查（Playwright 实测）：菜单为「数据大屏（无标题）/ 资产中心（数据资产·网络资产）/ 采集与规则（…·漏洞库）」；
+  `/data-assets?view=network` 出 8 行端口资产 + KPI（扫描主机 1、开放服务 8、匹配 CVE 76、已确认 0），
+  点行开抽屉出 CVE 匹配表；`/collection-rules?view=vulnerabilities` 出漏洞库四个操作入口与 CVE 表；
+  `/network/dlp?view=egress` 传输对象表（646 条）点行开抽屉，实测看到
+  `172.23.0.8:80 → 172.23.0.1:44352`、对象 `http-body`、`命中 1 处敏感信息，规则：SD_PHONE_001`、
+  命中值 `16238198296` 与上下文、200 条报文（协议/方向/长度/摘要）。
+
+**ARM 离线部署复验（本机即 aarch64）**
+- compose 需要的 6 个镜像（`source-backend` / `source-worker` / `source-frontend` /
+  `postgres:16.6-alpine` / `redis:7.4-alpine` / `mher/flower:2.0.1`）本机全部存在且都是 `arm64/linux`。
+- `docker save` 出 3.2 GB 的 `dist-offline/security-toolbox-images.tar`，包内 `manifest.json` 6 个镜像
+  架构全部 `arm64`；`docker load` 回灌 6 个镜像全部成功。
+- **离线启动实测**：`--no-build --pull never`（外加 `PULL_POLICY=never`）重建 5 个应用容器，全部起来、
+  `backend` 转 healthy，全程没有拉取也没有构建。
+- 附带修掉一个长期误报：`backend` 容器一直显示 `unhealthy`，但接口本身是 200。`/health` 要读 Celery 控制总线的
+  队列深度（单这一项就 ~2.2s）再加规则数与探针直方图，整条链路 4.9–6.2s，而 compose 的健康检查超时是 5s，
+  正好卡在边界上。把 `interval` 改 30s、`timeout` 改 20s（并写明原因），容器转为 `healthy`。
+- `scripts/offline_bundle.py` 重写：镜像清单改为读 `docker compose config --images`（旧 README 里还写着
+  `security-toolbox-*` 和 `mher/flower:2.0`，照它打会漏镜像）；新增**架构校验**（`docker info` 报
+  `aarch64`、`docker image inspect` 报 `arm64`，必须归一化后再比），不一致直接退出而不是打出会在目标机
+  失败的包；README 给出真实镜像清单与 `--pull never` 的离线启动命令。`docs/offline-deployment.md` 同步重写。
+- 数据持久化：`postgres` / `redis` / `backend` 均为宿主机 bind mount
+  `${DATA_ROOT:-./deploy-data}`，compose 里**没有匿名卷**，`--force-recreate` 不丢数据；`.env` 里当前
+  **没有** `DATA_ROOT`，一旦改动会让容器去读另一个空目录（看起来像数据丢失）。
+
+**待办 / 未做**
+- 网络资产页的筛选与分页在 Python 侧做（当前规模够用，已在模块注释里写明）。
+- NVD 关键字匹配天然会有误召回，引擎已把「已确认」（`CVE_<id>`）与「线索」（`CVE_CANDIDATE_*`）分开，
+  不要合并这两类。
+- 本机 `.env` 未设置 `DATA_ROOT`、磁盘已用 84%；`deploy-data/backend/storage` 约 35 GB（pcaps 26 GB），
+  与约 7 GB 的历史遗留命名卷（`0901-_*`、`0916_v27_*`、`dsttest_*`）清理都还没动，需用户确认后再做。
+
+## 第三十六批：任务类型决定探针，检查任务接入服务扫描（2026-09-22）
+
+用户目标（一次给全）：
+① 清除探针 4；② 「新建任务」改为**先选任务类型**——检查任务单次、不下发探针，监测任务必须部署探针，
+自动部署失败要给**手动安装 + 回连**途径，因此不再让用户自己勾「是否需要探针」；并保证连接成功 + 勾选路径后
+「下发任务」按钮可用（此前是灰的）；③ 网络流量分析与敏感文件发现**共用同一套规则**；④ 敏感文件在网络上
+传输时要**绑定到具体文件**，而不只是一个风险点；⑤ 检查任务要用扫描工具对资产网络服务做风险扫描、指纹识别
+并匹配漏洞库。
+
+**已完成（本批）**
+- **探针 4 清除**：`services/probe_service.py::delete_probe_record` 不再被「监测任务永远 Running」挡住——
+  `monitoring` 行是探针抓包的台账、没人等它结束，删除探针时把它置 `Cancelled` 而不是拒绝；真正在跑的
+  扫描/采集任务仍然照旧 409。回归：`tests/test_probe_delete.py` 新增 2 项。
+- **任务类型驱动向导**（`frontend/src/modules/tasks/composables/useTaskWizard.ts`，重写）：
+  删除每台主机的「探针」复选框与 `mode`，改为向导级 `taskType`（inspection / monitoring），步骤变成
+  任务类型 → 目标 → 连接方式 → 连通性 → 检测范围 → 属性。
+  - 检查任务：不接触目标主机，`POST /scan`（`nuclei=true` → nmap 指纹 + 漏洞模板）+
+    每个勾选目录各建一个只读文件源并立即扫描（此前只取 `paths[0]`，其余勾选被静默丢弃）。
+  - 监测任务：`POST /probe-deployments` 下发探针（profile=standard，`retain_credential`），轮询回连；
+    失败/超时则显示手动安装步骤与配置。
+- **手动部署 + 回连**：新增 `POST /probe-deployments/{id}/manual-bootstrap`，为同一部署行签发**新的**一次性
+  入网令牌并返回完整 `probe.toml` + 安装步骤；`GET /probe-deployments/packages/{version}/{arch}/download`
+  供手工拷贝探针包。向导侧「检测回连」复用 `GET /probe-deployments/{id}`。回归：
+  `tests/deployment/test_manual_bootstrap.py`（3 项）。
+- **按钮不再无故变灰**：`blockReason` 计算属性给出唯一原因（未填 IP / 未测通 / 未勾目录），`ready` 由其派生；
+  改了 IP、端口、用户名、认证方式或凭据都会让上一次连通性测试失效，避免拿旧结果提交。回归：
+  `frontend/src/__tests__/task-wizard-state.test.ts`（7 项）。
+- **规则共用（网络 ← 文件）**：`services/policy_groups.py` 新增 `network_rule_overlay` / `merge_network_rules`，
+  `application/analysis.py` 组装 `dlp_policy` 时合并**启用且 scope 含 network** 的策略组指纹/关键词/类别，
+  这样「文件扫描确认的指纹」在流量侧同样生效（此前只写入策略组，网络侧读的是 `dlp_policy.fingerprints`，
+  两半各跑各的）。回归：`tests/test_network_rule_sharing.py`（3 项）。
+- **传输对象绑定到具体文件**：`services/data_objects/queries.py::files_by_content_hash` 按内容哈希（SHA256，
+  与传输对象同一口径）找回 `ACTIVE` 的 `asset_instances`；`GET /dlp/transfers` 给每个对象加
+  `files` / `file_bound`，数据流动报告新增「对应文件」列与详情抽屉段落。回归：
+  `tests/test_transfer_file_binding.py`（3 项）。
+
+**待办 / 未做**
+- **检查任务的服务扫描沿用既有 `network_scan_task`**（nmap `-sV` 指纹 + `cve_lookup_enabled` CVE 关联 +
+  nuclei 模板匹配），本批只把它接进向导，未改动扫描实现本身；nuclei 模板是否随镜像就绪需在真机确认。
+- 规则共用**只做了指纹/关键词/类别**（策略组 → 网络）。反向（网络侧 `dlp_policy.categories` 收窄文件侧）与
+  「策略组 rule_ids 下发到流量分析」未做，需要先定口径。
+- 后端全量回归、镜像重建与真机端到端（点选下发、手动部署回连）尚未完成。
+
 ## 第三十三批：菜单收敛与数据安全评估（2026-09-21，进行中）
 
 用户目标：菜单从 11 项收敛到 6 项（资产中心 / 任务中心 / 数据资产 / 数据流动与防护 / 文件证据 / 策略中心），

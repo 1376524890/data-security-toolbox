@@ -23,8 +23,10 @@ from app.core.security import require_active_admin
 from app.models import Task
 from app.schemas import TaskCreate
 from app.services.probe_task_service import (
+    COLLECTION_TASK_KINDS,
     PROBE_TASK_KINDS,
     TERMINAL,
+    default_task_filter,
     expire_probe_tasks,
     visible_tasks,
 )
@@ -51,12 +53,12 @@ def list_tasks(
     query = select(Task).where(visible_tasks())
     if status:
         query = query.where(Task.status == status)
-    if kind:
-        query = query.where(Task.kind.in_(["data_asset_scan", "database_scan", "file_source_scan"])) if kind == "collection" else query.where(Task.kind == kind)
+    if kind == "collection":
+        query = query.where(Task.kind.in_(COLLECTION_TASK_KINDS))
+    elif kind:
+        query = query.where(Task.kind == kind)
     else:
-        # Capture segments are child work of a monitoring task, so the default
-        # list shows the monitor; filtering by kind=pcap reaches the segments.
-        query = query.where(Task.payload["monitor_task_id"].as_integer().is_(None))
+        query = query.where(default_task_filter())
     if search:
         query = query.where(
             or_(

@@ -40,6 +40,9 @@ from app.api.health import (
 from app.api.integrations import (
     router as integrations_router,
 )
+from app.api.network_assets import (
+    router as network_assets_router,
+)
 from app.api.network_scan import (
     router as network_scan_router,
 )
@@ -83,6 +86,7 @@ router.include_router(integrations_router)
 router.include_router(auth_router)
 router.include_router(health_router)
 router.include_router(network_scan_router)
+router.include_router(network_assets_router)
 router.include_router(database_connections_router)
 router.include_router(file_sources_router)
 router.include_router(test_data_router)

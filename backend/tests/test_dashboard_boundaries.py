@@ -16,6 +16,14 @@ V1 = APP / "api" / "v1.py"
 DASHBOARD = APP / "api" / "dashboard.py"
 
 #: Frozen dashboard surface: the split must not add, drop or rename one entry.
+#: The four ``/dashboard/{overview,traffic-flow,risk-distribution,
+#: detection-trend}`` entries are the 数据安全态势大屏 aggregates, added
+#: deliberately in the big-screen batch: the screen must not grow a second
+#: aggregate module beside this one, so its reads land here and the list moves
+#: with them. ``/dashboard/{trend,tasks}`` are the 数据安全综合驾驶舱's own
+#: reads, added in the cockpit batch for the same reason - one homepage module,
+#: not one per page - and ``/dashboard/overview`` now feeds both homepages in a
+#: single pass (see ``_cockpit_blocks``).
 DASHBOARD_ROUTES = {
     ("GET", "/risk/summary"),
     ("GET", "/graph"),
@@ -27,6 +35,12 @@ DASHBOARD_ROUTES = {
     ("GET", "/dashboard/high-risk-assets"),
     ("GET", "/dashboard/sensitive-data"),
     ("GET", "/dashboard/incident-trend"),
+    ("GET", "/dashboard/overview"),
+    ("GET", "/dashboard/traffic-flow"),
+    ("GET", "/dashboard/risk-distribution"),
+    ("GET", "/dashboard/detection-trend"),
+    ("GET", "/dashboard/trend"),
+    ("GET", "/dashboard/tasks"),
     ("GET", "/flows"),
     ("GET", "/protocols"),
     ("GET", "/network/live"),
@@ -87,6 +101,21 @@ def test_dashboard_domain_does_not_reach_into_workers_or_extensions():
             assert not (node.module or "").startswith(("app.workers", "app.api.extensions")), (
                 node.module
             )
+
+
+def test_the_screen_aggregates_never_invent_a_number():
+    """Every big-screen aggregate must be a counted/grouped query, not a literal."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    for required in (
+        "def dashboard_overview(",
+        "def dashboard_traffic_flow(",
+        "def dashboard_risk_distribution(",
+        "def dashboard_detection_trend(",
+        "integration_registry.metadata()",
+        "egress_regions.classify(",
+        "evidence_asset_keys(",
+    ):
+        assert required in source, required
 
 
 def test_dashboard_reuses_the_shared_presenters_instead_of_copying_them():

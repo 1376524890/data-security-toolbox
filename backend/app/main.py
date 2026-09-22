@@ -18,6 +18,7 @@ from app.core.database import SessionLocal, engine
 from app.core.logging import configure_logging
 from app.core.security import ensure_admin, get_session_user
 from app.models import Base
+from app.services import egress_regions
 
 
 @asynccontextmanager
@@ -38,6 +39,12 @@ async def lifespan(app: FastAPI):
         except Exception:
             db.rollback()
             logging.getLogger(__name__).exception("rule set baseline could not be published at startup")
+    # The console homepage classifies flow destinations, which needs the country
+    # index. Built lazily it ran inside the first page views, each of which holds
+    # a pooled DB connection for the whole request, so a burst of concurrent
+    # first loads held every connection through the build and timed the rest of
+    # the console out. Pay for it once here instead.
+    egress_regions.warm()
     yield
 
 

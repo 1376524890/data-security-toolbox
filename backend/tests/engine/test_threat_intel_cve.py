@@ -5,7 +5,7 @@ from app.threat_intel.engine import ThreatIntelEngine
 
 def test_keyword_only_hit_stays_a_candidate(monkeypatch) -> None:
     engine = ThreatIntelEngine()
-    monkeypatch.setattr(engine, "cve_lookup", lambda keyword, api_key="": [
+    monkeypatch.setattr(engine, "cve_lookup", lambda keyword, api_key="", product="": [
         {"cve_id": "CVE-2020-0001", "severity": "High", "description": "ssh issue"},
     ])
     context = DetectionContext(
@@ -19,7 +19,7 @@ def test_keyword_only_hit_stays_a_candidate(monkeypatch) -> None:
 
 def test_declared_range_confirms_and_outside_range_is_dropped(monkeypatch) -> None:
     engine = ThreatIntelEngine()
-    monkeypatch.setattr(engine, "cve_lookup", lambda keyword, api_key="": [
+    monkeypatch.setattr(engine, "cve_lookup", lambda keyword, api_key="", product="": [
         {"cve_id": "CVE-2020-1111", "severity": "High", "cvss_score": 9.8,
          "affected_versions": [">=1.0,<1.2.3"]},
         {"cve_id": "CVE-2020-2222", "severity": "High",

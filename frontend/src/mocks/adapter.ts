@@ -41,10 +41,22 @@ function route(method: string, url: string, params: Params, body: unknown): unkn
   if (path === '/dashboard/incidents') return { items: clone(data.incidents.slice(0, 10)) }
   if (path === '/dashboard/high-risk-assets') return { items: clone(data.assets.filter((a) => ['Critical', 'High'].includes(a.risk_level)).slice(0, 10)) }
   if (path === '/dashboard/sensitive-data') return clone(data.dashboardSensitive)
+  if (path === '/dashboard/overview') return clone(data.dashboardOverview)
+  if (path === '/dashboard/traffic-flow') return clone(data.trafficFlow)
+  if (path === '/dashboard/risk-distribution') return clone(data.riskDistribution)
+  if (path === '/dashboard/detection-trend') return clone(data.detectionTrend)
   if (path === '/risk/summary') return clone(data.riskSummary)
 
   // ---- Alerts ----
-  if (path === '/alerts' && method === 'get') return paginate(clone(data.alerts), params)
+  if (path === '/alerts' && method === 'get') {
+    // ``order=recent`` is what the 态势大屏 asks for; the console default stays
+    // worst-first, exactly like the API.
+    const rows = clone(data.alerts)
+    if (params.order === 'recent') {
+      rows.sort((a, b) => String(b.last_seen || '').localeCompare(String(a.last_seen || '')))
+    }
+    return paginate(rows, params)
+  }
   if (path === '/alerts/summary') return clone(data.alertSummary)
   if (path === '/alerts' && method === 'post') return clone(data.alerts[0])
   if (parts[0] === 'alerts' && parts.length === 2 && method === 'get') {

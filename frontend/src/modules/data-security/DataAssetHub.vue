@@ -1,15 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
 import BarChart from '../../components/charts/BarChart.vue'
+import NetworkAssets from './NetworkAssets.vue'
 import { getAssessment, type AssessmentEnvelope, type AssessmentKpi } from '../../api/assessments'
 
-// 数据资产 is one page now: a) the overview and distribution of the data
-// landscape, b) the risky and fragile data with its rating and the risk
-// distribution. Everything is the read-only assessment aggregation — the same
-// numbers the big screen shows — so there is no second source of truth and no
-// duplicated 数据类型 / 检测中心 / 告警 / 事件 page.
+// 资产中心 has two inventories: 数据资产 (a: the overview and distribution of the
+// data landscape, b: the risky and fragile data with its rating) and 网络资产
+// (what the active scan found on the wire). Both are read-only aggregations of
+// rows the engines already produced — the same numbers the big screen shows — so
+// there is no second source of truth and no duplicated 数据类型 / 检测中心 page.
+const route = useRoute()
+const router = useRouter()
+const active = ref(String(route.query.view || 'data'))
+watch(() => route.query.view, (value) => { if (value) active.value = String(value) })
+function onChange(name: string): void {
+  router.replace({ query: { ...route.query, view: name } })
+}
+
 const loading = ref(true)
 const error = ref('')
 const classification = ref<AssessmentEnvelope | null>(null)
@@ -62,6 +72,8 @@ onMounted(load)
 
 <template>
   <div>
+    <el-tabs :model-value="active" @tab-change="(name: string | number) => onChange(String(name))">
+      <el-tab-pane label="数据资产" name="data">
     <StateBox :loading="loading" :error="error" :empty="!classification" @retry="load">
       <template v-if="classification && exposure">
         <div class="soc-card conclusion">
@@ -154,6 +166,11 @@ onMounted(load)
         </div>
       </template>
     </StateBox>
+      </el-tab-pane>
+      <el-tab-pane label="网络资产" name="network">
+        <NetworkAssets v-if="active === 'network'" />
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 

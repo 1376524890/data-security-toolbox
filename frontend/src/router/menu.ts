@@ -6,9 +6,14 @@
  * ``view`` query, so the same route can appear more than once with a distinct
  * highlight and a distinct deep link.
  *
- * FROZEN (2026-09-21): the six sections and their sub-items are final. Changing
- * this list is a design change, not a refactor — do not add a seventh section or
- * re-introduce a removed page as a new entry.
+ * 数据大屏 and 驾驶舱 are the two homepages and are deliberately section-less:
+ * neither has a ``group``, so the sidebar renders them above the sections without
+ * a label. 数据大屏 (``/``) is the platform-wide wall view and stays the landing
+ * page; 驾驶舱 (``/cockpit``) is the daily-use page inside the console shell.
+ *
+ * Revised (2026-09-22) on request: 数据资产 became 资产中心 and gained 网络资产
+ * (the port-scan + CVE inventory the scanner produces). Adding a section or a
+ * removed page back is still a design change, not a refactor.
  */
 export interface MenuItem {
   path: string
@@ -30,14 +35,16 @@ export function menuIndex(item: MenuItem): string {
 }
 
 export const menuGroups: MenuGroup[] = [
-  { group: '资产中心', items: [
-    { path: '/', title: '数据大屏', icon: 'Odometer' },
+  { group: '', items: [
+    { path: '/', title: '数据大屏', icon: 'Monitor' },
+    { path: '/cockpit', title: '数据安全驾驶舱', icon: 'Odometer' },
   ]},
   { group: '任务中心', items: [
     { path: '/tasks', title: '任务监控', icon: 'List' },
   ]},
-  { group: '数据资产', items: [
+  { group: '资产中心', items: [
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },
+    { path: '/data-assets', title: '网络资产', icon: 'Connection', query: { view: 'network' } },
   ]},
   { group: '数据流动与防护', items: [
     { path: '/network/dlp', title: '风险数据流动报告', icon: 'Lock' },
@@ -53,6 +60,7 @@ export const menuGroups: MenuGroup[] = [
     { path: '/collection-rules', title: '策略分组', icon: 'Files', query: { view: 'groups' } },
     { path: '/collection-rules', title: '候选指纹', icon: 'Aim', query: { view: 'fingerprints' } },
     { path: '/collection-rules', title: '出境判定名单', icon: 'Position', query: { view: 'egress' } },
+    { path: '/collection-rules', title: '漏洞库', icon: 'Warning', query: { view: 'vulnerabilities' } },
   ]},
 ]
 

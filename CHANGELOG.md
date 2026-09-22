@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026-09-22 — 数据安全综合驾驶舱、浅色控制台与图表主题联动（平台 2.14.0，未升版本号）
+
+控制台现在有**两个首页**：`/` 仍是壁挂用的数据安全态势大屏（深色、无侧边栏/顶栏、固定 1920×1080），
+新增 `/cockpit` 数据安全综合驾驶舱作为**日常使用页**（在控制台壳层内）；`/screen` 重定向到 `/`，
+历史链接不落空。两个首页共用同一条 `GET /dashboard/overview`，因此同一时刻不可能对不上数字。
+
+- **驾驶舱页面**：八张 KPI 卡、数据安全健康度环、资产/风险两个分布环形（可切换维度）、合规进度板、
+  本周重点关注、安全流水线、数据流动卡片与最近任务。视图只留版式、路由与格式化，投影与刷新都在
+  `modules/dashboard/cockpit/composables/useDashboardCockpit.ts`（30 秒刷新，timer 归 composable 并在
+  卸载时清除）；**刷新失败保留上一次成功的数据**并显示「数据刷新失败…（下方为最近一次成功的数据）」，
+  不把页面清空成 0。
+- **接口**：`GET /dashboard/overview` 增加驾驶舱块（`_cockpit_blocks`，与大屏共用同一份组件/告警/事件口径）；
+  新增 `GET /dashboard/trend?range=7d|24h`（发现/事件/告警与三类流向共用一条零填充时间轴，流向按
+  `flows.start_time` 落桶）与 `GET /dashboard/tasks?limit=`（复用 `/tasks` 的 `visible_tasks` + 默认过滤 +
+  `serialize_task`，只读、不做监控汇总）。全部按行实时聚合，不落缓存、不写死。
+- **判定口径只有一份**：健康度、合规进度与流向汇总在 `services/cockpit_service.py`，流向分类仍走
+  `services/egress_regions.direction_of`，大屏 / 驾驶舱 / 合规板不会各说一套。
+- **浅色控制台**：控制台改为**默认浅色**（只有 `dst-theme === 'dark'` 才深色）；主题状态提到
+  `frontend/src/utils/theme.ts`（`themeMode` ref + `applyTheme` + `chartColors`），`App.vue` 只保留切换按钮。
+  ECharts 的 option 在构建时就把颜色写死，因此 `components/charts/{Bar,Donut,Gauge,Trend}Chart.vue` 会监听
+  `themeMode` 重建 option——否则切到浅色后画布仍留着深色网格与轴色。壁挂大屏不受主题影响（固定深色）。
+- **菜单**：`数据大屏`（`/`）与 `数据安全驾驶舱`（`/cockpit`）是仅有的两个无分组标题条目，位于侧边栏顶部。
+
+## 2026-09-22 — 控制台首页重做为「数据安全态势大屏」（平台 2.14.0，未升版本号）
+
+面向客户演示 / 会议 / 大屏的首页：固定 1920×1080 深色大屏，整页等比缩放（1920×1080、1366×768、
+2560×1440 实测满屏无裁切），`meta.layout='screen'` 下不渲染侧边栏与顶栏。顶部为品牌、标题
+「数据安全态势大屏」、副标题、API 状态、集成组件 x/y、在线探针与时钟；下方是 6 张 KPI 卡、
+数据流动势态拓扑（中心为流量最大的内网节点、内环内网节点、外环外部端点，点节点出资产/流量/风险抽屉）、
+两条 7 天趋势与两个分布环形图，底部为检测引擎运行状态、探针健康、事件闭环与自动滚动的实时安全事件。
+旧的统计型 `Dashboard.vue` 与其 composable 已删除。
+
+- **接口**：新增 `GET /dashboard/overview`、`GET /dashboard/traffic-flow`、`GET /dashboard/risk-distribution`、
+  `GET /dashboard/detection-trend`，全部由 `app/models.py` 的行实时聚合，不落缓存、不写死；
+  `GET /alerts` 增 `order=recent`（按 `last_seen` 倒序，默认 `risk` 顺序不变）；
+  `api/integrations.py` 抽出 `integration_catalogue()`，`/integrations`、`/health` 与大屏共用同一份组件口径。
+- **流向判定**：只报内部流量 / 外部流出 / 目的未识别三类。库里没有 zone 表，因此不做「跨域访问」这一档；
+  `external` 仅在地表或黑名单命中时成立，未证实的目的地一律保持黄色「未识别」而不是当成出境告警。
+- **实机走查修掉的缺陷**：① 顶栏 `height:100%` 使中部整行塌为 0，改固定 76px；② 拓扑在隐藏状态下被
+  echarts 以 100×100 初始化、整图缩进一个角，改 `ResizeObserver` 跟随容器；③ 底部引擎卡装不下 8 个适配器
+  （后两个被切掉），收紧行距并加高底栏；④ 检测趋势横轴改 `MM-DD`，末位刻度不再被裁。
+  另把节点风险扫描压到两列，`/dashboard/traffic-flow` 由 1.6s 降到约 1.06s。
+- **回归**：`vue-tsc` 干净、`vitest` 16 文件 / 72 项（新增 `dashboard-screen-state` 11 项、
+  `dashboard-screen` 2 项整页挂载）；后端 `test_dashboard_screen_api.py` 5 项、
+  `test_dashboard_boundaries.py` 8 项及相邻域 66 项通过。
+
+## 2026-09-22 — CVE 规则库恢复、网络资产页与出境报告明细（平台 2.14.0，未升版本号）
+
+修复「网络扫描按指纹匹配漏洞库」这一断掉的链路，并补齐三处界面。
+
+- **漏洞库（采集与规则）**：`local_cves` 之前为空——导入器把 NVD 记录拍平成文本，受影响版本区间丢失。
+  现在保留 `product` 与 `affected_versions`（`cpeMatch` 的 `versionStartIncluding`/`versionEndExcluding` 等），
+  CVSS v3.1/v3.0/v2 三代都读，严重度按 CVSS 分档。新增按扫描指纹的在线更新
+  （`GET /api/v1/offline/cves/fingerprints`、`POST /api/v1/offline/cves/sync`，逐个关键字隔离失败）
+  与手动导入/手动添加/Grype DB 管理。
+- **网络资产（资产中心）**：新增 `GET /api/v1/network/assets`、`/network/assets/summary`，把
+  `platform_scan`/`nmap_scan`/`probe_scan` 的端口清单与已落库的 `CVE_*` findings 按 (ip, port) 合到一张表；
+  同一规则跨多次扫描去重，候选线索行带上自己的 CVE 号。
+- **菜单**：`数据大屏` 分组不再渲染标题（总览），`资产中心` 下为 `数据资产` + `网络资产`，
+  `采集与规则` 增 `漏洞库`。
+- **数据出境报告**：传输对象新增 `src_ip:port → dst_ip:port`、`sha256`、`complete`、`content_type`、
+  `binary_available`、`sensitive`、`matches`（含命中值样本）、`rule_ids`、`files`/`file_bound`；
+  详情抽屉可看具体流量、是否含敏感信息、命中的规则与原文、对应文件，以及该会话的报文列表与单包解析。
+- **判定修正（重要）**：① NVD 同一 CVE 下**其他产品**的版本区间不再拍平进主产品，
+  避免 `nginx 1.27.5` 命中 android 的 `<13.0`；② 解析不了的版本约束不再被静默跳过（此前会让整条
+  规则空真通过，`OpenSSH 8.2p1` 命中只列 `3.7.1` 的 CVE）。修后同一资产从「4 条虚假已确认」变为 0 条。
+- **离线部署**：`scripts/offline_bundle.py` 改为读 `docker compose config --images` 取镜像清单并做
+  **架构校验**（`aarch64`/`x86_64` 不可混用，不一致直接报错），README 给出真实镜像清单与
+  `--no-build --pull never` 的离线启动命令；`docs/offline-deployment.md` 重写。
+  arm64 实测：6 个镜像均为 `arm64/linux`，`docker save` 3.2 GB 包可 `docker load` 回灌，
+  `--pull never` 离线重建容器成功。
+
 ## v2.14.0 交付更新（探针 3.7.0，2026-09-21）— 探针自带运行时
 
 探针升到 **3.7.0**：分发包自带 CPython 3.11、全部 Python 依赖、`dumpcap`/`tcpdump` 及其 ELF 库闭包、

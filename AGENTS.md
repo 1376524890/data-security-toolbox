@@ -578,3 +578,62 @@ Grype 导入任务轮询（2s）由 composable 持有，任务 id 存 `localStor
 密码只写不读、编辑空密码不提交、保存成功才清空。timer 只有 scans 一处持有，初次加载后启动、卸载清除。
 纯标签在 `databaseConnectionPresentation.ts`，旧入口保留返回字段与 `ConnectionForm` 类型导出。
 回归：`database-connections-state.test.ts`、`database-connections-page.test.ts`、typecheck 与全量 vitest。
+
+## 数据安全态势大屏状态边界（2026-09-22 第三十八批）
+
+大屏就是控制台首页（`/` → `frontend/src/modules/dashboard/DashboardScreen.vue`，`meta.layout = 'screen'`）；
+`App.vue` 见到 `screenLayout` 就不渲染侧边栏与顶栏。整页深色，按固定 1920×1080 设计稿布局，用
+`useScreenScale` 整体 `transform: scale()` 等比缩放——**不要改成百分比/流式栅格**：投影、笔记本、大屏三处
+必须逐像素同版式，这正是当初选固定画布的原因。
+
+- 视图只留版式、路由、节点抽屉与纯展示格式化。`modules/dashboard/components/` 下是 SecurityHeader、
+  MetricCards、TrafficMap、TrendPanel、DonutPanel、RiskChart、AssetChart、EngineStatus、ProbeHealth、
+  ClosedLoop、EventStream（+ AnimatedNumber、ScreenIcon）；调色板与折线/环形 option 在 `chartTheme.ts`，
+  必须继续引用 `utils/mapping.ts` 的 `severityOrder/severityLabels/severityTagColors`，不要在图表里另写一套色。
+- 全部数字、投影与刷新都在 `composables/useDashboardScreen.ts`：30 秒刷新 + 1 秒时钟，两个 timer 归它所有并在
+  卸载时清除（`refreshMs` / `topologyLimit` 是给测试用的选项）。任何面板要用的派生数据（`riskSlices`、
+  `engineRows`、`assetSlices`）都在这里算，不要写回视图。
+- 聚合在 `api/dashboard.py`，四条新路径与既有 `/dashboard/*` 共用同一份冻结清单（`tests/test_dashboard_boundaries.py`）：
+  `GET /dashboard/overview`（KPI + 闭环）、`GET /dashboard/traffic-flow?limit=&days=`（节点/链路/总量/趋势）、
+  `GET /dashboard/risk-distribution`、`GET /dashboard/detection-trend?range=`。**全部按行实时聚合、不落缓存、
+  不写死**；没有数据就返回 0 / 空数组，不要为了画面好看补默认值。
+- 「集成组件 x/y」只有一份实现：`api/integrations.py::integration_catalogue()`，`/integrations`、大屏 overview
+  与 `/health` 共用。不要在任一处再算一遍。
+- 流向只有三类：内部流量 / 外部流出 / 目的未识别。库里**没有 zone 表，所以没有「跨域访问」这一档**，
+  不要为了版式补一个。`external` 只在地区表命中或黑名单命中时才成立；未证实的目的地一律 `unknown`（黄），
+  不得当成出境（红）。举例：`172.23.0.4` 是私网，必须判 `internal`。
+- 实时事件列表读 `GET /alerts?order=recent`（`recent` = `last_seen desc, id desc`）；`order` 默认仍是 `risk`，
+  既有列表顺序属兼容边界，不要改默认值。
+- 图上是拓扑而不是攻击地图：中心是流量最大的内部节点，内部节点在内环、外部端点在外环，线是真实会话对。
+  点节点出抽屉（资产信息 / 流量数量 / 风险事件）。`TrafficMap` 自己持有 ResizeObserver——面板在拿到数据前是
+  hidden 的，echarts 会以 100×100 初始化，**少了这个 observer 整张拓扑会画进一个角里**。
+- 回归：`frontend/src/__tests__/dashboard-screen-state.test.ts`（11 项）、`dashboard-screen.test.ts`（2 项，
+  整页挂载）、`vue-tsc` + 全量 vitest；后端 `backend/tests/test_dashboard_screen_api.py`（5 项）、
+  `test_dashboard_boundaries.py`（8 项）、`tests/test_alerts.py::test_alert_list_orders_by_time_when_recent_is_requested`。
+
+## 数据安全综合驾驶舱与浅色控制台状态边界（2026-09-22 第三十九批）
+
+控制台有**两个首页**：`/` 是壁挂大屏（`DashboardScreen.vue`，`meta.layout='screen'`，无侧边栏/顶栏、固定
+深色 1920×1080），`/cockpit` 是日常用的综合驾驶舱（`modules/dashboard/cockpit/DashboardCockpit.vue`，
+在控制台壳层内）。`/screen` 只是历史链接到 `/` 的重定向，不要再把大屏挂回去。两页**共用
+`GET /dashboard/overview`**（驾驶舱字段是同一响应里的附加块，`api/dashboard.py::_cockpit_blocks`），
+所以在同一时刻两页不可能对不上数字；新增指标要加进这份 overview，不要再开一条只给驾驶舱用的汇总接口。
+
+- 视图只留版式、路由与格式化；10 个面板（KPI 卡、健康度环、资产/风险分布环、合规板、本周重点关注、
+  流水线、流动卡片、最近任务）+ `CockpitCard`/`DistributionDonut` 两个通用件在 `cockpit/components/`，
+  调色板在 `cockpit/chartTheme.ts`，全部投影与刷新在 `cockpit/composables/useDashboardCockpit.ts`
+  （30 秒刷新 timer 归 composable 并在卸载时清除，`refreshMs` 是给测试用的选项）。刷新失败**保留上一次
+  成功数据**并显示过期提示，不要把页面清空成 0（那会被当成"真的没有风险"）。
+- 三条只读接口：`GET /dashboard/overview`、`GET /dashboard/trend?range=7d|24h`、`GET /dashboard/tasks?limit=`。
+  `trend` 的发现/事件/告警与三类流向共用一条零填充时间轴，流向按 `flows.start_time` 落桶（没有时间的会话
+  不计入，而不是记到入库那天）；`tasks` 复用 `/tasks` 的 `visible_tasks` + `default_task_filter` +
+  `api/task_presenter.serialize_task`，**只读、不做监控汇总**——首页不允许写库。全部按行实时聚合，
+  不落缓存、不写死；没有数据就如实返回 0 / 空数组。
+- 健康度、合规进度与流向汇总只有一份实现：`services/cockpit_service.py`；流向分类仍走
+  `services/egress_regions.direction_of`。大屏、驾驶舱、合规板必须共用这套口径，不要各写一套。
+- 控制台**默认浅色**（`main.ts` 只在 `dst-theme === 'dark'` 时深色）。主题状态在 `utils/theme.ts`
+  （`themeMode` ref + `applyTheme` + `chartColors`），`App.vue` 只保留切换按钮。ECharts 的 option 在构建时
+  就把颜色写死，所以 `components/charts/{Bar,Donut,Gauge,Trend}Chart.vue` 必须继续监听 `themeMode` 重建
+  option，否则切到浅色后画布会留着深色网格与轴色。壁挂大屏不受主题影响（固定深色）。
+- 回归：`frontend/src/__tests__/dashboard-cockpit.test.ts`（6 项，整页挂载）、`dashboard-cockpit-state.test.ts`
+  （10 项，投影/竞态/失败态）、`vue-tsc` + 全量 vitest；后端 `backend/tests/test_cockpit_api.py`（9 项）。

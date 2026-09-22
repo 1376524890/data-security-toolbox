@@ -29,3 +29,11 @@ export function formatDuration(value?: number): string {
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
+
+/** ``2026-09-22`` -> ``09-22``; anything else is passed through untouched.
+ *
+ * Both homepages shorten the server's ISO day buckets with this one helper, so a
+ * chart axis label cannot differ between the cockpit and the wall screen. */
+export function shortDay(value: string): string {
+  return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(5, 10) : value
+}

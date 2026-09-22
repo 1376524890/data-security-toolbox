@@ -11,6 +11,8 @@ owns; the module owns paths and response shapes only.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,9 +29,57 @@ from app.services.task_dispatch import queue_depth
 
 router = APIRouter()
 
+#: Walking the capture store stat()s ~150k files (seconds of I/O), and the
+#: console polls this endpoint from every open tab. The size is telemetry, not a
+#: number anyone acts on second-by-second, so it is memoised for a short window
+#: instead of re-walked on every poll. The lock keeps a cold burst of polls from
+#: each starting the same walk.
+_STORAGE_TTL_SECONDS = 30
+_storage_lock = threading.Lock()
+_storage_cache: tuple[float, int] = (0.0, 0)
+
+
+def _storage_usage_bytes() -> int:
+    global _storage_cache
+    stamp, size = _storage_cache
+    now = time.monotonic()
+    if stamp and now - stamp < _STORAGE_TTL_SECONDS:
+        return size
+    with _storage_lock:
+        stamp, size = _storage_cache
+        now = time.monotonic()
+        if stamp and now - stamp < _STORAGE_TTL_SECONDS:
+            return size
+        size = sum(
+            path.stat().st_size for path in settings.storage_dir.rglob("*") if path.is_file()
+        )
+        _storage_cache = (now, size)
+    return size
+
 
 @router.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, Any]:
+    # --- everything that needs the pooled connection, and nothing else -------
+    oldest = db.scalar(
+        select(func.min(Task.created_at)).where(Task.status.in_(["Pending", "Running"]))
+    )
+    if oldest and oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=UTC)
+    probes = db.scalars(select(Probe)).all()
+    probe_statuses = {item: 0 for item in ("online", "degraded", "offline", "auth_error")}
+    for probe in probes:
+        status = serialize_probe(probe)["status"]
+        probe_statuses[status] = probe_statuses.get(status, 0) + 1
+    probe_count = len(probes)
+    pending = db.scalar(select(func.count(Task.id)).where(Task.status == "Pending")) or 0
+    # The rest of this endpoint is slow but needs no database: a Celery
+    # control-bus ping (~2s) and a size walk over the capture store, which is
+    # ~150k files and seconds of I/O. Every open console tab polls this path, and
+    # holding a pooled connection across that work drained the pool - once it was
+    # empty the auth middleware could not check a session either, so the whole
+    # console answered 401 and looked frozen. Release the connection first.
+    db.close()
+
     redis_ok = False
     try:
         import redis as redis_lib
@@ -47,21 +97,8 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         running = 0
         queued = 0
         workers = 0
-    oldest = db.scalar(
-        select(func.min(Task.created_at)).where(Task.status.in_(["Pending", "Running"]))
-    )
-    if oldest and oldest.tzinfo is None:
-        oldest = oldest.replace(tzinfo=UTC)
     oldest_age = max(0.0, (datetime.now(UTC) - oldest).total_seconds()) if oldest else 0.0
-    storage_bytes = sum(
-        path.stat().st_size for path in settings.storage_dir.rglob("*") if path.is_file()
-    )
-    probes = db.scalars(select(Probe)).all()
-    probe_statuses = {item: 0 for item in ("online", "degraded", "offline", "auth_error")}
-    for probe in probes:
-        probe_statuses[serialize_probe(probe)["status"]] = (
-            probe_statuses.get(serialize_probe(probe)["status"], 0) + 1
-        )
+    storage_bytes = _storage_usage_bytes()
     capabilities = read_worker_capabilities()
     # A worker is online only if its Redis capability heartbeat is fresh.
     analysis_worker = "online" if capabilities else "offline"
@@ -96,11 +133,11 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "storage_usage_bytes": storage_bytes,
         "storage_max_bytes": settings.pcap_storage_max_gb * 1024 * 1024 * 1024,
         "queue": {
-            "pending": db.scalar(select(func.count(Task.id)).where(Task.status == "Pending")) or 0,
+            "pending": pending,
             "running": running,
             "oldest_pending_age": oldest_age,
         },
-        "probe": {"count": len(probes), **probe_statuses},
+        "probe": {"count": probe_count, **probe_statuses},
         # Capabilities the console must honour rather than probe for itself.
         "features": {"test_data_import": settings.test_data_import_enabled},
     }
