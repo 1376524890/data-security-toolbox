@@ -386,9 +386,11 @@ mkdir -p "$DATA/backend" "$DATA/postgres" "$DATA/redis" .local/deployment
 # backend / worker 以容器内 appuser(uid 10001) 运行，而 bind mount 目录是 docker 以 root 建的：
 # 不授权给 10001，容器会因无法创建 /app/data/storage 反复重启（PermissionError）。
 # 有 root 直接 chown；没有 root（只在 docker 组里）就用包内镜像跑一次 chown。
-if [[ "$(id -u)" -eq 0 ]] || chown -R 10001:10001 "$DATA/backend" 2>/dev/null; then
-  :
-else
+if [[ "$(id -u)" -eq 0 ]]; then
+  # `id -u` 为 0 时上面那个短路表达式会直接进 `:`，chown 永远不执行，
+  # 于是 sudo 部署（README 的主路径）必然卡在 PermissionError，必须显式分支。
+  chown -R 10001:10001 "$DATA/backend"
+elif ! chown -R 10001:10001 "$DATA/backend" 2>/dev/null; then
   note "用容器把 $DATA/backend 授权给容器用户 10001"
   docker run --rm -v "$(cd "$DATA/backend" && pwd):/data" --entrypoint chown \
     "${BASE_CHOWN_IMAGE:-redis:7.4-alpine}" -R 10001:10001 /data
