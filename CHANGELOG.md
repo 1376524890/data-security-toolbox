@@ -16,6 +16,13 @@
   `dist-release/dst-toolbox-<ver>-linux-<arch>.tar.gz` 与其 `.sha256`；缺镜像归档时拒绝打包。
   包内含 6 个 arm64 镜像、探针 3.7.0 分发包、全量源码与 `.git`、`frontend/node_modules`，
   服务器上可继续开发。
+- **交互式配置**：在终端直接跑 `deploy.sh` 会先逐项提问必要参数（项目名、数据目录、端口、探针回连地址、
+  管理员账号、数据库名/用户、五个口令与密钥、可选的通知/情报/主机审计集成），回车 = 取 `deploy.conf` 的值、
+  口令留空 = 自动生成（隐藏回显）；确认摘要里不回显口令明文。确认后**非口令项写回 `deploy.conf`**
+  （只改真正变了的项，行尾中文注释保留），口令只留在 `.env`，所以重跑不会退回旧值也不会换钥。
+  `--non-interactive` 全自动（stdin 不是终端时自动如此，部署脚本里默认如此），`-i/--interactive` 强制提问。
+- **交付包里没有 `.env`**：`make_offline_release.py` 显式排除操作者的 `.env`（里面有真实口令与现场 IP），
+  只带 `.env.example` 模板，目标机的 `.env` 一律由 `deploy.sh` 生成。
 - **README 部署章节**改为指向 `deploy/`（旧的 `docker load` + 手工 `docker compose up` 步骤保留为手动路径）。
 
 本版同时收进此前几批已上线但未发版的内容（态势大屏、综合驾驶舱与浅色控制台、CVE 规则库与网络资产、

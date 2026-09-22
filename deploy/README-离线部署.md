@@ -13,18 +13,37 @@ sudo ./deploy.sh
 ```
 
 `deploy.sh` 会依次完成：环境自检（docker / compose v2 / 架构）→ 载入镜像 →
-按 `deploy.conf` 生成 `.env`（口令自动生成一次并沿用）→ 修好数据目录权限 → 端口预检 →
+**交互式问一遍必要参数** → 按回答生成 `.env`（口令自动生成一次并沿用）→ 修好数据目录权限 → 端口预检 →
 `docker compose up -d --no-build --pull never` → 等待 backend 健康 → 打印访问地址与管理员口令。
 
 常用变体：
 
 ```bash
-./deploy.sh --dry-run                       # 只看会写入的 .env 和参数，不动系统
+./deploy.sh --dry-run                     # 只看会写入的 .env 和参数，不动系统
+./deploy.sh --non-interactive             # 不提问，全用 deploy.conf（脚本/自动化）
 ./deploy.sh --http-port 8443 --api-port 8001  # 换端口
 ./deploy.sh --backend-url http://192.168.1.20:8000   # 指定探针回连地址
 ./deploy.sh --force                         # 重新生成 .env 里的 auto 口令（慎用）
 sudo ./undeploy.sh                          # 停栈，数据保留
 ```
+
+### 交互式配置问了什么
+
+在终端里直接跑 `./deploy.sh` 会逐项提问，**回车 = 采用方括号里的默认值**（即 `deploy.conf` 的值），
+口令类留空 = 自动生成：
+
+| 分组 | 问题 |
+| --- | --- |
+| 位置与端口 | compose 项目名、数据目录、控制台端口、API/探针端口 |
+| 接入 | 探针回连地址（默认取本机第一个 IP + API 端口） |
+| 账号 | 管理员账号、数据库名与用户 |
+| 口令与密钥 | 管理员口令、数据库口令、`SECRET_KEY`、探针注册令牌、`DEPLOYMENT_SECRET_KEY`（不显示回显） |
+| 可选集成 | 通知（webhook / SMTP）、威胁情报（URLhaus / 自定义源 / MISP）、主机审计（Wazuh / osquery），
+  默认跳过 |
+
+回答完会打印一份确认摘要，回车或 `Y` 才开始部署；`n` 取消且不改动任何文件。确认后**非口令项会写回
+`deploy.conf`**（口令与密钥不写，只留在 `.env`），这样重跑 `deploy.sh` 不会退回旧值。
+不想提问就用 `--non-interactive`（stdin 不是终端时自动进入这个模式）。
 
 ## 二、全部参数都在 `deploy.conf`
 
@@ -47,6 +66,7 @@ DLP、通知、威胁情报、主机审计、运行环境、镜像标签。
 | `dist-offline/security-toolbox-images.tar` | 6 个 arm64 镜像：`source-backend`、`source-worker`、`source-frontend`、`postgres:16.6-alpine`、`redis:7.4-alpine`、`mher/flower:2.0.1`（worker/beat/deployment-worker 共用 `source-worker`） |
 | `dist-offline/data/` | 离线规则 / IOC / CVE / 模型样例 |
 | `deploy.sh`、`deploy.conf`、`undeploy.sh` | 一键部署、参数文件、停栈 |
+| `.env.example` | 全部环境变量的模板与说明（**交付包里没有 `.env`**：它由 `deploy.sh` 按 `deploy.conf` + 交互回答生成，`chmod 600`） |
 | `docker-compose*.yml` | 生产编排 / 覆盖 / 可选集成组件 / 开发覆盖（挂载源码热重载） |
 | `probe_packages/` | 探针 3.7.0 arm64 分发包（自带 CPython 与依赖），compose 挂进 backend 供下发 |
 | `data_security_toolbox_manual_testpack/` | 可选手工测试样例数据（只读挂载） |

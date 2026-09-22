@@ -16,6 +16,7 @@ cd "$ROOT"
 
 CONF="$ROOT/deploy.conf"
 FORCE=0 DRY_RUN=0 LOAD=1
+WANT_INTERACTIVE=0 WANT_NONINTERACTIVE=0
 OVR_PROJECT="" OVR_DATA_ROOT="" OVR_HTTP_PORT="" OVR_API_PORT="" OVR_BACKEND_URL="" OVR_ADMIN_PASSWORD=""
 
 die()  { echo "错误：$*" >&2; exit 1; }
@@ -35,7 +36,9 @@ usage() {
   --admin-password PW    直接指定管理员口令
   --no-load              跳过 docker load（镜像已在本地时）
   --force                重新生成 .env 里的 auto 口令
-  --dry-run              只打印不执行
+  --interactive          强制交互式配置（即使 stdin 不是终端）
+  --non-interactive      不提问，全用 deploy.conf 与内置默认
+  --dry-run              只打印不执行（配 --interactive 可先交互看一遍会写入什么）
   -h, --help             本帮助
 TXT
 }
@@ -51,6 +54,8 @@ while [[ $# -gt 0 ]]; do
     --admin-password) OVR_ADMIN_PASSWORD="${2:-}"; shift 2 ;;
     --no-load)        LOAD=0; shift ;;
     --force)          FORCE=1; shift ;;
+    --interactive|-i) WANT_INTERACTIVE=1; shift ;;
+    --non-interactive|--yes|-y) WANT_NONINTERACTIVE=1; shift ;;
     --dry-run)        DRY_RUN=1; shift ;;
     -h|--help)        usage; exit 0 ;;
     *) die "未知参数 $1（--help 查看可用项）" ;;
@@ -84,6 +89,135 @@ case "$ARCH" in
   aarch64|arm64) : ;;
   *) die "本包镜像是 arm64，当前主机是 $ARCH（x86_64 请用 amd64 包，不要用 QEMU 跑生产）" ;;
 esac
+
+host_ip() {  # 本机对外 IP：给探针的默认回连地址，也是交互提示里的默认值
+  local ip=""
+  command -v hostname >/dev/null 2>&1 && ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1 && \
+    ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
+  printf '%s' "${ip:-127.0.0.1}"
+}
+
+# --------------------------------------------------------------- 交互式配置
+# 必要参数由操作者现场录入（回车 = 采用方括号里的默认值，口令留空 = 自动生成）。
+# 非口令项在部署前写回 deploy.conf，否则重跑 deploy.sh 会把它们退回文件里的旧值；
+# 口令与密钥只留在 .env（chmod 600），不进 deploy.conf 这种会进版本库的文件。
+if [[ "$WANT_NONINTERACTIVE" -eq 1 ]]; then
+  INTERACTIVE=0
+elif [[ "$WANT_INTERACTIVE" -eq 1 || -t 0 ]]; then
+  INTERACTIVE=1
+else
+  INTERACTIVE=0
+fi
+
+prompt_val() {  # prompt_val VAR 标签 默认值
+  local name="$1" label="$2" shown="$3" ans=""
+  printf '  %-24s [%s] > ' "$label" "$shown"
+  IFS= read -r ans || ans=""
+  [[ -z "$ans" ]] && return 0
+  printf -v "$name" '%s' "$ans"
+}
+prompt_secret() {  # prompt_secret VAR 标签 —— 留空 = 自动生成 / 沿用 .env
+  local name="$1" label="$2" ans=""
+  printf '  %-24s （留空 = 自动生成）> ' "$label"
+  IFS= read -rs ans || ans=""
+  printf '\n'
+  [[ -z "$ans" ]] && return 0
+  printf -v "$name" '%s' "$ans"
+}
+conf_set() {  # conf_set KEY VALUE —— 只改 deploy.conf 里的赋值行（没有就追加）
+  local key="$1" val="$2" tmp="$CONF.tmp.$$"
+  if [[ ! -w "$CONF" ]]; then
+    note "deploy.conf 不可写，跳过写回 $key"
+    return 0
+  fi
+  # 保留行尾注释：deploy.conf 每行都是 `KEY=值  # 中文说明`，值里不会出现 " #"。
+  if awk -v k="$key" -v v="$val" \
+      'BEGIN{h=0} $0 ~ "^" k "=" {cmt=""; if (match($0, /[ \t]#/)) cmt=substr($0, RSTART); print k "=" v cmt; h=1; next}
+       {print} END{if(!h) print k "=" v}' \
+      "$CONF" > "$tmp"; then
+    mv "$tmp" "$CONF"
+  else
+    rm -f "$tmp"
+    note "写回 $key 失败（deploy.conf 未改动）"
+  fi
+}
+
+if [[ "$INTERACTIVE" -eq 1 ]]; then
+  echo
+  echo "==> 交互式配置（全部参数都在 deploy.conf，这里只问现场必须定下来的几项）"
+  prompt_val PROJECT "compose 项目名" "$PROJECT"
+  prompt_val DATA_ROOT "数据目录" "$DATA_ROOT"
+  prompt_val HTTP_PORT "控制台端口" "$HTTP_PORT"
+  prompt_val API_PORT "API/探针端口" "$API_PORT"
+  if [[ -z "${DEPLOYMENT_BACKEND_URL:-}" || "${DEPLOYMENT_BACKEND_URL}" == auto ]]; then
+    default_backend="http://$(host_ip):${API_PORT}"
+  else
+    default_backend="$DEPLOYMENT_BACKEND_URL"
+  fi
+  prompt_val DEPLOYMENT_BACKEND_URL "探针回连地址" "$default_backend"
+  prompt_val ADMIN_USERNAME "管理员账号" "${ADMIN_USERNAME:-admin}"
+  prompt_val POSTGRES_DB "数据库名" "${POSTGRES_DB:-security_toolbox}"
+  prompt_val POSTGRES_USER "数据库用户" "${POSTGRES_USER:-security}"
+  echo "  口令与密钥（留空自动生成；重跑会沿用 .env 里已有的值）"
+  prompt_secret ADMIN_PASSWORD "管理员口令"
+  prompt_secret POSTGRES_PASSWORD "数据库口令"
+  prompt_secret SECRET_KEY "平台密钥 SECRET_KEY"
+  prompt_secret PROBE_BOOTSTRAP_TOKEN "探针注册令牌"
+  prompt_secret DEPLOYMENT_SECRET_KEY "下发密钥（生成后不可更换）"
+  printf '  配置可选集成（通知 / 威胁情报 / 主机审计）？[y/N] > '
+  read -r ans || ans=""
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    prompt_val WEBHOOK_URL "告警 webhook 地址" "${WEBHOOK_URL:-}"
+    prompt_secret WEBHOOK_SECRET "webhook 密钥"
+    prompt_val SMTP_HOST "SMTP 主机" "${SMTP_HOST:-}"
+    prompt_val SMTP_PORT "SMTP 端口" "${SMTP_PORT:-587}"
+    prompt_val SMTP_USER "SMTP 用户" "${SMTP_USER:-}"
+    prompt_secret SMTP_PASSWORD "SMTP 口令"
+    prompt_val SMTP_FROM "邮件发件人" "${SMTP_FROM:-}"
+    prompt_val SMTP_TO "邮件收件人" "${SMTP_TO:-}"
+    prompt_val URLHAUS_AUTH_KEY "URLhaus key" "${URLHAUS_AUTH_KEY:-}"
+    prompt_val CUSTOM_INTEL_URL "自定义情报源 URL" "${CUSTOM_INTEL_URL:-}"
+    prompt_secret CUSTOM_INTEL_TOKEN "自定义情报源令牌"
+    prompt_val MISP_URL "MISP URL" "${MISP_URL:-}"
+    prompt_secret MISP_API_KEY "MISP API Key"
+    prompt_val WAZUH_URL "Wazuh URL" "${WAZUH_URL:-}"
+    prompt_val WAZUH_USER "Wazuh 用户" "${WAZUH_USER:-}"
+    prompt_secret WAZUH_PASSWORD "Wazuh 口令"
+    prompt_val OSQUERY_SOCKET "osquery socket" "${OSQUERY_SOCKET:-}"
+  fi
+  echo
+  printf '  项目名 %s ／ 数据目录 %s\n' "$PROJECT" "$DATA_ROOT"
+  printf '  控制台 http://%s:%s ／ API http://%s:%s\n' \
+    "$(host_ip)" "$HTTP_PORT" "$(host_ip)" "$API_PORT"
+  # 只说明口令从哪来，不把口令本身打进终端（会被 scrollback 和日志记下来）。
+  case "${ADMIN_PASSWORD:-auto}" in
+    ""|auto|AUTO|changeme) pw_state="自动生成（部署结束打印）" ;;
+    *)                     pw_state="按你刚才输入的值" ;;
+  esac
+  printf '  管理员 %s ／ 口令 %s\n' "${ADMIN_USERNAME:-admin}" "$pw_state"
+  printf '  探针回连 %s\n' "$DEPLOYMENT_BACKEND_URL"
+  printf '  按以上参数部署？[Y/n] > '
+  read -r ans || ans=""
+  [[ "$ans" =~ ^[Nn]$ ]] && die "已取消，未改动任何文件"
+  for key in PROJECT DATA_ROOT HTTP_PORT API_PORT DEPLOYMENT_BACKEND_URL ADMIN_USERNAME \
+             POSTGRES_DB POSTGRES_USER WEBHOOK_URL SMTP_HOST SMTP_PORT SMTP_USER SMTP_FROM SMTP_TO \
+             URLHAUS_AUTH_KEY CUSTOM_INTEL_URL MISP_URL WAZUH_URL WAZUH_USER OSQUERY_SOCKET; do
+    new="$(eval "printf '%s' \"\${$key:-}\"")"
+    old="$(grep -m1 "^$key=" "$CONF" || true)"
+    old="${old#*=}"
+    old="${old%%#*}"                       # 去掉行尾注释
+    old="${old%"${old##*[![:space:]]}"}"   # 去掉尾部空白
+    if [[ -n "$new" && "$new" != "$old" ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        note "将写回 deploy.conf：$key=$new"
+      else
+        conf_set "$key" "$new"
+        note "deploy.conf 已更新：$key=$new"
+      fi
+    fi
+  done
+fi
 
 # --------------------------------------------------------------- 取值解析
 # 现有 .env 里的值（.env 是生成物，但 auto 项要沿用，避免每次部署换钥）
@@ -129,13 +263,6 @@ ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 POSTGRES_DB="${POSTGRES_DB:-security_toolbox}"
 POSTGRES_USER="${POSTGRES_USER:-security}"
 
-host_ip() {  # 本机对外 IP（用于给探针一个默认回连地址）
-  local ip=""
-  command -v hostname >/dev/null 2>&1 && ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1 && \
-    ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
-  printf '%s' "${ip:-127.0.0.1}"
-}
 if [[ -z "${DEPLOYMENT_BACKEND_URL:-}" || "${DEPLOYMENT_BACKEND_URL}" == "auto" ]]; then
   DEPLOYMENT_BACKEND_URL="http://$(host_ip):${API_PORT}"
 fi

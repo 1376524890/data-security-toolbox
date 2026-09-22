@@ -35,10 +35,22 @@ SKIP_TOP = {
     "dist-release", "dist-deploy", "dist-deploy.tar", "dist-deploy.zip",
     "deploy-data", "data", "0916_v2.7", ".refactor-trash", ".ruff_cache",
     ".pytest_cache", ".local",
+    # The operator's .env holds the live passwords and the site IP. Shipping it
+    # would hand the same credentials to every site and make the target reuse
+    # the build host's values, so only .env.example travels; deploy.sh writes a
+    # fresh .env from deploy.conf on first run.
+    ".env",
 }
 SKIP_PREFIX = ("ChatGPT Image", "FRICSE")
+SKIP_ENV_PREFIX = ".env."
 #: Paths that are runtime state, not source.
 SKIP_REL = {"backend/data", "frontend/node_modules/.vite"}
+
+
+def skipped(name: str) -> bool:
+    if name in SKIP_TOP or name.startswith(SKIP_PREFIX):
+        return True
+    return name.startswith(SKIP_ENV_PREFIX) and name != ".env.example"
 
 
 def platform_version() -> str:
@@ -75,8 +87,11 @@ def stage(name: str, arch: str, version: str) -> pathlib.Path:
     out = OUT_ROOT / name
     if out.exists():
         shutil.rmtree(out)
+    # Top-level files are hard-linked into `out` before any directory entry has
+    # created it (`.dockerignore` sorts first), so the root must exist up front.
+    out.mkdir(parents=True, exist_ok=True)
     for entry in sorted(ROOT.iterdir()):
-        if entry.name in SKIP_TOP or entry.name.startswith(SKIP_PREFIX):
+        if skipped(entry.name):
             continue
         if entry.is_dir():
             link_tree(entry, out / entry.name)

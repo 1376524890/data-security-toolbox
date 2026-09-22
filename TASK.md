@@ -29,7 +29,22 @@
   `--no-cache`，否则 `COPY . .` 命中缓存会复用旧产物），`offline_bundle.py --save` 重出
   `dist-offline/security-toolbox-images.tar`（2.95 GB，6 个 arm64 镜像）。
 
-**待回填**：交付包 sha256 与发布提交号。
+- 交互式配置：`./deploy.sh` 在终端里逐项提问必要参数（回车 = 取 `deploy.conf` 的值，口令留空 = 自动生成、
+  隐藏回显），确认摘要不回显口令明文；确认后非口令项写回 `deploy.conf`（只改真正变了的项，行尾注释保留），
+  口令只进 `.env`。`--non-interactive` 全自动，`-i` 强制提问，`--dry-run` 配 `-i` 可先看一遍。
+- 打包脚本两处真缺陷已修（都是打包期实测抓到的）：
+  1. 暂存目录未先创建，而 `.dockerignore` 按字典序排在最前 → 顶层文件硬链接时 `FileNotFoundError`
+     （上一版没暴露，是因为 `.dockerignore` 是 2.14.0 打包之后才加进仓库的）；
+  2. 交付包里混进了操作者本机的 `.env`（真实口令 + 现场 IP），且目标机首次部署会沿用这些值 →
+     打包脚本现在显式排除 `.env`，只带 `.env.example`。
+- **交付包**：`dist-release/dst-toolbox-3.0.0-linux-arm64.tar.gz`（1.28 GB，
+  sha256 `54b99448712ed7875935dc4e9ad995077665f840da22307e7358e912ee642f40`）。
+- **解包全新部署冒烟（真实执行，非 dry-run）**：解到干净目录，用交互式回答（项目名 `dstcheck3`、
+  端口 18082/18002、管理员口令手工指定、其余口令自动生成）起栈 → 8 容器全部 Up
+  （backend / worker / postgres / redis healthy）、`/api/v1/health` = ok、
+  `http://127.0.0.1:18082/` 与 `/cockpit` 均 200、`openapi info.version = 3.0.0`；
+  `deploy.conf` 写回只改了回答过且真不同的项并保留注释；`undeploy.sh` 停栈后临时目录已清理。
+- 发布：提交并推送 `develop`，创建注释标签 `v3.0.0` 并推送（无 `gh`，GitHub Release 需在有 `gh` 的机器上补）。
 
 ## 第三十九批：数据安全综合驾驶舱与浅色控制台（2026-09-22）
 

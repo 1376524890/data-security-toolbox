@@ -26,6 +26,19 @@ arm64 镜像（`dist-offline/security-toolbox-images.tar`，2.95 GB）、探针 
 **文档**：新增 `docs/releases/v3.0.0.md`；`docs/versioning.md` 增 `v3.0` 条目与 v3.0.0 章节；
 `CHANGELOG.md` 顶部新增 v3.0.0 段；`README.md` 的离线部署章节改指向 `deploy/`。
 
+**交互式配置**：`./deploy.sh` 在终端里先逐项提问必要参数（项目名、数据目录、控制台/API 端口、探针回连地址、
+管理员账号、数据库名与用户、五个口令与密钥、可选的通知/情报/主机审计集成），回车 = 取 `deploy.conf` 的值，
+口令留空 = 自动生成且不回显；确认摘要不打印口令明文。确认后**非口令项写回 `deploy.conf`**（只改真正变了的项、
+保留行尾中文注释），口令只进 `.env`，因此重跑既不退回旧值也不换钥。`--non-interactive` 全自动
+（stdin 不是终端时自动如此），`-i` 强制提问，`--dry-run -i` 可先看一遍。
+
+**交付包**：`dist-release/dst-toolbox-3.0.0-linux-arm64.tar.gz`（1.28 GB，sha256 `54b99448712ed787…`）。
+打包期抓到并修掉两个真缺陷：① 暂存目录未先创建 + `.dockerignore` 字典序最前 → 顶层硬链接 `FileNotFoundError`；
+② 交付包里混进了操作者本机 `.env`（真实口令 + 现场 IP）→ 现在显式排除，只带 `.env.example`。
+
+**解包全新部署冒烟**：解到干净目录按交互式路径真跑一遍（项目名 `dstcheck3`、端口 18082/18002）→ 8 容器全部 Up、
+`/api/v1/health` = ok、`/` 与 `/cockpit` 均 200、`openapi info.version = 3.0.0`，`undeploy.sh` 停栈后临时目录已清理。
+
 **镜像与运行栈**：backend / worker / frontend 三个应用镜像用 legacy builder 重建（前端必须 `--no-cache`，
 否则 `COPY . .` 命中缓存会复用旧产物），运行栈已 `--force-recreate` 切换，`openapi info.version = 3.0.0`、
 `/api/v1/health` = ok。
