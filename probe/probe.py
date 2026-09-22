@@ -934,8 +934,12 @@ class ProbeAgent:
                 metadata = spool_metadata(meta_path)
                 if self._process_upload(meta_path, metadata):
                     uploaded_any = True
+            # Retention belongs to the spool, not to a successful upload: when the
+            # spool is full and there is nothing new to send, gating the sweep on
+            # ``uploaded_any`` meant already-uploaded segments were never removed,
+            # the spool stayed at its cap and capture stayed degraded forever.
+            self.cleanup_uploaded()
             if uploaded_any:
-                self.cleanup_uploaded()
                 self.stop_event.wait(1)
             else:
                 self.stop_event.wait(backoff_seconds(self.upload_failures, int(self.config.agent["upload_max_interval_seconds"])))

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sys
 import tarfile
 from pathlib import Path
 
@@ -133,7 +134,13 @@ def build(arch: str) -> tuple[Path, str]:
 
 
 def main() -> None:
-    for arch in ARCHS:
+    # ``--arch`` lets an arm64-only host (or a partial rebuild) package just the
+    # runtime it actually has, instead of failing on the missing one.
+    wanted = [item.split("=", 1)[1] for item in sys.argv[1:] if item.startswith("--arch=")]
+    arches = wanted or ARCHS
+    for arch in arches:
+        if arch not in ARCHS:
+            raise SystemExit(f"unknown arch: {arch} (expected one of {', '.join(ARCHS)})")
         path, digest = build(arch)
         print(f"built {path} sha256={digest}")
 
