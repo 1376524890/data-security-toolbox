@@ -1,5 +1,66 @@
 # 当前任务：资产与数据安全增强
 
+## 第四十一批：交付包实测离线部署到 192.168.110.50（2026-09-22）
+
+用户目标：连到 `user@192.168.110.50`，把本项目**以离线方式**部署上去并测试能跑。目标机 aarch64 /
+Ubuntu 26.04 / 64 核 123G，Docker 29.1.3，`/` 剩 70G；本机与目标机同为 aarch64，包可直接用。
+
+**已完成（真实执行）**
+
+- 用 `dist-release/dst-toolbox-3.0.0-linux-arm64.tar.gz`（sha256 `54b994…` 校验通过）在目标机部署：
+  解包到 `/home/user/dst-toolbox-3.0.0-linux-arm64`，`sudo ./deploy.sh --non-interactive
+  --http-port 80 --api-port 8000 --backend-url http://192.168.110.50:8000`。
+- 目标机 `docker compose` v2 插件缺失（只有 `docker-trust`，`docker compose` 直接不认识）：从本机
+  `~/.docker/cli-plugins/docker-compose`（v2.29.7，同为 linux/arm64 静态二进制）拷过去装到
+  `/usr/libexec/docker/cli-plugins/`。注意装到用户级目录对 `sudo` 无效（HOME 变 /root），必须装系统级。
+- **交付包实证缺陷（已修）**：`deploy.sh` 授权数据目录那段的入口条件是
+  `if [[ "$(id -u)" -eq 0 ]] || chown … ; then :`，`id -u` 为 0 时短路直接进 `:`，**chown 永远不跑**。
+  于是 README 的主路径 `sudo ./deploy.sh` 必然让 `deploy-data/backend` 停在 root:root，
+  容器内 appuser(10001) 建不了 `/app/data/storage`，backend/worker/beat/deployment-worker 四个容器
+  无限重启，deploy.sh 最后打印「backend 未在 180 秒内进入 healthy」。改为显式三分支
+  （root → 直接 chown；非 root → chown 失败再退回容器 chown），`bash -n` 通过。
+  首次部署靠手工 `chown -R 10001:10001 deploy-data/backend` + `compose restart` 救活；
+  修复后用 **全新项目 dstfix / 全新数据目录 / 端口 18081+18001** 重跑一遍 `sudo ./deploy.sh` 验证：
+  目录自动变 10001:10001、backend 自己 healthy、`/api/v1/health` = ok，验证栈已 `down` 并删除数据目录。
+- 交付包里 `deploy.sh` 有**两份**（顶层一份 + `deploy/` 一份，打包脚本把 `deploy/` 拷到包根）：
+  实际执行的是**顶层**那份，改包内脚本时别只改 `deploy/deploy.sh`。
+- 验收（全部真实请求）：8 容器 Up（backend / worker / postgres / redis healthy）；`/api/v1/health`
+  status=ok、db/redis/celery ok、tshark 4.4.18 + zeek 8.2.2 + suricata 7.0.10 均 available；
+  `http://192.168.110.50/` `/cockpit` `/index.html` 全 200；`openapi info.version = 3.0.0`；
+  `admin / Adm1n@Dst3.0` 登录 200 并拿到会话 Cookie；按前端 `api/*.ts` 真实调用的 47 条路径逐条 curl
+  全部 200；Playwright 带会话截图 `/cockpit` 与 `/` 两个首页均正常渲染（驾驶舱显示“API ok、
+  集成组件 5/8、Sigma 6 条规则”，数据为空属全新库正常现象）。`.env` 落盘为 `600 root:root`。
+- `source` 栈保留在目标机运行；交付包（3.4G）与 tar.gz（1.2G）留在 `/home/user/` 供重跑/回滚。
+- **部署期踩到的两个坑（已处理，值得写进交付说明）**：
+  1. `deploy.sh` **每次执行都会重写同目录的 `.env`**，且 `DATA_ROOT` 跟着本次参数走。为验证 chown 修复，
+     我在同一目录又跑了一次 dstfix（`--data-root ./deploy-data-fix`），`.env` 就被改成
+     `HTTP_PORT=18081 / API_PORT=18001 / DATA_ROOT=./deploy-data-fix`。运行中的 source 容器不受影响
+     （端口/卷在创建时已定型），但**此后任何 `compose up`、重启、`deploy.sh` 重跑都会把栈搬到 18081
+     并指向一个已被删除的数据目录，看起来就像"数据全丢了"**。已用原参数重跑 `deploy.sh` 把 `.env`
+     复原（`--no-load`，容器配置未变故未重建、零停机，任务 id=1 与 3 条资产仍在）。
+     结论：同一目录只服务一个部署；要并行验证就换目录（`--config` 或整包再解一份）。
+  2. 控制台端口是**部署时 `--http-port` 定的 80**，不是 `deploy.conf` 里默认的 8080；访问 `:8080` 会被拒绝连接。
+- 按用户要求把控制台从 80 换到 **8080**：重跑 `./deploy.sh --no-load --http-port 8080`（其余参数不变），
+  `.env` 里 `HTTP_PORT=8080`、`DLP_SELF_ENDPOINTS=8080,8000,5432,6379,5555`；frontend 重新发布端口，
+  backend 因 `DLP_SELF_ENDPOINTS` 变化一并重建（`deploy-data/` 是 bind mount，数据未动）。验证：
+  `http://192.168.110.50:8080/` 与 `/cockpit` = 200，80 已关闭，任务/资产条数不变。
+- 另在本机生成探针下发用密钥对 `~/.ssh/dst_probe_ed25519`（ed25519，无口令，指纹
+  `SHA256:NDjn+JBGGYb2rwfuGfOxfKe0EkBCB/IcpN+DDqZRyYM`）；原有 `~/.ssh/id_ed25519`（plk@kirin）未改动。
+- 按用户要求把服务访问范围收敛到 **192.168.110.0/24**（此前 ufw 未启用、`DOCKER-USER` 为空，
+  8080/8000 对任何能路由到该机的网段都是开放的）。两个关键技术点：
+  1. **必须写 `DOCKER-USER`**：docker 发布端口是 nat/PREROUTING DNAT 后经 FORWARD 转发，
+     ufw 的 INPUT 规则管不到容器端口。
+  2. **必须用 `-m conntrack --ctorigdstport`**：DNAT 之后 dport 已被改写成容器端口
+     （frontend 是 `8080->80`），用 `--dport 8080` 匹配不到——第一版规则就是这么错的，
+     实测非 110 网段访问 8080 仍返回 200，而 8000（宿主/容器端口同为 8000）却被正确丢弃，
+     正好暴露了这个坑。
+  最终规则：ESTABLISHED → 放行 docker 网段 172.16.0.0/12 → 放行 110 网段到 8080/8000 → 其余来源丢弃。
+  落地为 `/usr/local/sbin/dst-port-scope.sh` + `dst-port-scope.service`（`PartOf=docker.service`
+  + `Requires`/`After`，docker 重启会重建链，靠它自动重放），已 `enable`。
+  验证（真跑）：110 网段 `.168` → 8080/8080-cockpit/8000-health 全 200；用一台临时 netns
+  `10.99.99.1`（非 110）→ 两个端口均超时丢弃；SSH 22 不受影响；`systemctl restart docker`
+  之后规则仍在、8 容器自动恢复 healthy。临时 netns/veth 已清理。增删网段改脚本里的 `ALLOW_CIDRS`。
+
 ## 第四十批：v3.0.0 一键离线部署套件与发布（2026-09-22）
 
 用户目标：给一个**一键配置脚本**，包含全部参数的设置，一键跑完部署；然后重新推 git、发布包、发布 release，
