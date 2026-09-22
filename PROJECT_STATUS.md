@@ -32,7 +32,9 @@ arm64 镜像（`dist-offline/security-toolbox-images.tar`，2.95 GB）、探针 
 保留行尾中文注释），口令只进 `.env`，因此重跑既不退回旧值也不换钥。`--non-interactive` 全自动
 （stdin 不是终端时自动如此），`-i` 强制提问，`--dry-run -i` 可先看一遍。
 
-**交付包**：`dist-release/dst-toolbox-3.0.0-linux-arm64.tar.gz`（1.28 GB，sha256 `54b99448712ed787…`）。
+**交付包**：`dist-release/dst-toolbox-3.0.0-linux-arm64.tar.gz`（1.28 GB，sha256 `54b99448712ed787…`，与同名 `.sha256` 并列）。
+
+**发布**：`develop` 已推送到 `bbb3a3b`，注释标签 **`v3.0.0`** 已推送（指向 `bbb3a3b`）；本机无 `gh`，GitHub Release 页面需在有 `gh` 的机器上补建。
 打包期抓到并修掉两个真缺陷：① 暂存目录未先创建 + `.dockerignore` 字典序最前 → 顶层硬链接 `FileNotFoundError`；
 ② 交付包里混进了操作者本机 `.env`（真实口令 + 现场 IP）→ 现在显式排除，只带 `.env.example`。
 

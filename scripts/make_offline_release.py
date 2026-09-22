@@ -151,9 +151,10 @@ def archive(staged: pathlib.Path) -> pathlib.Path:
             sys.exit("tar 失败")
     digest = subprocess.run(["sha256sum", str(tar_path)], capture_output=True, text=True,
                             check=True).stdout.split()[0]
-    tar_path.with_suffix(".tar.gz.sha256").write_text(
-        f"{digest}  {tar_path.name}\n", encoding="utf-8"
-    )
+    # Not with_suffix(): it would replace only the last suffix and produce
+    # "….tar.tar.gz.sha256".
+    checksum = tar_path.parent / (tar_path.name + ".sha256")
+    checksum.write_text(f"{digest}  {tar_path.name}\n", encoding="utf-8")
     return tar_path
 
 
@@ -179,7 +180,7 @@ def main() -> None:
     tar_path = archive(staged)
     size = tar_path.stat().st_size / 1e9
     print(f"交付包：{tar_path}（{size:.2f} GB）")
-    print(f"校验：{tar_path.with_suffix('.tar.gz.sha256').read_text(encoding='utf-8').strip()}")
+    print(f"校验：{(tar_path.parent / (tar_path.name + '.sha256')).read_text(encoding='utf-8').strip()}")
 
 
 if __name__ == "__main__":

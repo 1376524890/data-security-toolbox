@@ -44,7 +44,11 @@
   （backend / worker / postgres / redis healthy）、`/api/v1/health` = ok、
   `http://127.0.0.1:18082/` 与 `/cockpit` 均 200、`openapi info.version = 3.0.0`；
   `deploy.conf` 写回只改了回答过且真不同的项并保留注释；`undeploy.sh` 停栈后临时目录已清理。
-- 发布：提交并推送 `develop`，创建注释标签 `v3.0.0` 并推送（无 `gh`，GitHub Release 需在有 `gh` 的机器上补）。
+- 打包脚本第三处小缺陷：`Path.with_suffix('.tar.gz.sha256')` 只会替换最后一个后缀，产出
+  `….tar.tar.gz.sha256`；改为直接拼 `.sha256`，并把已产出的校验文件改名到位（内容本来就对）。
+- 发布：`develop` 推送到 `bbb3a3b`（`1303634` 一键部署套件 + `bbb3a3b` 交互式配置与打包修复），
+  创建并推送注释标签 **`v3.0.0`**（指向 `bbb3a3b`）。本机没有 `gh`，GitHub Release 页面需在有 `gh` 的
+  机器上补建；标签与说明已经推上去了。
 
 ## 第三十九批：数据安全综合驾驶舱与浅色控制台（2026-09-22）
 
