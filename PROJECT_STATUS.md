@@ -25,6 +25,8 @@
 vs 干净 HEAD **50 项**，共同 41 项逐项一致；只在 HEAD 出现的 9 项全是需要 `probe_packages/`（gitignored）
 的探针包/分发用例，工作树多出的 2 项经单独复跑确认与本批无关（详见 `TASK.md` 第三十九批）——**本批未新增失败**。
 
+**离线包**：`dist-release/dst-toolbox-2.14.0-linux-arm64.tar.gz`（1.28 GB，sha256 `1db744ef…`）含镜像归档 + 全量源码 + 探针包 + `frontend/node_modules` + `deploy.sh`；从解包目录全新部署实测通过（8 容器健康、health ok、`/`、`/cockpit`、`/screen` 200）。打包期抓到并修掉一个真缺陷：`deploy-data/backend` 由 docker 以 root 创建、容器以 uid 10001 运行导致 `PermissionError: '/app/data/storage'` 反复重启，`deploy.sh` 现会先授权该目录（无 root 时用包内镜像 chown）。
+
 **交付**：三个应用镜像与提交修订一致（后端/worker 逐文件 md5 与工作树相同，前端为本轮重建）；
 `dist-offline/security-toolbox-images.tar` **2.95 GB**，6 个镜像全部 `arm64/linux`；另有 arm64 离线一键部署包
 （源码 + 探针包 + 镜像 + `deploy.sh`，见 `README-离线部署.md`）。

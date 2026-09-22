@@ -23,6 +23,22 @@
   默认浅色（`main.ts` 只在 `dst-theme === 'dark'` 时深色）；图表包装组件监听 `themeMode` 重建 option，
   避免切主题后画布保留上一种主题的网格/轴色。大屏保持固定深色。
 
+**交付（arm64 离线包，2026-09-22）**
+
+- 提交 `cd6845c`（本批源码）+ `5eacada`（`.gitignore` 忽略交付包）已推送 `origin/develop`。
+- 三个应用镜像与提交修订一致（后端/worker 逐文件 md5 与工作树相同，前端为本轮重建）；
+  `dist-offline/security-toolbox-images.tar` 2.95 GB、6 个镜像全部 `arm64/linux`。
+- 交付包 `dist-release/dst-toolbox-2.14.0-linux-arm64.tar.gz`（1.28 GB，sha256 `1db744ef…`），
+  内含镜像归档、全量源码（含 `.git`）、`probe_packages/probe-3.7.0/arm64`、`frontend/node_modules`、
+  `.env`、`deploy.sh` / `undeploy.sh` / `README-离线部署.md` / `SHA256SUMS.txt`。
+- **打包期在真机（本机）冒烟部署抓到一个真缺陷**：backend/worker/beat/deployment-worker 反复重启，
+  日志 `PermissionError: [Errno 13] '/app/data/storage'`。根因是容器以 `appuser`(uid 10001) 运行，
+  而 `deploy-data/backend` 是 docker 以 root 创建的 bind mount，容器内无权创建 `storage/`。
+  修法是 `deploy.sh` 在启动前把该目录授权给 10001：有 root 直接 `chown`，没有 root（只在 docker 组）
+  就用包内 `redis:7.4-alpine` 跑一次 `chown`。修后从新包解压 → `./deploy.sh` → 8 个容器全部健康、
+  `/api/v1/health` = ok、`/`、`/cockpit`、`/screen` 均 200。**这段修复只存在于交付包内的 `deploy.sh`
+  与本机 `dist-release/extras/`，重新生成发布包时不要弄丢。**
+
 **复验（真实执行）**
 
 - 前端：`npx vue-tsc --noEmit` 干净；`npx vitest run` 全量 **18 文件 / 89 项通过**，其中
