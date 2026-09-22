@@ -53,6 +53,10 @@ def list_tasks(
         query = query.where(Task.status == status)
     if kind:
         query = query.where(Task.kind.in_(["data_asset_scan", "database_scan", "file_source_scan"])) if kind == "collection" else query.where(Task.kind == kind)
+    else:
+        # Capture segments are child work of a monitoring task, so the default
+        # list shows the monitor; filtering by kind=pcap reaches the segments.
+        query = query.where(Task.payload["monitor_task_id"].as_integer().is_(None))
     if search:
         query = query.where(
             or_(
@@ -62,6 +66,12 @@ def list_tasks(
             )
         )
     result = paginate(db, query.order_by(Task.id.desc()), page, page_size)
+    from app.services import monitoring
+
+    for item in result["items"]:
+        if item.kind == monitoring.MONITOR_KIND:
+            monitoring.refresh(db, item)
+    db.commit()
     return page_response(
         [serialize_task(item) for item in result["items"]], page, page_size, result["total"]
     )

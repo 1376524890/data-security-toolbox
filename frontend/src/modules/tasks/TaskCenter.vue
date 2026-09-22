@@ -41,7 +41,10 @@ function clearHostSelection(host: { key: number } & Record<string, unknown>): vo
   wizard.onCheck(host as never, [])
 }
 
-const KINDS = ['probe_scan', 'data_asset_scan', 'network_scan', 'file_source_scan', 'database_scan']
+// 'monitoring' is the long-lived task a probe's capture segments hang under;
+// 'pcap' reaches the individual segments when they are needed.
+const KINDS = ['monitoring', 'pcap', 'probe_scan', 'data_asset_scan', 'network_scan',
+  'file_source_scan', 'database_scan']
 
 async function load(): Promise<void> {
   loading.value = true

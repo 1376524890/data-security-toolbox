@@ -203,6 +203,14 @@ async def upload_pcap(
     db.commit()
     db.refresh(record)
     task = create_task(db, "pcap", {"pcap_id": record.id})
+    # A captured segment is child work of the probe's monitoring task; the task
+    # list shows the monitor, not thousands of 30 s segments.
+    from app.services import monitoring
+
+    monitor = monitoring.ensure_monitor_task(db, probe_id)
+    if monitor is not None:
+        monitoring.attach_segment(db, monitor, task)
+        db.commit()
     dispatch_task_row(ANALYZE_PCAP, task.id, record.id)
     return {
         "id": record.id,

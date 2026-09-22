@@ -841,10 +841,15 @@ class ProbeAgent:
             return
         while not self.stop_event.is_set():
             if spool_size_mb(self.config.spool_path()) >= int(self.config.spool["max_mb"]):
-                self.capture_status = "degraded"
-                self.heartbeat_once()
-                self.stop_event.wait(5)
-                continue
+                # Make room from segments the platform already has before giving
+                # up on capturing: a full spool must not stop monitoring for a
+                # whole retention window.
+                self.cleanup_uploaded(keep_under_mb=int(int(self.config.spool["max_mb"]) * 0.8))
+                if spool_size_mb(self.config.spool_path()) >= int(self.config.spool["max_mb"]):
+                    self.capture_status = "degraded"
+                    self.heartbeat_once()
+                    self.stop_event.wait(5)
+                    continue
             self.capture_status = "online"
             with self.lock:
                 self.sequence += 1
@@ -944,20 +949,51 @@ class ProbeAgent:
             else:
                 self.stop_event.wait(backoff_seconds(self.upload_failures, int(self.config.agent["upload_max_interval_seconds"])))
 
-    def cleanup_uploaded(self) -> None:
+    def cleanup_uploaded(self, keep_under_mb: int = 0) -> None:
+        """Drop already-uploaded segments: by age, then (optionally) by space.
+
+        Retention alone is not enough on a busy link: 30 s segments at tens of MB
+        fill a 2 GB spool in minutes while the retention window is a day, and the
+        capture loop refuses to capture while the spool is over its cap. Evicting
+        the *oldest already-uploaded* segments keeps monitoring alive without ever
+        dropping a segment the platform has not received.
+        """
         retention = int(self.config.spool["retention_seconds"])
+        pending: list[tuple[float, float, Path, Path | None]] = []
         for meta_path in spool_pending(self.config.spool_path()):
             metadata = spool_metadata(meta_path)
             if metadata.get("state") != STATE_UPLOADED:
                 continue
-            uploaded = metadata.get("uploaded_at", "")
+            uploaded_at = metadata.get("uploaded_at", "")
             try:
-                age = (datetime.now(UTC) - datetime.fromisoformat(uploaded)).total_seconds()
+                age = (datetime.now(UTC) - datetime.fromisoformat(uploaded_at)).total_seconds()
             except Exception:
                 age = 0
+            stamp = 0.0
+            try:
+                stamp = datetime.fromisoformat(uploaded_at).timestamp()
+            except Exception:
+                pass
+            pending.append((stamp, age, meta_path, resolve_pcap(meta_path)))
+
+        def _drop(meta_path: Path, pcap_path: Path | None) -> None:
+            if pcap_path is not None:
+                pcap_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+
+        for _stamp, age, meta_path, pcap_path in pending:
             if age >= retention:
-                resolve_pcap(meta_path) and resolve_pcap(meta_path).unlink(missing_ok=True)
-                meta_path.unlink(missing_ok=True)
+                _drop(meta_path, pcap_path)
+        if keep_under_mb <= 0:
+            return
+        # Oldest first: the platform already has them, and the newest are the most
+        # likely to still be useful for an investigation in progress.
+        for _stamp, _age, meta_path, pcap_path in sorted(pending, key=lambda item: item[0]):
+            if not meta_path.exists():
+                continue
+            if spool_size_mb(self.config.spool_path()) <= keep_under_mb:
+                break
+            _drop(meta_path, pcap_path)
 
     def asset_loop(self) -> None:
         interval = int(self.config.agent["asset_interval_seconds"])
