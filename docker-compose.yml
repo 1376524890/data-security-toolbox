@@ -131,7 +131,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
-    environment:
+    environment: &analysis-worker-env
       APP_ENV: ${APP_ENV:-production}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
@@ -180,6 +180,31 @@ services:
       - ${DATA_ROOT:-./deploy-data}/backend:/app/data
       - ./probe_packages:/app/probe_packages:ro
       - ./.local/deployment:/app/deployment:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # never = a fully offline stack must fail fast instead of reaching a registry.
+    pull_policy: ${PULL_POLICY:-missing}
+
+  pcap-worker:
+    # Capture-segment analysis. A probe in monitoring mode uploads a segment
+    # every few seconds and each one can hold tshark for minutes, so segments
+    # get a worker of their own: a monitoring backlog can no longer take the
+    # analysis pool away from scans, collections or the capability heartbeat
+    # (which is what made /health show the worker as offline).
+    image: ${WORKER_IMAGE:-source-worker:latest}
+    command: ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "-Q", "pcap", "--concurrency=2"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import celery; print('ok')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    environment: *analysis-worker-env
+    volumes:
+      - ${DATA_ROOT:-./deploy-data}/backend:/app/data
     depends_on:
       postgres:
         condition: service_healthy

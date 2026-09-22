@@ -20,6 +20,9 @@ celery_app.conf.update(
     task_default_queue="default",
     task_routes={
         "security_toolbox.run_probe_deployment": {"queue": settings.deployment_worker_queue},
+        # Segments are analysed by their own worker (see pcap_worker_queue): the
+        # route is what keeps a monitoring backlog out of the analysis pool.
+        "security_toolbox.analyze_pcap": {"queue": settings.pcap_worker_queue},
     },
     beat_schedule={
         "file-source-schedule": {"task": "security_toolbox.file_source_schedule", "schedule": 60.0},

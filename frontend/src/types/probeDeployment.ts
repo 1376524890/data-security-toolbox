@@ -134,7 +134,9 @@ export interface DeleteProbePayload {
   host?: string
   port?: number
   username?: string
-  auth_type: 'password' | 'private_key'
+  /** Omitted together with the secret for a probe the console installed: the
+   *  server then retires it with the credential that install retained. */
+  auth_type?: 'password' | 'private_key'
   password?: string
   private_key?: string
   key_passphrase?: string

@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { stopTask, deleteTask } from '../../api/tasks'
+import { canStop } from '../../api/taskKinds'
 import { useAuthStore } from '../../stores/auth'
 import type { Task } from '../../types/task'
 
@@ -28,7 +29,7 @@ async function act(remove: boolean) {
 
 <template>
   <span v-if="auth.user?.role === 'admin'" @click.stop>
-    <el-button v-if="!terminal(task) && ['probe_scan', 'data_asset_scan'].includes(task.kind)" size="small" type="warning" :loading="busy" @click="act(false)">停止</el-button>
+    <el-button v-if="!terminal(task) && canStop(task)" size="small" type="warning" :loading="busy" @click="act(false)">停止</el-button>
     <el-button v-if="terminal(task)" size="small" type="danger" :loading="busy" @click="act(true)">删除</el-button>
   </span>
 </template>

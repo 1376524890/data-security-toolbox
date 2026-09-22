@@ -22,6 +22,7 @@ from app.core.database import get_db
 from app.core.security import require_active_admin
 from app.models import Task
 from app.schemas import TaskCreate
+from app.services import monitoring, probe_lifecycle
 from app.services.probe_task_service import (
     COLLECTION_TASK_KINDS,
     PROBE_TASK_KINDS,
@@ -32,9 +33,24 @@ from app.services.probe_task_service import (
 )
 from app.services.task_service import create_task
 
-#: Tasks the stop endpoint may cancel. A database scan runs in this platform's
-#: worker, which observes the Cancelled status between tables.
-STOPPABLE_TASK_KINDS = (*PROBE_TASK_KINDS, "database_scan", "file_source_scan")
+#: Tasks the stop endpoint may cancel. Everything listed here observes the
+#: Cancelled status somewhere: a probe-instructed job on its next poll (and the
+#: probe checks the command status before it reports), a platform-side job in
+#: its own worker between units of work, and a monitoring session through its
+#: segments. A kind whose executor cannot notice would only look stopped.
+STOPPABLE_TASK_KINDS = (
+    *PROBE_TASK_KINDS,
+    monitoring.MONITOR_KIND,
+    monitoring.SEGMENT_KIND,
+    "database_scan",
+    "file_source_scan",
+    "scan",
+)
+
+STOP_UNSUPPORTED = (
+    "当前仅支持停止探针扫描、数据资产采集、数据库采集、文件源采集、"
+    "网络扫描、流量解析和监测任务"
+)
 
 router = APIRouter()
 
@@ -68,8 +84,6 @@ def list_tasks(
             )
         )
     result = paginate(db, query.order_by(Task.id.desc()), page, page_size)
-    from app.services import monitoring
-
     for item in result["items"]:
         if item.kind == monitoring.MONITOR_KIND:
             monitoring.refresh(db, item)
@@ -99,10 +113,21 @@ def stop_task(task_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     if not task or task.payload.get("deleted"):
         raise HTTPException(404, "任务不存在")
     if task.kind not in STOPPABLE_TASK_KINDS:
-        raise HTTPException(409, "当前仅支持停止探针扫描、数据资产采集和数据库采集任务")
+        raise HTTPException(409, STOP_UNSUPPORTED)
     if task.status not in TERMINAL:
-        task.status, task.current_stage = "Cancelled", "已停止；已领取任务由探针检查后退出"
-        task.finished_at = datetime.now(UTC)
+        if task.kind == monitoring.MONITOR_KIND:
+            # A monitoring row owns one task per capture segment, so stopping it
+            # has to end those rows too — they are separate queue entries and
+            # would otherwise keep the analysis pipeline busy after the operator
+            # has said stop. The probe a console 监测任务 installed is
+            # task-dedicated, so reaching a terminal state is also what takes it
+            # off the host (the retire path queues the uninstall).
+            stopped = monitoring.stop_monitor(db, task)
+            probe_lifecycle.retire_after_task(db, task)
+            task.current_stage = f"已停止监测，同时取消 {stopped} 段待分析流量"
+        else:
+            task.status, task.current_stage = "Cancelled", "已停止；已领取任务由探针检查后退出"
+            task.finished_at = datetime.now(UTC)
         db.commit()
     return serialize_task(task)
 

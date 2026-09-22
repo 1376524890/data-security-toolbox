@@ -189,9 +189,16 @@ def metadata_task(file_id: int, task_id: int) -> None:
     _finish(task_id, result={"file_id": file_id, "metadata": result})
 
 
-@celery_app.task(name=ANALYZE_PCAP)
+@celery_app.task(name=ANALYZE_PCAP, queue=settings.pcap_worker_queue)
 @task_guard
 def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
+    # A console stop writes Cancelled onto the row, and a segment whose monitor
+    # was stopped is already queued by the time it lands: refuse before the
+    # expensive parse instead of grinding through a backlog the operator ended.
+    with SessionLocal() as db:
+        row = db.get(Task, task_id)
+        if row is not None and str(row.status or "") == "Cancelled":
+            return
     update_task(task_id, status="Running", progress=10, current_stage="读取 PCAP")
     with SessionLocal() as db:
         record = db.get(PcapRecord, pcap_id)
@@ -459,6 +466,8 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
         task = db.get(Task, task_id)
         if not task:
             _finish(task_id, error="task not found")
+            return {}
+        if str(task.status or "") == "Cancelled":
             return {}
         payload = task.payload or {}
         target = str(payload.get("target") or "")

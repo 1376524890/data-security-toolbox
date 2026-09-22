@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     pcap_index_limit: int = 10000
     pcap_retention_days: int = 7
     pcap_storage_max_gb: int = 100
+    #: Capture segments are the one producer that can flood the queue (a probe
+    #: in monitoring mode uploads a segment every few seconds), so they get a
+    #: worker of their own: a segment backlog can no longer starve scans,
+    #: collections or the capability heartbeat behind it.
+    pcap_worker_queue: str = "pcap"
     presidio_enabled: bool = True
     dlp_ignore_own_traffic: bool = True
     dlp_self_endpoints: str = ""

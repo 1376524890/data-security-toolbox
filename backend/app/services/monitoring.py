@@ -9,6 +9,8 @@ addressable through ``payload['monitor_task_id']``.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +19,7 @@ from app.models import Task
 MONITOR_KIND = "monitoring"
 SEGMENT_KIND = "pcap"
 CHILD_KEY = "monitor_task_id"
+TERMINAL = ("Success", "Failed", "Partial", "Cancelled")
 
 
 def ensure_monitor_task(db: Session, probe_id: int | None) -> Task | None:
@@ -46,6 +49,11 @@ def attach_segment(db: Session, monitor: Task, segment: Task) -> None:
 
 def refresh(db: Session, monitor: Task) -> None:
     """Recompute the monitor's counters from its segments (never stored as truth)."""
+    if monitor.status in TERMINAL:
+        # A stopped session keeps the stage its stop wrote: recomputing here
+        # would repaint "已停止监测" as "持续监测中", which is how a stopped
+        # monitor kept looking alive to whoever stopped it.
+        return
     rows = db.scalars(
         select(Task)
         .where(Task.kind == SEGMENT_KIND,
@@ -57,3 +65,29 @@ def refresh(db: Session, monitor: Task) -> None:
         f"持续监测中 · 共 {len(rows)} 段（已分析 {analysed}，进行中 {running}，失败 {failed}）")
     monitor.result = {"segments": len(rows), "analysed": analysed,
                       "running": running, "failed": failed}
+
+
+def stop_monitor(db: Session, monitor: Task) -> int:
+    """End one monitoring session and every segment still open under it.
+
+    Segments are separate rows and separate queue entries, so cancelling the
+    monitor alone would leave the probe's backlog running: the children have to
+    reach Cancelled here. That status is also what the analysis worker checks
+    before it starts on a segment, so the queue drains without re-parsing.
+    """
+    now = datetime.now(UTC)
+    monitor.status = "Cancelled"
+    monitor.current_stage = "已停止监测"
+    monitor.finished_at = now
+    open_segments = db.scalars(
+        select(Task)
+        .where(Task.kind == SEGMENT_KIND,
+               Task.payload[CHILD_KEY].as_integer() == monitor.id,
+               Task.status.in_(("Pending", "Running")))
+    ).all()
+    for segment in open_segments:
+        segment.status = "Cancelled"
+        segment.current_stage = "已停止；监测任务已结束"
+        segment.finished_at = now
+    db.flush()
+    return len(open_segments)

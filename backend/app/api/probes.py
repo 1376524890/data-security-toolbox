@@ -251,16 +251,33 @@ def delete_probe(
         except ProbeInUseError as exc:
             raise HTTPException(409, exc.message) from exc
     host, port, username = _probe_removal_target(db, probe, payload)
+    auth_type, password, private_key, key_passphrase = (
+        payload.auth_type, payload.password, payload.private_key, payload.key_passphrase,
+    )
+    if password is None and private_key is None:
+        # A probe the console installed kept its credential so the platform could
+        # take it away again: retire it with that one instead of making the
+        # operator re-type the host password for a machine the platform already
+        # has access to.
+        from app.services import probe_lifecycle
+
+        retained = probe_lifecycle.retained_credential(db, probe_id)
+        if retained is None:
+            raise HTTPException(400, "探针的部署未保留凭据，请提供 auth_type 与口令或私钥")
+        auth_type = "private_key" if retained.get("private_key") else "password"
+        password = retained.get("password")
+        private_key = retained.get("private_key")
+        key_passphrase = retained.get("key_passphrase")
     try:
         deployment = create_removal_deployment(
             db,
             host=host,
             port=port,
             username=username,
-            auth_type=payload.auth_type,
-            password=payload.password,
-            private_key=payload.private_key,
-            key_passphrase=payload.key_passphrase,
+            auth_type=auth_type,
+            password=password,
+            private_key=private_key,
+            key_passphrase=key_passphrase,
             name=f"remove-{probe.name}",
             idempotency_key=f"probe-{probe_id}-removal-{secrets.token_hex(8)}",
             created_by=user.username,

@@ -26,6 +26,11 @@ from app.models import ProbeDeployment, Task
 from app.services.task_dispatch import dispatch_probe_deployment
 
 PROBE_TASK_KINDS = ("probe_scan", "data_asset_scan")
+#: The console's 监测任务 (``monitoring``) is the other row that owns a
+#: task-dedicated probe, so stopping it has to take the probe off the host the
+#: same way a finished collection does. ``pcap`` segments are children of it and
+#: never own a probe themselves.
+RETIREABLE_KINDS = (*PROBE_TASK_KINDS, "monitoring")
 TERMINAL = ("Success", "Failed", "Partial", "Cancelled")
 RETAIN_FLAG = "retain_credential"
 
@@ -56,6 +61,26 @@ def owner_deployment(db: Session, probe_id: int) -> ProbeDeployment | None:
         .order_by(ProbeDeployment.id.desc()))
 
 
+def retained_credential(db: Session, probe_id: int) -> dict[str, Any] | None:
+    """The submission-form credential a task-owned install left behind, if any.
+
+    ``None`` means the caller has to supply one: a hand-registered probe, an
+    install that did not retain its secret, or one already destroyed. This is
+    what lets the console retire a probe with one click instead of asking the
+    operator to type the host password again - the credential is retained
+    precisely so the platform can take the probe away.
+    """
+    deployment = owner_deployment(db, probe_id)
+    if deployment is None or not (deployment.data_config or {}).get(RETAIN_FLAG):
+        return None
+    if deployment.credential_destroyed_at is not None or deployment.credential is None:
+        return None
+    try:
+        return _reveal(deployment)
+    except DeploymentError:
+        return None
+
+
 def retire_after_task(db: Session, task: Task) -> int | None:
     """Queue an uninstall for a task-owned probe, or return ``None`` to leave it.
 
@@ -63,13 +88,13 @@ def retire_after_task(db: Session, task: Task) -> int | None:
     probe another unfinished task still uses, a hand-registered probe, a
     deployment that did not retain its credential, or a host that is busy.
     """
-    if task.kind not in PROBE_TASK_KINDS or task.status not in TERMINAL:
+    if task.kind not in RETIREABLE_KINDS or task.status not in TERMINAL:
         return None
     probe_id = (task.payload or {}).get("probe_id")
     if not probe_id:
         return None
     still_needed = db.scalar(
-        select(Task.id).where(Task.kind.in_(PROBE_TASK_KINDS),
+        select(Task.id).where(Task.kind.in_(RETIREABLE_KINDS),
                               Task.status.in_(("Pending", "Running")),
                               Task.id != task.id,
                               Task.payload["probe_id"].as_integer() == int(probe_id)))

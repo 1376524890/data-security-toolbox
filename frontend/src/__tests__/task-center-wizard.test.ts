@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
-import ElementPlus, { ElMessage } from 'element-plus'
+import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 
 const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   listTasks: vi.fn(), getTask: vi.fn(), stopTask: vi.fn(), deleteTask: vi.fn(),
+  deleteProbe: vi.fn(),
   createDeployment: vi.fn(), getDeployment: vi.fn(), manualBootstrap: vi.fn(),
   saveFileSource: vi.fn(), runFileSource: vi.fn(), listPolicyGroups: vi.fn(),
 }))
@@ -23,6 +24,7 @@ vi.mock('../api/fileSources', () => ({
   saveFileSource: mocks.saveFileSource, runFileSource: mocks.runFileSource,
 }))
 vi.mock('../api/policyGroups', () => ({ listPolicyGroups: mocks.listPolicyGroups }))
+vi.mock('../api/probes', () => ({ deleteProbe: mocks.deleteProbe }))
 
 import TaskCenter from '../modules/tasks/TaskCenter.vue'
 
@@ -149,5 +151,50 @@ describe('task wizard: ticking a directory reaches the wizard', () => {
     expect(host.textContent).toContain('已选 0 个目录')
     expect(host.querySelector<HTMLInputElement>('.el-tree-node__content input[type="checkbox"]')!.checked)
       .toBe(false)
+  })
+})
+
+/** The stuck row from the field: a monitoring task with a 200-segment backlog. */
+const monitorRow = (overrides: Record<string, unknown> = {}) => ({
+  id: 3, kind: 'monitoring', status: 'Running', progress: 100,
+  current_stage: '持续监测中 · 共 218 段（已分析 13，进行中 200，失败 5）',
+  log: '', payload: { probe_id: 1 }, result: {}, error: '',
+  created_at: '2026-09-22T09:22:33Z', started_at: null, finished_at: null, ...overrides,
+})
+
+describe('task centre: a monitoring task can be stopped and its probe retired', () => {
+  it('offers both actions on a running monitoring row', async () => {
+    mocks.listTasks.mockResolvedValue({ items: [monitorRow()], total: 1, page: 1, page_size: 50 })
+    click('刷新')
+    await flush()
+    expect(host.textContent).toContain('回收探针')
+    // The stop stays offered: refusing the kind outright is the bug being fixed.
+    expect(buttons().some((item) => item.textContent?.trim() === '停止')).toBe(true)
+  })
+
+  it('stops a monitoring task instead of refusing the kind', async () => {
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+    mocks.listTasks.mockResolvedValue({ items: [monitorRow()], total: 1, page: 1, page_size: 50 })
+    click('刷新')
+    await flush()
+    click('停止')
+    await flush()
+    expect(mocks.stopTask).toHaveBeenCalledWith(3)
+    // The dialog has to warn that the capture ends and the probe goes away.
+    expect(String(confirm.mock.calls[0][0])).toContain('回收本任务部署的探针')
+    confirm.mockRestore()
+  })
+
+  it('retires the probe with the credential its install retained', async () => {
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+    mocks.listTasks.mockResolvedValue({ items: [monitorRow()], total: 1, page: 1, page_size: 50 })
+    mocks.deleteProbe.mockResolvedValue({ status: 'queued', deployment_id: 9 })
+    click('刷新')
+    await flush()
+    click('回收探针')
+    await flush()
+    // No SSH secret in the payload: the server uses the one the install kept.
+    expect(mocks.deleteProbe).toHaveBeenCalledWith(1, { remove_remote: true })
+    confirm.mockRestore()
   })
 })

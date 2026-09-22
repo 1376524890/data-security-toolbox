@@ -4,7 +4,10 @@ import { ElMessage } from 'element-plus'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
 import StatusBadge from '../../components/security/StatusBadge.vue'
+import { ElMessageBox } from 'element-plus'
 import { deleteTask, getTask, listTasks, stopTask } from '../../api/tasks'
+import { canStop } from '../../api/taskKinds'
+import { deleteProbe } from '../../api/probes'
 import type { Task } from '../../types/task'
 import { formatDateTime } from '../../utils/format'
 import { TASK_TYPES, useTaskWizard } from './composables/useTaskWizard'
@@ -96,9 +99,52 @@ async function open(task: Task): Promise<void> {
   detail.value = await getTask(task.id)
 }
 
+/** The probe a 监测任务 installed is task-dedicated: stopping the task also
+ *  takes it off its host, which is worth spelling out before an operator
+ *  clicks, because it ends the capture as well. */
+const MONITOR_STOP_HINT = '停止监测任务将同时取消该探针所有待分析的抓包片段，'
+  + '并回收本任务部署的探针（卸载探针文件、删除记录）；主机上其它探针不受影响。'
+
 async function stop(task: Task): Promise<void> {
-  try { await stopTask(task.id); ElMessage.success('已请求停止'); await load() }
-  catch (err) { ElMessage.error(String(err)) }
+  const monitor = task.kind === 'monitoring'
+  try {
+    await ElMessageBox.confirm(
+      monitor ? MONITOR_STOP_HINT : `停止任务 #${task.id}？等待中的任务将不再下发；已领取的任务由探针检查后退出。`,
+      monitor ? '停止监测任务' : '停止任务',
+      { confirmButtonText: '停止', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+  try {
+    await stopTask(task.id)
+    ElMessage.success(monitor ? '已停止监测，探针回收已入队' : '已请求停止')
+    await load()
+  } catch (err) { ElMessage.error(String(err)) }
+}
+
+/** Retire the probe behind a monitoring task: uninstall it from its host with
+ *  the credential the install retained, then drop the record. The server keeps
+ *  the record when the removal fails, so the address that still needs cleaning
+ *  is never lost. */
+function monitorProbeId(task: Task): number | null {
+  const probeId = Number(task.payload?.probe_id)
+  return Number.isFinite(probeId) && probeId > 0 ? probeId : null
+}
+
+async function retireProbe(task: Task): Promise<void> {
+  const probeId = monitorProbeId(task)
+  if (!probeId) { ElMessage.error('该监测任务没有关联探针'); return }
+  try {
+    await ElMessageBox.confirm(
+      `回收探针 #${probeId}？平台将连接该主机卸载探针并删除其记录，已采集的数据保留。`,
+      '回收探针',
+      { confirmButtonText: '回收', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+  try {
+    const result = await deleteProbe(probeId, { remove_remote: true })
+    ElMessage.success(result.deployment_id ? `已下发回收任务（#${result.deployment_id}）` : '已回收探针')
+    await load()
+  } catch (err) { ElMessage.error(String(err)) }
 }
 
 async function remove(task: Task): Promise<void> {
@@ -154,9 +200,10 @@ onMounted(load)
         </el-table-column>
         <el-table-column label="耗时" width="110"><template #default="{ row }">{{ duration(row) }}</template></el-table-column>
         <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="['Pending', 'Running'].includes(row.status)" link type="warning" size="small" @click.stop="stop(row)">停止</el-button>
+            <el-button v-if="['Pending', 'Running'].includes(row.status) && canStop(row)" link type="warning" size="small" @click.stop="stop(row)">停止</el-button>
+            <el-button v-if="row.kind === 'monitoring' && monitorProbeId(row)" link type="primary" size="small" @click.stop="retireProbe(row)">回收探针</el-button>
             <el-button link type="danger" size="small" @click.stop="remove(row)">移除</el-button>
           </template>
         </el-table-column>
