@@ -1,5 +1,36 @@
 # 当前任务：资产与数据安全增强
 
+## 第四十批：v3.0.0 一键离线部署套件与发布（2026-09-22）
+
+用户目标：给一个**一键配置脚本**，包含全部参数的设置，一键跑完部署；然后重新推 git、发布包、发布 release，
+版本号从 **v3.0** 开始编号。硬约束：交付包必须能**完全离线部署、不依赖目标机本地环境**，
+部署后还要**能在服务器上继续开发**；目标架构 **arm64**。用户明确要求不要过度测试。
+
+**已完成**
+
+- 版本号升到 3.0.0：`backend/app/main.py`、`frontend/package.json`、`frontend/package-lock.json`；
+  探针保持 3.7.0；迁移 head 仍为 `0019_policy_group_fingerprints`。
+- 一键部署套件 `deploy/`：`deploy.conf`（唯一配置入口，全部参数带中文注释、按段分组，`auto` = 首次生成
+  以后沿用；优先级 命令行 > deploy.conf > 内置默认）、`deploy.sh`（环境自检 docker/compose v2/架构 →
+  `docker load` → 渲染并落盘 `.env`（chmod 600）→ 数据目录授权 10001（无 root 时用包内
+  `redis:7.4-alpine` 跑 chown）→ 端口预检（仅当本项目还没有容器）→ `docker compose up -d --no-build
+  --pull never` → 等 backend healthy 最多 180 秒 → 打印地址/口令/数据目录）、`undeploy.sh`
+  （停栈保留数据，`--purge` 二次确认后删数据目录）、`README-离线部署.md`（112 行，含排错表）。
+  支持 `--dry-run / --force / --no-load / --config / --project / --data-root / --http-port / --api-port /
+  --backend-url / --admin-password`。
+- 发布打包脚本 `scripts/make_offline_release.py`：硬链接暂存（不额外占盘）→ 跳过
+  `dist-release/dist-deploy/deploy-data/data/0916_v2.7/.refactor-trash/.ruff_cache/.pytest_cache/.local`
+  与 `ChatGPT Image*` / `FRICSE*` 前缀及 `backend/data`、`frontend/node_modules/.vite` → 把 `deploy/`
+  拷到包根 → 生成 `VERSION` 与 `SHA256SUMS.txt` → `tar --hard-dereference --owner=0 --group=0 | gzip -1`
+  出包并写 `.sha256`；缺 `dist-offline/security-toolbox-images.tar` 时拒绝打包。
+- 文档：新增 `docs/releases/v3.0.0.md`；`docs/versioning.md` 增 v3.0 条目与章节；`CHANGELOG.md` 顶部新增
+  v3.0.0 段；`README.md` 离线部署章节改指向 `deploy/`。
+- 镜像：`source-backend` / `source-worker` / `source-frontend` 用 legacy builder 重建（前端必须
+  `--no-cache`，否则 `COPY . .` 命中缓存会复用旧产物），`offline_bundle.py --save` 重出
+  `dist-offline/security-toolbox-images.tar`（2.95 GB，6 个 arm64 镜像）。
+
+**待回填**：交付包 sha256 与发布提交号。
+
 ## 第三十九批：数据安全综合驾驶舱与浅色控制台（2026-09-22）
 
 用户目标：首页不能只有一块演示用大屏，日常使用要有**综合驾驶舱**（数据安全健康度、合规进度、

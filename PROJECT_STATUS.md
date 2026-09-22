@@ -1,5 +1,35 @@
 # 项目状态
 
+2026-09-22 第四十批（本轮）：**v3.0.0 一键离线部署套件与发布**。
+
+平台版本从 2.14.0 升到 **3.0.0**（探针保持 3.7.0，迁移 head `0019_policy_group_fingerprints`），
+本版把此前几批已上线未发版的内容一并落成正式发布，并首次交付 **arm64 一键离线部署包**。
+
+**一键部署**：新增 `deploy/` 套件。`deploy.conf` 是**唯一配置入口**，全部参数带中文注释、按段分组
+（部署位置 / 端口 / 数据库 / 平台凭据 / 探针下发 / 采集与存储 / DLP / 通知 / 威胁情报 / 主机审计 /
+运行环境 / 镜像标签），取值 `auto` 表示「首次生成、以后沿用」，优先级为命令行 > `deploy.conf` > 内置默认。
+`./deploy.sh` 一条命令跑完：环境自检（docker、compose v2、`uname -m` 必须是 aarch64）→ `docker load` →
+渲染并落盘 `.env`（`chmod 600`）→ 把 `deploy-data/backend` 授权给容器用户 10001（无 root 时用包内
+`redis:7.4-alpine` 跑一次 chown，避免 `PermissionError: '/app/data/storage'`）→ 端口预检（仅当本项目
+还没有容器时，重复执行不会因为自家容器占端口而报错）→ `docker compose up -d --no-build --pull never`
+→ 轮询 backend health 最多 180 秒 → 打印控制台/API 地址、管理员口令、探针回连地址与数据目录。
+另有 `--dry-run / --force / --no-load / --config / --project / --data-root / --http-port / --api-port /
+--backend-url / --admin-password`，以及 `undeploy.sh`（停栈保留数据，`--purge` 二次确认后删数据目录）。
+目标机只要求 Docker Engine 20.10+ 与 compose v2，**不需要外网、Python、Node、编译器或抓包工具**。
+
+**交付打包**：新增 `scripts/make_offline_release.py`——硬链接暂存（不额外占盘）→ 把 `deploy/` 拷到包根 →
+生成 `VERSION` / `SHA256SUMS.txt` → `tar --hard-dereference` + `gzip -1` 出
+`dist-release/dst-toolbox-<ver>-linux-<arch>.tar.gz` 与 `.sha256`；缺镜像归档时拒绝打包。包内含 6 个
+arm64 镜像（`dist-offline/security-toolbox-images.tar`，2.95 GB）、探针 3.7.0 分发包、全量源码与 `.git`、
+`frontend/node_modules`，因此**在服务器上可以继续开发**（离线用源码挂载 + 重启迭代，重建镜像需要外网）。
+
+**文档**：新增 `docs/releases/v3.0.0.md`；`docs/versioning.md` 增 `v3.0` 条目与 v3.0.0 章节；
+`CHANGELOG.md` 顶部新增 v3.0.0 段；`README.md` 的离线部署章节改指向 `deploy/`。
+
+**镜像与运行栈**：backend / worker / frontend 三个应用镜像用 legacy builder 重建（前端必须 `--no-cache`，
+否则 `COPY . .` 命中缓存会复用旧产物），运行栈已 `--force-recreate` 切换，`openapi info.version = 3.0.0`、
+`/api/v1/health` = ok。
+
 2026-09-22 第三十九批（本轮）：**数据安全综合驾驶舱 + 浅色控制台**。
 
 **做了什么**：控制台现在有**两个首页**——`/` 仍是壁挂大屏（`DashboardScreen.vue`，`meta.layout='screen'`，

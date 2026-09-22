@@ -152,14 +152,33 @@ cd frontend && npm ci && npm test && npx vue-tsc --noEmit && npm run build
 
 ## 离线部署
 
-```bash
-# 在线准备离线包
-python scripts/offline_bundle.py
+交付包（arm64 / aarch64 Linux）解包后**一条命令**跑完部署，全部参数集中在 `deploy/deploy.conf`：
 
-# 目标内网
-docker load < security-toolbox-images.tar
-docker compose up -d
-docker compose exec backend alembic upgrade head
+```bash
+tar -xzf dst-toolbox-3.0.0-linux-arm64.tar.gz && cd dst-toolbox-3.0.0-linux-arm64
+sudo ./deploy.sh                 # 载入镜像 → 生成 .env → 起容器 → 等健康
+sudo ./deploy.sh --dry-run       # 只看会写入的 .env，不动系统
+sudo ./undeploy.sh               # 停栈，数据保留
+```
+
+目标机只需要 Docker Engine 20.10+ 与 `docker compose` v2，不需要外网、Python、Node 或抓包工具。
+说明见 `deploy/README-离线部署.md`，发布细节见 [docs/releases/v3.0.0.md](docs/releases/v3.0.0.md)。
+
+在构建机上线准备（需要外网；本机必须用 legacy builder，`docker compose build` 会卡在 buildx）：
+
+```bash
+DOCKER_BUILDKIT=0 docker build -f backend/Dockerfile --target api             -t source-backend:latest .
+DOCKER_BUILDKIT=0 docker build -f backend/Dockerfile --target analysis-worker -t source-worker:latest  .
+DOCKER_BUILDKIT=0 docker build -t source-frontend:latest ./frontend --no-cache
+python scripts/offline_bundle.py --save          # 重出镜像归档
+python scripts/make_offline_release.py           # 重出交付包
+```
+
+手工路径（不使用 `deploy.sh` 时）：
+
+```bash
+docker load < dist-offline/security-toolbox-images.tar
+docker compose up -d --no-build --pull never     # 结构迁移随 API 容器启动自动执行
 docker compose exec backend python scripts/seed.py
 ```
 

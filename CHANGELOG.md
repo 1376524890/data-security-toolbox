@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-09-22 — v3.0.0：一键离线部署套件与平台 3.0.0
+
+平台版本自 2.14.0 升到 **3.0.0**（`backend/app/main.py`、`frontend/package.json` 与
+`frontend/package-lock.json`），探针保持 3.7.0，迁移 head = `0019_policy_group_fingerprints`。
+
+- **一键离线部署**：新增 `deploy/` 套件——`deploy.sh`（环境自检 → `docker load` → 按配置生成 `.env` →
+  授权数据目录给容器用户 10001 → 端口预检 → `docker compose up -d --no-build --pull never` → 等 backend
+  健康 → 打印地址与管理员口令）、`deploy.conf`（**唯一配置入口**，全部参数带中文注释，`auto` = 首次生成、
+  以后沿用；命令行 > deploy.conf > 内置默认）、`undeploy.sh`（停栈保留数据，`--purge` 二次确认后删数据目录）、
+  `README-离线部署.md`（含排错表）。目标机只要求 Docker Engine 20.10+ 与 compose v2，不需要外网、
+  Python、Node 或抓包工具。
+- **交付打包**：新增 `scripts/make_offline_release.py`——硬链接暂存（不额外占盘）→ 把 `deploy/` 拷到包根 →
+  生成 `VERSION` / `SHA256SUMS.txt` → `tar --hard-dereference` + `gzip -1` 出
+  `dist-release/dst-toolbox-<ver>-linux-<arch>.tar.gz` 与其 `.sha256`；缺镜像归档时拒绝打包。
+  包内含 6 个 arm64 镜像、探针 3.7.0 分发包、全量源码与 `.git`、`frontend/node_modules`，
+  服务器上可继续开发。
+- **README 部署章节**改为指向 `deploy/`（旧的 `docker load` + 手工 `docker compose up` 步骤保留为手动路径）。
+
+本版同时收进此前几批已上线但未发版的内容（态势大屏、综合驾驶舱与浅色控制台、CVE 规则库与网络资产、
+出境明细与离线地理表、任务中心向导化与监控任务分段归集、政策组只读评估），完整清单与验证证据见
+[docs/releases/v3.0.0.md](docs/releases/v3.0.0.md)。
+
 ## 2026-09-22 — 数据安全综合驾驶舱、浅色控制台与图表主题联动（平台 2.14.0，未升版本号）
 
 控制台现在有**两个首页**：`/` 仍是壁挂用的数据安全态势大屏（深色、无侧边栏/顶栏、固定 1920×1080），

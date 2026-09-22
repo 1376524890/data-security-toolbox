@@ -28,6 +28,9 @@
   PCAP 工作台（传输文件提取与文本/Hex 预览、上传定位），探针 3.5.0
 - `v2.13` 结构与状态解耦（后端按域拆路由与编排入口、前端页面状态收进 composable），接口与数据表不变
 - `v2.14` 共享文件来源（FTP/FTPS/SFTP）、数据库直连盘点（MySQL/MariaDB/PostgreSQL）、统一规则源与命中
+- `v3.0` 数据安全态势大屏与综合驾驶舱（浅色控制台）、CVE 规则库与网络资产、出境明细与离线地理表、
+  任务中心向导化与监控任务分段归集、政策组只读评估；首个 arm64 一键离线部署包
+  （`deploy/deploy.sh` + 全参数 `deploy.conf`），探针 3.7.0
   原文回传，探针 3.6.0（2026-09-21 交付更新：探针 3.7.0 自带运行时，见下文）
 
 发布时创建 `vX.Y.Z` 注释标签。
@@ -84,3 +87,19 @@ worker / beat / deployment-worker 与 frontend 镜像并切换容器，运行栈
 - 离线交付包：`dst-toolbox-2.14.0-linux-x86_64.tar.gz`（`deploy_rev` **r5**，sha256 `42adc92d…`）。
 - 本次发布创建 Git 注释标签 **v2.14.0**（2026-09-20 的 2.14.0 快照当时未打标签）。
 - 未做：真机（192.168.191.130）探针就地升级、arm64 原生抓包复验、探针 `/tmp` 的 `PrivateTmp` 隔离。
+
+
+## v3.0.0（2026-09-22）
+
+平台升到 **3.0.0**：自 v2.14.0 起累计「数据安全六段菜单收敛 + 政策组只读评估 + 任务中心向导化 +
+监控任务分段归集 + 出境地理判定离线化 + CVE 规则库与网络资产 + 态势大屏与综合驾驶舱」若干批，
+接口新增均为增量，未删除已有路径或改变返回结构。迁移新增 `0018_policy_groups`、`0019_policy_group_fingerprints`，
+head = `0019_policy_group_fingerprints`（随 API 容器启动的 `alembic upgrade head` 应用）。探针保持 3.7.0，
+本版修掉 spool 清理被 `uploaded_any` 门控导致抓包降级死锁的真机缺陷。
+
+本版首次交付 **arm64 / aarch64 Linux 一键离线部署包** `dst-toolbox-3.0.0-linux-arm64.tar.gz`：
+包根 `./deploy.sh` 一条命令跑完（载入镜像 → 按 `deploy.conf` 生成 `.env` → 修数据目录权限 → 端口预检 →
+`docker compose up -d --no-build --pull never` → 等 health），全部参数集中在 `deploy.conf`（带中文注释、
+`auto` = 首次生成以后沿用），目标机不需要外网、不需要 Python/Node/抓包工具；包里同时带全量源码、探针 3.7.0
+分发包、`frontend/node_modules` 与 `.git`，可在服务器上继续开发。细节见
+[发布记录](releases/v3.0.0.md) 与包内 `README-离线部署.md`。
