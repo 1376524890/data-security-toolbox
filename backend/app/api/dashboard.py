@@ -50,7 +50,7 @@ from app.models import (
     Report,
     Task,
 )
-from app.services import cockpit_service, egress_regions, region_geo, sensitivity_map
+from app.services import cockpit_service, egress_regions, probe_status, region_geo, sensitivity_map
 from app.services.probe_task_service import (
     default_task_filter,
     expire_probe_tasks,
@@ -191,8 +191,11 @@ def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
             select(func.count(DataAsset.id)).where(DataAsset.sensitivity.in_(["Critical", "High"]))
         )
         or 0,
-        "online_probes": db.scalar(select(func.count(Probe.id)).where(Probe.status == "online"))
-        or 0,
+        # Counted the same way the probe list and the wall count it, so the two
+        # numbers on one screen cannot disagree (see services.probe_status).
+        "online_probes": sum(
+            1 for probe in db.scalars(select(Probe)).all() if probe_status.is_online(probe)
+        ),
         "healthy_integrations": healthy_integrations,
     }
 

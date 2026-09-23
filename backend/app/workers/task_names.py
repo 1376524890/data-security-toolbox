@@ -23,3 +23,7 @@ SYNC_WAZUH_ALERTS = "security_toolbox.sync_wazuh_alerts"
 EXPIRE_PROBE_TASKS = "security_toolbox.expire_probe_tasks"
 RUN_PROBE_DEPLOYMENT = "security_toolbox.run_probe_deployment"
 SWEEP_DEPLOYMENT_TIMEOUTS = "security_toolbox.sweep_deployment_timeouts"
+#: Keeps the stored probe status in step with the derivation the console shows
+#: (see services.probe_status): nothing else ever wrote ``offline`` back when a
+#: probe stopped heartbeating, so the column and the list disagreed forever.
+MARK_STALE_PROBES_OFFLINE = "security_toolbox.mark_stale_probes_offline"

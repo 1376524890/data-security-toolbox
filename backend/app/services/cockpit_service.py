@@ -367,7 +367,12 @@ def _week_hint(window: dict[str, Any]) -> str:
 
 def status(db: Session, now: datetime, integrations: dict[str, Any]) -> list[dict[str, Any]]:
     """探针与引擎状态: four rows, each a real up/total pair."""
-    probes = [{"status": item.status} for item in db.scalars(select(Probe)).all()]
+    # Derived, not read from the column: the stored status lags a probe that
+    # died until the offline sweep catches up, and this row is what the wall
+    # puts in front of an operator (see services.probe_status).
+    from app.services import probe_status
+
+    probes = [{"status": probe_status.derive(item)} for item in db.scalars(select(Probe)).all()]
     online = sum(1 for item in probes if item["status"] == "online")
 
     engines_total = len(engine_names())

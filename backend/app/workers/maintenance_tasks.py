@@ -39,6 +39,7 @@ from app.workers.task_names import (
     CLEANUP_PCAP_RETENTION,
     ENFORCE_PCAP_STORAGE_CAP,
     EXPIRE_PROBE_TASKS,
+    MARK_STALE_PROBES_OFFLINE,
     SYNC_WAZUH_ALERTS,
     WORKER_CAPABILITY_HEARTBEAT,
 )
@@ -241,3 +242,18 @@ def expire_remote_probe_tasks():
     with SessionLocal() as db:
         expire_probe_tasks(db)
         db.commit()
+
+
+@celery_app.task(name=MARK_STALE_PROBES_OFFLINE)
+def mark_stale_probes_offline() -> int:
+    """Move probes that stopped heartbeating back to ``offline``.
+
+    The console derives this on read, but the stored column is what
+    ``/dashboard/summary`` and ``cockpit_service`` report, and nothing used to
+    write it: a probe that died stayed ``online`` in the column forever. This is
+    the one place that closes that gap.
+    """
+    from app.services.probe_status import mark_stale_offline
+
+    with SessionLocal() as db:
+        return mark_stale_offline(db)

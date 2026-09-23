@@ -69,5 +69,12 @@ celery_app.conf.update(
             "task": "security_toolbox.sweep_deployment_timeouts",
             "schedule": 60.0,
         },
+        # The probe heartbeat window is 90 s, so a 30 s beat keeps the stored
+        # status within one beat of what the console derives (see
+        # services/probe_status).
+        "mark-stale-probes-offline": {
+            "task": "security_toolbox.mark_stale_probes_offline",
+            "schedule": 30.0,
+        },
     },
 )
