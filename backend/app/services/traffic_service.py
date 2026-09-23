@@ -147,5 +147,12 @@ def detect_anomalies(flows: list[dict[str, Any]], packets: list[dict[str, Any]])
 
 
 def _conversation_rate(flow: dict[str, Any]) -> float:
-    span = float(flow.get("end_time") or 0) - float(flow.get("start_time") or 0)
-    return float(flow.get("packets", 0)) / max(span, 0.001)
+    """One conversation's packet rate; see ``traffic_scope.conversation_rate``.
+
+    The span floor lives there so this metric and the ``NET_RATE_001``
+    interpreter metric cannot disagree about what "high packet rate" means - they
+    are the same anomaly reported by two producers.
+    """
+    from app.services.traffic_scope import conversation_rate
+
+    return conversation_rate(flow)

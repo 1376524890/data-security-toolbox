@@ -42,8 +42,12 @@ class TrafficEngine(DetectionEngine):
         rolling_traffic_state.observe(probe, flows)
         builtin_anomalies = detect_anomalies(context.flows, context.packets)
         for item in builtin_anomalies:
-            src = str(item.get("evidence", {}).get("src") or item.get("evidence", {}).get("src_ip") or "")
-            if item["rule"] == "NETWORK_PORT_SCAN" and src and rolling_traffic_state.seen(probe, src, item["rule"], window):
+            evidence = item.get("evidence", {})
+            src = str(evidence.get("src") or evidence.get("src_ip") or "")
+            dst = str(evidence.get("dst") or "")
+            if item["rule"] == "NETWORK_PORT_SCAN" and src and rolling_traffic_state.seen(
+                probe, src, item["rule"], window, dst
+            ):
                 continue
             findings.append(DetectionResult(
                 engine=self.name,
@@ -56,13 +60,21 @@ class TrafficEngine(DetectionEngine):
         # Cross-segment rolling detection: use the strict sliding-window snapshot.
         # A single segment below the threshold can accumulate across segments and
         # only fire here once the rolling unique-port count reaches the threshold.
-        srcs = {str(flow.get("src_ip") or "") for flow in flows if flow.get("src_ip")}
-        for src in sorted(srcs):
-            snap = rolling_traffic_state.snapshot(probe, src, window)
+        # One conversation at a time: "many ports" only means a scan when every
+        # port belongs to the same target. Aggregating over the whole source
+        # counted a busy server's replies (one flow per client, a different
+        # destination port each) as a scan of the network it serves.
+        pairs = {
+            (str(flow.get("src_ip") or ""), str(flow.get("dst_ip") or ""))
+            for flow in flows
+            if flow.get("src_ip") and flow.get("dst_ip")
+        }
+        for src, dst in sorted(pairs):
+            snap = rolling_traffic_state.snapshot(probe, src, dst, window)
             if len(snap["dst_ports"]) < threshold:
                 continue
             # Only set the cooldown (via seen) once we actually fire a finding.
-            if rolling_traffic_state.seen(probe, src, "NETWORK_PORT_SCAN", window):
+            if rolling_traffic_state.seen(probe, src, "NETWORK_PORT_SCAN", window, dst):
                 continue
             findings.append(DetectionResult(
                 engine=self.name,
@@ -71,6 +83,7 @@ class TrafficEngine(DetectionEngine):
                 confidence=0.9,
                 evidence={
                     "src": src,
+                    "dst": dst,
                     "dst_ports": snap["dst_ports"],
                     "port_count": len(snap["dst_ports"]),
                     "window": window,

@@ -10,6 +10,7 @@ findings against one host were traced to exactly this.
 """
 from app.services.traffic_scope import (
     address_ignored,
+    conversation_rate,
     filter_flows,
     filter_packets,
     is_ignored,
@@ -101,3 +102,38 @@ def test_a_container_bridge_is_only_ignored_when_the_operator_names_it() -> None
     ]
     assert not address_ignored("172.23.0.2")
     assert any(item["rule"] == "NETWORK_PORT_SCAN" for item in detect_anomalies(flows, []))
+
+
+def _flow(packets: int, start: float, end: float) -> dict:
+    return {"src_ip": "10.0.0.1", "dst_ip": "10.0.0.2", "src_port": 40000,
+            "dst_port": 443, "packets": packets, "bytes": 60,
+            "start_time": start, "end_time": end}
+
+
+def test_one_packet_is_not_a_high_packet_rate() -> None:
+    """``NET_RATE_001`` fires on ``packet_rate > 500``; a single packet is not it.
+
+    Dividing by an epsilon turned a zero-span, one-packet conversation into
+    1000 pps, so the rule fired on every segment that happened to contain one -
+    which is nearly all of them, and on both producers of the metric.
+    """
+    assert conversation_rate(_flow(1, 100.0, 100.0)) < 500
+    assert conversation_rate(_flow(2, 100.0, 100.0)) < 500
+    assert conversation_rate(_flow(0, 100.0, 100.0)) == 0.0
+
+
+def test_a_real_burst_still_measures_high() -> None:
+    assert conversation_rate(_flow(1000, 100.0, 100.01)) > 500
+    assert conversation_rate(_flow(600, 100.0, 101.0)) > 500
+
+
+def test_neither_producer_reports_a_rate_for_a_single_packet() -> None:
+    """Both the legacy detector and the rule interpreter must agree."""
+    from app.engine.core.context import DetectionContext
+    from app.rules.interpreter import _metrics
+
+    flows = [_flow(1, 100.0, 100.0), _flow(1, 100.1, 100.1)]
+    context = DetectionContext(target_type="pcap", flows=flows, packets=[], data={})
+    assert _metrics(context)["packet_rate"] < 500
+    rates = [item for item in detect_anomalies(flows, []) if item["rule"] == "high_packet_rate"]
+    assert rates == []

@@ -56,7 +56,7 @@ def _metrics(context: DetectionContext) -> dict[str, Any]:
       thousands of packets, so a capture-wide threshold fires on every segment.
     """
     from app.core.config import settings
-    from app.services.traffic_scope import filter_flows, filter_packets
+    from app.services.traffic_scope import conversation_rate, filter_flows, filter_packets
     from app.services.traffic_service import _busiest_port_window
 
     flows, _ignored_flows = filter_flows(context.flows or [])
@@ -81,11 +81,7 @@ def _metrics(context: DetectionContext) -> dict[str, Any]:
     if packets:
         duration = float(packets[-1].get("timestamp", 0)) - float(packets[0].get("timestamp", 0))
 
-    def _conversation_rate(flow: dict[str, Any]) -> float:
-        span = float(flow.get("end_time") or 0) - float(flow.get("start_time") or 0)
-        return int(flow.get("packets", 0)) / max(span, 0.001)
-
-    busiest_rate = max((_conversation_rate(flow) for flow in flows), default=0.0)
+    busiest_rate = max((conversation_rate(flow) for flow in flows), default=0.0)
     # "How far did one host spread": the source with the most distinct
     # destinations, and what that same source moved while doing it. Keeping the
     # pair together is what makes "broad communication" mean one host with real

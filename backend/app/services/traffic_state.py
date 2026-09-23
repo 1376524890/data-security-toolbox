@@ -8,6 +8,7 @@ from typing import Any
 import redis
 
 from app.core.config import settings
+from app.services.traffic_scope import service_port
 
 
 class RollingTrafficState:
@@ -18,6 +19,13 @@ class RollingTrafficState:
     ``ZREMRANGEBYSCORE`` so the returned set is a true sliding window, then
     returns the surviving members. A bounded in-process fallback keeps tests and
     degraded Redis environments functional.
+
+    The state is keyed by the **conversation** ``(source, destination)`` and
+    counts the *service-side* port, which is the same metric the per-segment pass
+    computes (see ``services.traffic_scope``). Keying it by source alone made
+    "distinct destination ports" describe every busy server as a scanner: a DNS
+    resolver answering many clients emits one flow per client, each with a
+    different destination port, and crossed the threshold on every capture.
 
     All keys carry a TTL so long-running probes never leave unbounded state.
     """
@@ -32,8 +40,8 @@ class RollingTrafficState:
         except Exception:
             self._redis = None
 
-    def _key(self, probe: str, src_ip: str) -> str:
-        return f"traffic:{probe}:{src_ip}"
+    def _key(self, probe: str, src_ip: str, dst_ip: str = "") -> str:
+        return f"traffic:{probe}:{src_ip}:{dst_ip}"
 
     @staticmethod
     def _ttl() -> int:
@@ -44,9 +52,12 @@ class RollingTrafficState:
         for flow in flows:
             src = str(flow.get("src_ip") or "")
             dst = str(flow.get("dst_ip") or "")
-            port = int(flow.get("dst_port") or 0)
             if not src or not dst:
                 continue
+            # The port that repeats across a scan is the target's, and in a
+            # reply it is the server's. ``service_port`` picks that side so a
+            # reply's ephemeral destination ports are never counted as a scan.
+            port = int(service_port(flow.get("src_port"), flow.get("dst_port")) or 0)
             payload = {
                 "dst_ports": [str(port)] if port else [],
                 "dst_ips": [dst],
@@ -55,10 +66,12 @@ class RollingTrafficState:
                 "first_seen": timestamp,
                 "last_seen": timestamp,
             }
-            self._merge(probe, src, payload, timestamp)
+            self._merge(probe, src, dst, payload, timestamp)
 
-    def _merge(self, probe: str, src: str, payload: dict[str, Any], timestamp: float) -> None:
-        key = self._key(probe, src)
+    def _merge(
+        self, probe: str, src: str, dst: str, payload: dict[str, Any], timestamp: float
+    ) -> None:
+        key = self._key(probe, src, dst)
         ttl = self._ttl()
         if self._redis is not None:
             try:
@@ -88,8 +101,15 @@ class RollingTrafficState:
             state["first_seen"] = min(state["first_seen"], timestamp)
             state["last_seen"] = max(state["last_seen"], timestamp)
 
-    def snapshot(self, probe: str, src: str, window_seconds: int | None = None, now: float | None = None) -> dict[str, Any]:
-        key = self._key(probe, src)
+    def snapshot(
+        self,
+        probe: str,
+        src: str,
+        dst: str = "",
+        window_seconds: int | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        key = self._key(probe, src, dst)
         window = max(1, int(window_seconds or settings.port_scan_window_seconds))
         cutoff = (now if now is not None else time.time()) - window
         if self._redis is not None:
@@ -131,8 +151,8 @@ class RollingTrafficState:
                 "last_seen": state["last_seen"],
             }
 
-    def dedup_key(self, probe: str, src: str, rule_id: str) -> str:
-        digest = hashlib.sha256(f"{probe}|{src}|{rule_id}".encode()).hexdigest()
+    def dedup_key(self, probe: str, src: str, rule_id: str, dst: str = "") -> str:
+        digest = hashlib.sha256(f"{probe}|{src}|{dst}|{rule_id}".encode()).hexdigest()
         return f"detect:{probe}:{digest}"
 
     def reset(self) -> None:
@@ -147,14 +167,16 @@ class RollingTrafficState:
             except Exception:
                 pass
 
-    def seen(self, probe: str, src: str, rule_id: str, window_seconds: int | None = None) -> bool:
+    def seen(
+        self, probe: str, src: str, rule_id: str, window_seconds: int | None = None, dst: str = ""
+    ) -> bool:
         """Window-based detection cooldown.
 
         Returns True when the same probe/src/rule fired within ``window_seconds``
         so a duplicate Finding is suppressed; once the window elapses a new
         Finding is allowed again.
         """
-        key = self.dedup_key(probe, src, rule_id)
+        key = self.dedup_key(probe, src, rule_id, dst)
         window = window_seconds or settings.port_scan_window_seconds
         if self._redis is not None:
             try:

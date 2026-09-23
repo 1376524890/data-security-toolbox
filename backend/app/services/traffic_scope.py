@@ -118,6 +118,21 @@ def is_ignored(flow: dict[str, Any], ignored=None) -> bool:
     )
 
 
+#: A packet rate needs a duration to be a rate. A single-packet conversation has
+#: zero span, and dividing by an epsilon turned "one packet" into 1000 pps -
+#: which tripped ``NET_RATE_001`` (``packet_rate > 500``) on every segment that
+#: happened to contain one, i.e. on essentially every segment. Measuring over at
+#: least this long keeps a genuine burst high (1000 packets in 10 ms still reads
+#: 20000 pps) while one packet reads 20.
+MIN_RATE_SPAN_SECONDS = 0.05
+
+
+def conversation_rate(flow: dict[str, Any]) -> float:
+    """Packets per second inside one conversation, measured over a real span."""
+    span = float(flow.get("end_time") or 0) - float(flow.get("start_time") or 0)
+    return int(flow.get("packets") or 0) / max(span, MIN_RATE_SPAN_SECONDS)
+
+
 def filter_flows(flows: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     """Split flows into the ones a rule may describe and the ones it may not."""
     test = ignored_matcher()

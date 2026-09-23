@@ -12,13 +12,23 @@ def _segment(ports: range, now: float) -> list[dict]:
     return [{"src_ip": "10.0.0.1", "dst_ip": "10.0.0.2", "dst_port": port, "src_port": 12345, "protocol": "tcp", "packets": 1, "bytes": 60} for port in ports]
 
 
+def _reply(src: str, dst: str, service: int, client_port: int, now: float) -> dict:
+    """One server reply: the ephemeral port is the *destination* here."""
+    return {
+        "src_ip": src, "dst_ip": dst, "src_port": service, "dst_port": client_port,
+        "protocol": "udp", "packets": 1, "bytes": 80,
+    }
+
+
 def test_cross_segment_accumulates_unique_ports() -> None:
     rolling_traffic_state.reset()
     base = 1_700_000_000.0
     rolling_traffic_state.observe(PROBE, _segment(range(1, 11), base), now=base)
     rolling_traffic_state.observe(PROBE, _segment(range(11, 21), base), now=base + 5)
     rolling_traffic_state.observe(PROBE, _segment(range(21, 26), base), now=base + 10)
-    snap = rolling_traffic_state.snapshot(PROBE, "10.0.0.1", window_seconds=60, now=base + 10)
+    snap = rolling_traffic_state.snapshot(
+        PROBE, "10.0.0.1", "10.0.0.2", window_seconds=60, now=base + 10
+    )
     assert len(snap["dst_ports"]) >= 20
     assert snap["dst_ports"] == list(range(1, 26))
 
@@ -28,11 +38,60 @@ def test_strict_window_expiration_prunes_old_ports() -> None:
     base = 1_700_000_000.0
     rolling_traffic_state.observe(PROBE, _segment(range(1, 11), base), now=base)
     # 30s later, all original ports are still within the 60s window.
-    snap_in = rolling_traffic_state.snapshot(PROBE, "10.0.0.1", window_seconds=60, now=base + 30)
+    snap_in = rolling_traffic_state.snapshot(
+        PROBE, "10.0.0.1", "10.0.0.2", window_seconds=60, now=base + 30
+    )
     assert len(snap_in["dst_ports"]) == 10
     # 70s later, everything has expired out of the strict 60s window.
-    snap_out = rolling_traffic_state.snapshot(PROBE, "10.0.0.1", window_seconds=60, now=base + 70)
+    snap_out = rolling_traffic_state.snapshot(
+        PROBE, "10.0.0.1", "10.0.0.2", window_seconds=60, now=base + 70
+    )
     assert snap_out["dst_ports"] == []
+
+
+def test_a_servers_replies_are_not_a_scan_of_its_clients() -> None:
+    """The source of the false positive this metric used to produce.
+
+    A DNS resolver answers many clients; every reply is its own conversation
+    (`114.114.114.114:53 -> client:ephemeral`) with a different destination port.
+    Counting distinct destination ports per *source address* therefore described
+    the resolver as scanning the network it serves, on every busy capture.
+    """
+    rolling_traffic_state.reset()
+    base = 1_700_000_000.0
+    replies = [
+        _reply("114.114.114.114", f"10.0.0.{index}", 53, 33000 + index, base)
+        for index in range(1, 41)
+    ]
+    rolling_traffic_state.observe(PROBE, replies, now=base)
+    for index in range(1, 41):
+        snap = rolling_traffic_state.snapshot(
+            PROBE, "114.114.114.114", f"10.0.0.{index}", window_seconds=60, now=base
+        )
+        # One conversation, one service port: never a scan.
+        assert snap["dst_ports"] == [53]
+
+    context = DetectionContext(
+        target_type="pcap", flows=replies, packets=[], data={"probe_id": PROBE}
+    )
+    findings = TrafficEngine().analyze(context)
+    assert [item for item in findings if item.rule_id == "NETWORK_PORT_SCAN"] == []
+
+
+def test_one_source_many_clients_on_one_port_is_not_a_scan() -> None:
+    """A client opening 30 sockets is one port on one server, not 30 ports."""
+    rolling_traffic_state.reset()
+    base = 1_700_000_000.0
+    flows = [
+        {
+            "src_ip": "10.0.0.1", "dst_ip": "10.0.0.2", "src_port": 40000 + index,
+            "dst_port": 443, "protocol": "tcp", "packets": 1, "bytes": 60,
+        }
+        for index in range(30)
+    ]
+    rolling_traffic_state.observe(PROBE, flows, now=base)
+    snap = rolling_traffic_state.snapshot(PROBE, "10.0.0.1", "10.0.0.2", 60, now=base)
+    assert snap["dst_ports"] == [443]
 
 
 def test_single_segment_below_threshold_does_not_fire_rolling() -> None:
