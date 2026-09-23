@@ -291,7 +291,37 @@ def analyze_pcap_task(pcap_id: int, task_id: int) -> None:
                 "port_scan_ports_threshold": settings.port_scan_ports_threshold,
             },
         )
-        alerts = run_pipeline(context, task_id, db)
+        if not parsed["packets"]:
+            # A segment with zero packets holds no evidence, but it still costs
+            # a full engine run - and Suricata does not fail fast on a pcap it
+            # cannot read: it burns its whole ~60 s timeout and only then raises
+            # ("failed to get first packet timestamp"). A quiet window, or a
+            # probe bound to a down port, produced one such segment every
+            # ``segment_seconds``, so capture outran the pcap workers and the
+            # backlog grew without bound. Record the empty window and skip the
+            # engines instead of paying for nothing.
+            alerts = []
+            db.add(
+                AnalysisResult(
+                    task_id=task_id,
+                    module="capture",
+                    content={
+                        "packet_count": 0,
+                        "reason": "空抓包：该时间窗口内未捕获到任何数据包",
+                    },
+                    risk_level="Low",
+                )
+            )
+        else:
+            alerts = run_pipeline(context, task_id, db)
+        for failure in context.data.get("engine_errors") or []:
+            # An engine that raised is a blind spot, not a clean capture: keep
+            # it on the segment so the console can show it.
+            db.add(
+                AnalysisResult(
+                    task_id=task_id, module="engine_error", content=failure, risk_level="Low"
+                )
+            )
         if context.data.get("dlp"):
             dlp = context.data["dlp"]
             # Matches alone are evidence; only protected data of sufficient
