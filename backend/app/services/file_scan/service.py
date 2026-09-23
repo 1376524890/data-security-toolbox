@@ -11,9 +11,17 @@ from .adapters import SourceError
 
 FIELDS = ('name', 'protocol', 'host', 'port', 'username', 'root_path', 'host_key_sha256',
           'enabled', 'limits', 'interval_minutes')
-#: 0 seconds means "no time limit" - the run is bounded by bytes and files.
-DEFAULT_LIMITS = {'max_files': 10000, 'max_depth': 32, 'max_bytes': 100 * 1024 ** 3,
-                  'max_file_bytes': 10 * 1024 ** 3, 'max_seconds': 0}
+#: Coverage contract for one shared-file source. Every key follows one rule:
+#: 0 means "no limit", so a check task can be told to read a whole share; a
+#: non-zero value is the operator's own cap, clamped to ``CEILINGS`` so a typo
+#: cannot ask for something absurd.
+#:
+#: The floor used to be 1 for every key except max_depth, which silently turned
+#: the documented "0 = no time limit" into a one-second run: every check task
+#: ended "Partial / time_budget" after reading a handful of files. Defaults are
+#: 0 here (unlimited) and the scan honours 0 as unlimited for all five keys.
+DEFAULT_LIMITS = {'max_files': 0, 'max_depth': 0, 'max_bytes': 0,
+                  'max_file_bytes': 0, 'max_seconds': 0}
 CEILINGS = {'max_files': 100000, 'max_depth': 64, 'max_bytes': 100 * 1024 ** 3,
             'max_file_bytes': 10 * 1024 ** 3, 'max_seconds': 31536000}
 
@@ -48,8 +56,9 @@ def save(db, data, row=None):
     if not root.startswith('/') or '..' in root.split('/'):
         raise SourceError('invalid_root_path')
     data['root_path'] = posixpath.normpath(root)
-    data['limits'] = {k: max(0 if k == 'max_depth' else 1,
-                        min(int((data.get('limits') or {}).get(k, v)), CEILINGS[k]))
+    # 0 = "no limit" for every key, so it must survive normalization; only a
+    # non-zero value is clamped to its ceiling.
+    data['limits'] = {k: max(0, min(int((data.get('limits') or {}).get(k, v)), CEILINGS[k]))
                       for k, v in DEFAULT_LIMITS.items()}
     existing = db.scalar(select(FileSource).where(FileSource.name == data['name']))
     if existing and (row is None or existing.id != row.id):

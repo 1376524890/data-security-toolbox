@@ -26,13 +26,18 @@ class ProfilePayload(BaseModel):
     include_paths: list[str] = Field(default_factory=list, max_length=64)
     exclude_paths: list[str] = Field(default_factory=list, max_length=64)
     file_types: list[str] = Field(default_factory=list, max_length=64)
-    max_files: int = 10000
-    max_dirs: int = 500
-    max_depth: int = 3
-    max_runtime_seconds: int = 120
-    max_bytes_read: int = 512 * 1024 * 1024
-    max_single_file_size: int = 2 * 1024 * 1024
-    max_full_hash_size: int = 8 * 1024 * 1024
+    #: Coverage knobs default to 0 = "no limit", matching the shared budget and
+    #: the probe: a profile created without touching them must not silently cap a
+    #: scan at 500 directories / depth 3 / 120 s (that is the old bounded design).
+    #: The content knobs below keep their shipped values - they bound how much of
+    #: one file is parsed, not which files the scan reaches.
+    max_files: int = 0
+    max_dirs: int = 0
+    max_depth: int = 0
+    max_runtime_seconds: int = 0
+    max_bytes_read: int = 0
+    max_single_file_size: int = 0
+    max_full_hash_size: int = 0
     large_file_sampling: bool = True
     sample_block_size: int = 64 * 1024
     max_sample_rows: int = 25

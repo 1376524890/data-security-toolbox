@@ -39,23 +39,38 @@ MIB = 1024 * 1024
 
 # --- budget ----------------------------------------------------------------
 
-def test_defaults_match_the_shipped_scanner_behaviour() -> None:
+def test_defaults_leave_the_scope_unlimited() -> None:
+    """0 = "no limit" on every coverage knob; content sampling stays bounded.
+
+    The regression this encodes: the limits used to ship as 10000 files / depth 3
+    / 500 directories / 120 s, and a floor of 1 turned a *requested* 0 ("no time
+    limit") into a one-second run, so a scan of a small share reported Partial.
+    """
     budget = ScanBudget()
-    assert budget.max_files == 10000
-    assert budget.max_depth == 3
-    assert budget.max_dirs == 500
-    assert budget.max_single_file == 2 * MIB
-    assert budget.max_full_hash == 8 * MIB
-    assert budget.max_runtime == 120
+    assert budget.max_files == 0
+    assert budget.max_depth == 0
+    assert budget.max_dirs == 0
+    assert budget.max_single_file == 0
+    assert budget.max_full_hash == 0
+    assert budget.max_runtime == 0
+    # Unlimited reads must not be clamped to a byte count by the accounting.
+    assert budget.remaining_bytes() > 2 ** 40
+    # Content knobs are unchanged: they bound how much of one file is parsed.
     assert budget.max_rows == 25
     assert budget.limit("large_file_sampling") is True
 
 
-def test_limits_are_clamped_to_their_ceilings() -> None:
+def test_non_zero_limits_are_clamped_to_their_ceilings() -> None:
     budget = ScanBudget({"max_files": 999999, "max_depth": 99, "max_runtime_seconds": 99999})
     assert budget.max_files == 100000
-    assert budget.max_depth == 8
-    assert budget.max_runtime == 1800
+    assert budget.max_depth == 64
+    # No ceiling configured, so the operator's own cap stands rather than being
+    # dropped (a dropped timeout used to mean "runs forever").
+    assert budget.max_runtime == 99999
+    capped = ScanBudget({"max_runtime_seconds": 99999, "max_runtime_ceiling": 1800})
+    assert capped.max_runtime == 1800
+    # A requested 0 is still "no limit" even when a ceiling exists.
+    assert ScanBudget({"max_runtime_seconds": 0, "max_runtime_ceiling": 1800}).max_runtime == 0
 
 
 def test_every_stage_draws_from_the_same_byte_counter(tmp_path: Path) -> None:

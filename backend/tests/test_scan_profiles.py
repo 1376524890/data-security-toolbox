@@ -33,13 +33,18 @@ def _payload(**overrides) -> dict:
 # --- defaults --------------------------------------------------------------
 
 def test_service_defaults_match_the_shipped_scanner() -> None:
+    """A profile nobody edited must not cap the scan.
+
+    The old defaults (depth 3, 500 directories, 120 s, 2 MiB per file) are why an
+    inventory only ever saw three levels of a tree.
+    """
     values = scan_profile_service.default_values()
-    assert values["max_files"] == DEFAULT_LIMITS["max_files"] == 10000
-    assert values["max_dirs"] == 500
-    assert values["max_depth"] == 3
-    assert values["max_runtime_seconds"] == 120
-    assert values["max_single_file_size"] == 2 * 1024 * 1024
-    assert values["max_full_hash_size"] == 8 * 1024 * 1024
+    assert values["max_files"] == DEFAULT_LIMITS["max_files"] == 0
+    assert values["max_dirs"] == 0
+    assert values["max_depth"] == 0
+    assert values["max_runtime_seconds"] == 0
+    assert values["max_single_file_size"] == 0
+    assert values["max_full_hash_size"] == 0
     assert values["max_sample_rows"] == 25
     assert values["large_file_sampling"] is True
 
@@ -68,7 +73,8 @@ def test_probe_config_translates_every_probe_knob() -> None:
                 "max_single_file_size", "max_full_hash_size", "sample_block_size",
                 "max_sample_rows", "xlsx_max_rows", "xlsx_max_entries"):
         assert key in config, key
-    assert config["timeout_seconds"] == 120
+    # 0 = no wall-clock limit, matching the shared budget.
+    assert config["timeout_seconds"] == 0
     assert config["paths"] == []
 
 
@@ -77,11 +83,13 @@ def test_probe_config_translates_every_probe_knob() -> None:
 @pytest.mark.parametrize(
     "values, message",
     [
-        ({"max_files": 0}, "max_files"),
+        # 0 is accepted for every coverage knob - it means "no limit" - so the
+        # rejected values are the ones above the ceiling.
         ({"max_files": 500000}, "max_files"),
         ({"max_depth": 99}, "max_depth"),
-        ({"max_runtime_seconds": 1}, "max_runtime_seconds"),
-        ({"max_full_hash_size": 1024 * 1024 * 1024}, "max_full_hash_size"),
+        ({"max_runtime_seconds": 99999999}, "max_runtime_seconds"),
+        ({"max_full_hash_size": 100 * 1024 ** 3}, "max_full_hash_size"),
+        ({"max_bytes_read": -1}, "max_bytes_read"),
         ({"include_paths": ["relative/path"]}, "include_paths"),
         ({"include_paths": ["/srv/../etc"]}, "include_paths"),
         ({"include_paths": "not-a-list"}, "必须是数组"),
@@ -96,7 +104,18 @@ def test_invalid_values_are_rejected_with_a_reason(values: dict, message: str) -
 def test_full_hash_ceiling_cannot_be_raised_to_something_ruinous() -> None:
     """Full hashing is I/O heavy; the ceiling is enforced, not advisory."""
     with pytest.raises(scan_profile_service.ScanProfileError):
-        scan_profile_service.validate({"max_full_hash_size": 8 * 1024 * 1024 * 1024})
+        scan_profile_service.validate({"max_full_hash_size": 100 * 1024 ** 3})
+
+
+def test_zero_means_no_limit_for_every_coverage_knob() -> None:
+    """An operator can ask for the whole scope, and 0 is how they spell it."""
+    clean = scan_profile_service.validate({
+        "max_files": 0, "max_dirs": 0, "max_depth": 0, "max_runtime_seconds": 0,
+        "max_bytes_read": 0, "max_single_file_size": 0, "max_full_hash_size": 0,
+    })
+    assert all(clean[key] == 0 for key in (
+        "max_files", "max_dirs", "max_depth", "max_runtime_seconds",
+        "max_bytes_read", "max_single_file_size", "max_full_hash_size"))
 
 
 def test_paths_are_deduplicated() -> None:
@@ -130,7 +149,9 @@ def test_create_read_update_and_delete_a_profile() -> None:
 
 def test_an_invalid_profile_is_rejected_over_http() -> None:
     with TestClient(app) as client:
-        response = client.post("/api/v1/scan-profiles", json=_payload(max_runtime_seconds=1))
+        # Above the ceiling; 1 s is a legitimate cap now (0 = no limit).
+        body = _payload(max_runtime_seconds=99_999_999)
+        response = client.post("/api/v1/scan-profiles", json=body)
         assert response.status_code == 400
         assert "max_runtime_seconds" in response.json()["detail"]
 

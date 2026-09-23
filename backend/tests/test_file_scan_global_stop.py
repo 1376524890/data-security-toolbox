@@ -6,6 +6,7 @@ file from aborting the scan must not also swallow ``time_budget`` / ``cancelled`
 swallowing them kept the scan running and filled ``unreadable`` with thousands
 of entries that were never actually tried.
 """
+import time
 from contextlib import contextmanager
 
 from app.core.database import SessionLocal
@@ -15,6 +16,9 @@ from app.services.file_scan import adapters, scan
 
 class _TimeBudgetRemote:
     def entries(self, path, check, limit=2000):
+        # The listing is still in flight when the wall-clock budget runs out, so
+        # the stop arrives from the same check() the per-item handlers see.
+        time.sleep(0.05)
         check()  # raises the moment the scan is out of time
         return [('/root/a.txt', 'file', 4)]
 
@@ -45,7 +49,8 @@ def test_time_budget_stops_the_scan_without_marking_content_unreadable(monkeypat
                     payload={'source_id': source.id, 'operation': 'scan', 'config': {
                         'root_path': '/root', 'limits': {
                             'max_depth': 3, 'max_files': 10000, 'max_file_bytes': 1024,
-                            'max_bytes': 4096, 'max_seconds': 0}}})
+                            # A positive cap: 0 would mean "no time limit" now.
+                            'max_bytes': 4096, 'max_seconds': 0.02}}})
         db.add(task)
         db.commit()
         result = scan.run(db, task.id)

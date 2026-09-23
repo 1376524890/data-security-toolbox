@@ -11,10 +11,20 @@ from shared.scanning.budget import ScanBudget
 from shared.scanning.parsers import parse_file
 
 
-def analyze(path):
+def analyze(path, limits=None):
+    """Analyze one downloaded file under the same limits the scan was given.
+
+    The read budget used to be a hardcoded 64 MiB / 8 MiB pair, which made the
+    detection budget disagree with the scope the operator configured: a share
+    with no size limit still had every large file cut to a sample, and the task
+    reported the scope as incomplete because of it. Now the limits *are* the
+    budget - 0 means the file is not capped at all.
+    """
     size = path.stat().st_size
     kind = magic.detect(path.suffix.lower(), magic.probe_head(path), name=path.name)
-    budget = ScanBudget({'max_bytes_read': 67108864, 'max_single_file_size': 8388608})
+    limits = limits or {}
+    budget = ScanBudget({'max_bytes_read': limits.get('max_bytes', 0),
+                         'max_single_file_size': limits.get('max_file_bytes', 0)})
     parsed = parse_file(path, size, kind, budget=budget)
     blocks = [(parsed.text, '', '')] if parsed.text else []
     for sheet in parsed.sheets:

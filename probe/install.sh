@@ -141,7 +141,7 @@ bootstrap_token = "CHANGE_ME"
 token_path = "/etc/data-security-toolbox/probe.token"
 ports = [22, 80, 443, 445, 3306, 5432, 6379, 8080]
 paths = []
-max_files = 50
+max_files = 0
 demo = false
 EOF
     mv "${TMP_CONFIG}" "${CONFIG_DIR}/probe.toml"

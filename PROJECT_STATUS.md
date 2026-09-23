@@ -1,6 +1,27 @@
 # 项目状态
 
-2026-09-22 第四十二批（本轮）：**目标机接入远程 Git，探针监控修复上线**。
+2026-09-23 第四十三批（本轮）：**扫描临时文件崩溃路径清扫 + 旧版本探针回收**。
+
+**扫描临时文件**：每个文件整份下载到 `/tmp/dst-file-scan-*`，跑完在 `finally` 里 `unlink`；新增
+`file_scan/scan.py::sweep_stale_temp_dirs()` 清扫 `SIGKILL`／容器停止留下的陈旧目录（年龄保护 6 小时，
+不会碰别的 worker 正在写的），接在 `workers/celery_app.py` 的 `worker_ready` 信号上（懒导入，beat/API 不触发）。
+哈希改为分块整份 `_sha256_file`，不再把大文件读进内存。
+
+**旧版本探针回收**：`services/probe_service.py::delete_probe_record` 回收探针时把 `probe_deployments.status`
+留在 `ONLINE`，历史里永远显示一台已不存在的在线探针（根因）；现在把该探针的 `ONLINE` 安装行改为 `REMOVED`
+并补 `ProbeDeploymentEvent`。线上两条同类孤儿行按同语义处理（审计 `probe_deployment.reclaim`）。
+`probe_packages/probe-3.7.0/arm64/` 从当前树重建（版本号仍 3.7.0，源码变了，此后只有 `package_digest` 可区分）。
+
+**一致性修补**：`file_sources` 1 的旧上限（`max_files=10000/max_depth=3/max_bytes=64MiB/...`）清零，
+4 个来源现在都是全 0；核对资产分布，源 1/源 2 无实例，无截断期历史资产混库。扫描结果里
+`complete_scope` 拆成 `enumeration_complete`／`content_complete`／`sampled`／`metadata_only`，
+「走完树但只采样了内容」不再被误读成「扫描被中止」。
+
+**验证**：`test_file_scan_containment`(3)、`test_file_scan_global_stop`(1)、`test_file_sources`(21)、
+`test_scan_profiles`(28)、`test_targets`(6)、`shared/test_scanning_core`(42)、`tests/deployment` 通过；
+既有失败与 `HEAD` 相同（已用 `git archive HEAD` 建干净树对照）。详见 `TASK.md` 第四十三批。
+
+2026-09-22 第四十二批（上一批）：**目标机接入远程 Git，探针监控修复上线**。
 
 目标机 `/home/user/dst-toolbox-3.0.0-linux-arm64`（3.0.0 离线包解包目录）已纳入版本控制：
 `origin = git@github.com:1376524890/data-security-toolbox.git`、分支 `develop` 跟踪 `origin/develop`，

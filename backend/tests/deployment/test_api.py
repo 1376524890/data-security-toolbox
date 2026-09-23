@@ -149,6 +149,40 @@ def test_create_deployment_persists_data_asset_config(monkeypatch) -> None:
     assert "allow_remote = true" in scan_section
 
 
+def test_zero_data_limits_survive_into_the_probe_config(monkeypatch) -> None:
+    """0 = "no limit" must reach the probe as 0, not as the old 10000/3 cap.
+
+    The regression this guards: the renderer read the values with ``or 10000`` /
+    ``or 3``, so a deployment that deliberately asked for no cap was handed the
+    legacy limits instead and its data inventory stopped three levels down.
+    """
+    monkeypatch.setattr(deployments_module, "_dispatch", lambda deployment_id: None)
+    with TestClient(app) as client:
+        payload = {
+            "name": "test-deploy-unlimited-data",
+            "host": "10.0.0.12",
+            "port": 22,
+            "username": "root",
+            "auth_type": "password",
+            "password": "secret",
+            "profile": "standard",
+            "idempotency_key": "api-key-unlimited-data",
+            "data_paths": ["/srv/data"],
+            "data_max_files": 0,
+            "data_max_depth": 0,
+            "data_include_databases": False,
+        }
+        body = client.post("/api/v1/probe-deployments", json=payload).json()
+        with SessionLocal() as db:
+            dep = db.get(ProbeDeployment, body["id"])
+            toml = build_probe_toml(dep, "bootstrap-token", None, interface="eth0")
+    data_section = toml.split("[data]", 1)[1]
+    assert "max_files = 0" in data_section
+    assert "max_depth = 0" in data_section
+    agent_section = toml.split("[agent]", 1)[1].split("[scan]", 1)[0]
+    assert "max_files = 0" in agent_section
+
+
 def test_create_deployment_rejects_relative_data_paths(monkeypatch) -> None:
     monkeypatch.setattr(deployments_module, "_dispatch", lambda deployment_id: None)
     with TestClient(app) as client:

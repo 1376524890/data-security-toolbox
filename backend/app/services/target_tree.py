@@ -15,10 +15,13 @@ from typing import Any
 
 from app.deployment.ssh_client import SshClient, SshError
 
-#: Hard ceilings so one click can never walk a whole file server.
-MAX_DEPTH = 6
-MAX_ENTRIES = 2000
-MAX_SECONDS = 20.0
+#: Ceilings for callers that *ask* for a cap. The service itself never truncates
+#: silently: 0 means "no cap" for both depth and entries, so a picker can show a
+#: whole tree. A non-zero value is the caller's own bound and is reported back as
+#: ``truncated`` when it bites (the wizard expands level by level, so it asks for
+#: one level at a time and never hits these).
+MAX_DEPTH = 64
+MAX_ENTRIES = 200000
 
 
 class TargetError(ValueError):
@@ -62,11 +65,17 @@ def test_ssh(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def browse_ssh(spec: dict[str, Any], *, roots: list[str] | None = None,
-               max_depth: int = 3, max_entries: int = MAX_ENTRIES) -> dict[str, Any]:
-    """Depth-first (bounded) listing of ``roots``, flattened for the picker.
+               max_depth: int = 0, max_entries: int = 0) -> dict[str, Any]:
+    """Breadth-first listing of ``roots``, one level per requested depth.
 
-    Every row carries its depth and parent so the console can rebuild the tree,
-    and truncation is reported instead of being presented as a complete listing.
+    ``max_depth`` counts levels *below* each root (1 = the root's children only),
+    which is what a lazy tree needs: every expansion asks for one more level, so
+    the console can walk the whole tree instead of being stopped at 3 levels.
+    0 means "no depth cap".
+
+    Rows carry the depth of the entry itself, and truncation is only ever the
+    caller's own cap - it is reported instead of being presented as a complete
+    listing.
     """
     host = str(spec.get("host") or "").strip()
     _require(host)
@@ -74,8 +83,12 @@ def browse_ssh(spec: dict[str, Any], *, roots: list[str] | None = None,
     root_list = [str(item).strip() for item in candidates if str(item).strip()]
     if not root_list:
         raise TargetError("至少需要一个根目录")
-    depth_limit = max(0, min(int(max_depth), MAX_DEPTH))
-    entry_limit = max(1, min(int(max_entries), MAX_ENTRIES))
+    # 0 keeps its meaning all the way through: no cap. A non-zero value is the
+    # caller's bound, clamped to the ceiling.
+    requested_depth = int(max_depth)
+    depth_limit = min(requested_depth, MAX_DEPTH) if requested_depth > 0 else 0
+    requested_entries = int(max_entries)
+    entry_limit = min(requested_entries, MAX_ENTRIES) if requested_entries > 0 else 0
 
     ssh = _ssh_client(spec)
     started = time.monotonic()
@@ -84,15 +97,16 @@ def browse_ssh(spec: dict[str, Any], *, roots: list[str] | None = None,
     reason = ""
     try:
         ssh.connect()
+        #: ``depth`` is the depth of the directory itself; a root is 0, so its
+        #: children are level 1. Walking stops before a directory that would sit
+        #: below the operator's cap, which keeps "one call = one level" true.
         queue: list[tuple[str, int]] = [(path, 0) for path in root_list]
-        while queue:
-            if len(rows) >= entry_limit:
+        for path, depth in queue:
+            if depth_limit and depth >= depth_limit:
+                continue
+            if entry_limit and len(rows) >= entry_limit:
                 truncated, reason = True, "entry_budget"
                 break
-            if time.monotonic() - started > MAX_SECONDS:
-                truncated, reason = True, "time_budget"
-                break
-            path, depth = queue.pop(0)
             try:
                 children = ssh.listdir(path)
             except SshError as exc:
@@ -101,13 +115,13 @@ def browse_ssh(spec: dict[str, Any], *, roots: list[str] | None = None,
                              "depth": depth, "reason": exc.code})
                 continue
             for name, kind, size in sorted(children, key=lambda item: (item[1] != "dir", item[0])):
-                if len(rows) >= entry_limit:
+                if entry_limit and len(rows) >= entry_limit:
                     truncated, reason = True, "entry_budget"
                     break
                 child = f"{path.rstrip('/')}/{name}" if path != "/" else f"/{name}"
                 rows.append({"path": child, "name": name, "type": kind, "size": size,
-                             "depth": depth})
-                if kind == "dir" and depth < depth_limit:
+                             "depth": depth + 1})
+                if kind == "dir":
                     queue.append((child, depth + 1))
     finally:
         ssh.close()

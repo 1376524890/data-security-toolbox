@@ -347,3 +347,41 @@ def test_platform_delete_failure_keeps_remote_success_and_destroys_credential(mo
         assert row.result['platform_record_error'] == 'database_error'
         assert _credential_rows(db, deployment_id) == []
         assert db.get(Probe, probe_id).token_hash == ''
+
+
+def test_reclaiming_a_probe_takes_its_install_offline() -> None:
+    """The probe row is gone, so the install that reported ONLINE has to end.
+
+    Regression: dropping the probe record cleared ``probe_deployments.probe_id``
+    but left ``status = ONLINE``, so the history kept showing a live agent on a
+    host the platform no longer had one on - and nothing could ever move it on,
+    because the row no longer pointed at any probe.
+    """
+    from app.services.probe_service import delete_probe_record
+
+    with SessionLocal() as db:
+        probe = Probe(name="reclaim-online", ip_address="10.8.6.7", status="online",
+                      token="live", token_hash="hash")
+        db.add(probe)
+        db.flush()
+        deployment = ProbeDeployment(
+            name="install-reclaim-online", action="install", host="10.8.6.7", port=22,
+            username="root", auth_type="password", profile="standard", status="ONLINE",
+            progress=100, current_stage="ONLINE", backend_url="http://api:8000",
+            package_version="3.7.0", idempotency_key=secrets.token_hex(8), version=1,
+            probe_id=probe.id,
+        )
+        db.add(deployment)
+        db.commit()
+        probe_id, deployment_id = probe.id, deployment.id
+
+    with SessionLocal() as db:
+        assert delete_probe_record(db, probe_id) == {"status": "ok"}
+
+    with SessionLocal() as db:
+        row = db.get(ProbeDeployment, deployment_id)
+        assert row.status == "REMOVED"
+        assert row.current_stage == "REMOVED"
+        assert row.probe_id is None
+        # The history says why it ended instead of just changing state.
+        assert [event.stage for event in row.events][-1] == "REMOVED"

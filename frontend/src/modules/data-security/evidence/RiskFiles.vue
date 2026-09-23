@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import StateBox from '../../../components/common/StateBox.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
 import { apiGet } from '../../../api/client'
+import { formatCoverage, formatTerminationReason } from '../../../utils/format'
 
 // The risky files a scan actually produced. This reads the data-object model
 // (asset instances with at least one value-level detection) rather than the
@@ -115,7 +116,7 @@ onMounted(load)
         <el-table-column label="覆盖 / 状态" width="180">
           <template #default="{ row }">
             {{ row.status }}
-            <div class="muted">{{ row.coverage }} · {{ row.termination_reason }}</div>
+            <div class="muted">{{ formatCoverage(row.coverage) }} · {{ formatTerminationReason(row.termination_reason) }}</div>
           </template>
         </el-table-column>
       </el-table>
@@ -132,7 +133,7 @@ onMounted(load)
           <el-descriptions-item label="来源">{{ selected.source_name }} · {{ selected.host }}（{{ selected.source_kind }}）</el-descriptions-item>
           <el-descriptions-item label="分级">{{ selected.level }} · {{ selected.sensitivity }}</el-descriptions-item>
           <el-descriptions-item label="命中类别">{{ selected.categories.join(', ') || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="覆盖口径">{{ selected.coverage }} / {{ selected.termination_reason }}</el-descriptions-item>
+          <el-descriptions-item label="覆盖口径">{{ formatCoverage(selected.coverage) }} / {{ formatTerminationReason(selected.termination_reason) }}</el-descriptions-item>
           <el-descriptions-item label="权限">{{ selected.permission || '未上报' }}</el-descriptions-item>
         </el-descriptions>
         <div class="section-title">原文件预览

@@ -113,7 +113,10 @@ def _regions_plain(handle, size: int, budget) -> tuple[list[str], int, bool]:
 
 def _regions_gzip(path: Path, budget) -> tuple[list[str], int, bool, str]:
     """Stream-decompress with a hard output cap; never expands unbounded."""
-    cap = min(MAX_DECOMPRESSED_BYTES, max(int(budget.limit("max_bytes_read", MAX_DECOMPRESSED_BYTES)), 1024))
+    configured = int(budget.limit("max_bytes_read", 0) or 0)
+    # 0 = no operator byte cap, so only the decompressor's own bomb guard applies;
+    # collapsing it to 1024 bytes truncated every gzipped dump to one chunk.
+    cap = min(MAX_DECOMPRESSED_BYTES, configured) if configured else MAX_DECOMPRESSED_BYTES
     regions: list[str] = []
     read = 0
     head = bytearray()

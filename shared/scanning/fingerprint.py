@@ -179,7 +179,14 @@ def partial_fingerprint(path: Path, size: int, *, block_size: int = DEFAULT_BLOC
 
 def identify(path: Path, size: int, *, max_full_hash_size: int, block_size: int = DEFAULT_BLOCK_SIZE,
              budget=None) -> Fingerprint:
-    """Full hash for small files, partial fingerprint for large ones."""
-    if max_full_hash_size and size <= max_full_hash_size:
+    """Whole-file SHA256, or a marked partial fingerprint above the cap.
+
+    ``max_full_hash_size`` obeys the scan-wide rule that 0 means "no limit": every
+    file is then hashed end to end, so identity is never taken from a sample. A
+    non-zero value is the operator's own cap, and a file above it still gets a
+    versioned partial fingerprint that can never be reported as a full hash -
+    sampling is labelled, never silent.
+    """
+    if not max_full_hash_size or size <= max_full_hash_size:
         return full_sha256(path, size, limit=max_full_hash_size, budget=budget)
     return partial_fingerprint(path, size, block_size=block_size, budget=budget)

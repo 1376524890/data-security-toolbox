@@ -48,7 +48,9 @@ describe('asset collection state', () => {
     await vi.advanceTimersByTimeAsync(3000)
     await pending
     expect(collectProbeDataAssets).toHaveBeenCalledWith(12, expect.objectContaining({ paths: ['/srv/data', '/etc'], max_files: 15 }))
-    expect(ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('row_budget'))
+    // The dialog reports the same translated reason the task centre shows,
+    // not the scanner's internal code.
+    expect(ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('达到行数上限'))
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(refresh).toHaveBeenCalledOnce()
     expect(state.collectDialog.value).toBe(false)

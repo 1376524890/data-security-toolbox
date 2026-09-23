@@ -9,8 +9,10 @@ class DataAssetScanConfig(BaseModel):
     paths: list[str] = Field(
         default_factory=list, max_length=32, description="目标服务器上要采集的目录"
     )
-    max_files: int = Field(default=10000, ge=1, le=100000)
-    max_depth: int = Field(default=32, ge=0, le=64)
+    # Coverage knobs: 0 = no limit, which is the default so a collection asked for
+    # without touching them covers the whole scope instead of stopping early.
+    max_files: int = Field(default=0, ge=0, le=100000)
+    max_depth: int = Field(default=0, ge=0, le=64)
     include_databases: bool = True
     # 0 = no wall-clock limit.
     timeout_seconds: int = Field(default=0, ge=0, le=31536000)

@@ -402,14 +402,16 @@ class ScanProfile(TimestampMixin, Base):
     exclude_paths: Mapped[list[str]] = mapped_column(JSON, default=list)
     file_types: Mapped[list[str]] = mapped_column(JSON, default=list)
     # Bounds
-    max_files: Mapped[int] = mapped_column(Integer, default=10000)
-    max_dirs: Mapped[int] = mapped_column(Integer, default=50000)
-    max_depth: Mapped[int] = mapped_column(Integer, default=32)
+    #: Coverage bounds. 0 = no limit for every one of them, so a profile that was
+    #: never edited does not cap a scan (client-side defaults; no DDL change).
+    max_files: Mapped[int] = mapped_column(Integer, default=0)
+    max_dirs: Mapped[int] = mapped_column(Integer, default=0)
+    max_depth: Mapped[int] = mapped_column(Integer, default=0)
     #: 0 = no wall-clock limit; the run is bounded by bytes and files.
     max_runtime_seconds: Mapped[int] = mapped_column(Integer, default=0)
-    max_bytes_read: Mapped[int] = mapped_column(BigInteger, default=100 * 1024 ** 3)
-    max_single_file_size: Mapped[int] = mapped_column(BigInteger, default=10 * 1024 ** 3)
-    max_full_hash_size: Mapped[int] = mapped_column(BigInteger, default=512 * 1024 * 1024)
+    max_bytes_read: Mapped[int] = mapped_column(BigInteger, default=0)
+    max_single_file_size: Mapped[int] = mapped_column(BigInteger, default=0)
+    max_full_hash_size: Mapped[int] = mapped_column(BigInteger, default=0)
     # Sampling
     large_file_sampling: Mapped[bool] = mapped_column(Boolean, default=True)
     sample_block_size: Mapped[int] = mapped_column(Integer, default=64 * 1024)

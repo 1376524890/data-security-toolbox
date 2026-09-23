@@ -9,7 +9,7 @@ import { deleteTask, getTask, listTasks, stopTask } from '../../api/tasks'
 import { canStop } from '../../api/taskKinds'
 import { deleteProbe } from '../../api/probes'
 import type { Task } from '../../types/task'
-import { formatDateTime } from '../../utils/format'
+import { formatCoverageLimit, formatDateTime, formatTerminationReason } from '../../utils/format'
 import { TASK_TYPES, useTaskWizard } from './composables/useTaskWizard'
 
 // 任务中心: the task list (progress + health, expandable to a detail and a short
@@ -85,6 +85,87 @@ function health(task: Task): { label: string; tone: string } {
   if (task.status === 'Pending') return { label: task.current_stage || '排队中', tone: 'info' }
   if (task.status === 'Cancelled') return { label: '已取消', tone: 'info' }
   return { label: task.current_stage || '完成', tone: 'success' }
+}
+
+/** Coverage facts a scan reports, in the order an operator reads them. The task
+ *  result also carries raw arrays; those are listed separately below so a
+ *  "partial" scan can be explained without opening the database. */
+const COVERAGE_LABELS: [string, string][] = [
+  ['complete_scope', '覆盖完整'],
+  ['enumeration_complete', '目录遍历完整'],
+  ['content_complete', '文件内容完整'],
+  ['termination_reason', '终止原因'],
+  ['termination_detail', '终止细节'],
+  ['assets', '已采集文件'],
+  ['skipped', '已跳过'],
+  ['sampled_count', '仅采样内容'],
+  ['metadata_only', '仅登记元数据'],
+  ['unreadable_count', '未能读取'],
+  ['bytes_read', '读取字节'],
+  ['source_name', '文件源'],
+  ['operation', '操作'],
+]
+
+function coverageFacts(task: Task): { label: string; value: string }[] {
+  const result = (task.result || {}) as Record<string, unknown>
+  return COVERAGE_LABELS.filter(([key]) => result[key] !== undefined && result[key] !== null)
+    .map(([key, label]) => ({ label, value: coverageValue(key, result[key]) }))
+}
+
+function coverageValue(key: string, value: unknown): string {
+  return key.startsWith('termination_') ? formatTerminationReason(String(value)) : String(value)
+}
+
+/** Keys already answered above, so the raw 结果 block does not repeat them and
+ *  an operator does not have to guess which of the two rows is authoritative. */
+const PRESENTED_KEYS = new Set([
+  ...COVERAGE_LABELS.map(([key]) => key),
+  'unreadable', 'sampled', 'unreadable_count', 'sampled_count',
+])
+
+function remainingResult(task: Task): [string, unknown][] {
+  return Object.entries((task.result || {}) as Record<string, unknown>)
+    .filter(([key]) => !PRESENTED_KEYS.has(key))
+}
+
+/** Paths a scan could not read or only sampled, listed in full: the count alone
+ *  cannot tell an operator which part of a share they are missing. */
+function problemPaths(task: Task): { label: string; paths: string[] }[] {
+  const result = (task.result || {}) as Record<string, unknown>
+  const groups: { label: string; paths: string[] }[] = []
+  for (const [key, label] of [['unreadable', '未能读取'], ['sampled', '仅采样内容']] as const) {
+    const rows = result[key]
+    if (!Array.isArray(rows) || !rows.length) continue
+    groups.push({
+      label,
+      paths: rows.map((row) => {
+        const item = row as { path?: unknown; reason?: unknown }
+        return `${String(item.path ?? '')}${item.reason ? ` — ${String(item.reason)}` : ''}`
+      }),
+    })
+  }
+  return groups
+}
+
+/** What a scan was dispatched with: the root it read and the limits it ran
+ *  under, with 0 spelled out as 不限制. Without this the console showed the
+ *  result but never the configuration that produced it. */
+function scanConfig(task: Task): { label: string; value: string }[] {
+  const config = ((task.payload || {}) as Record<string, unknown>).config as
+    Record<string, unknown> | undefined
+  if (!config) return []
+  const limits = (config.limits || {}) as Record<string, number>
+  const rows: { label: string; value: string }[] = []
+  if (config.root_path) rows.push({ label: '根目录', value: String(config.root_path) })
+  if (config.host) rows.push({ label: '目标', value: `${String(config.host)}:${String(config.port ?? '')}` })
+  for (const [key, label] of [
+    ['max_files', '文件上限'], ['max_depth', '目录深度'], ['max_bytes', '读取字节上限'],
+    ['max_file_bytes', '单文件上限'], ['max_seconds', '执行时限（秒）'],
+  ] as const) {
+    if (limits[key] === undefined) continue
+    rows.push({ label, value: formatCoverageLimit(limits[key]) })
+  }
+  return rows
 }
 
 function duration(task: Task): string {
@@ -228,15 +309,36 @@ onMounted(load)
         <el-progress :percentage="Math.max(0, Math.min(100, detail.progress || 0))" style="margin-top: 12px" />
         <div v-if="detail.error" class="section-title">问题</div>
         <el-alert v-if="detail.error" type="error" :closable="false" :title="detail.error" />
+        <div v-if="scanConfig(detail).length" class="section-title">扫描配置</div>
+        <el-descriptions v-if="scanConfig(detail).length" :column="2" border size="small">
+          <el-descriptions-item v-for="row in scanConfig(detail)" :key="row.label" :label="row.label">
+            <span class="wrap">{{ row.value }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+        <div v-if="coverageFacts(detail).length" class="section-title">覆盖情况</div>
+        <el-descriptions v-if="coverageFacts(detail).length" :column="2" border size="small">
+          <el-descriptions-item v-for="fact in coverageFacts(detail)" :key="fact.label" :label="fact.label">
+            <span class="wrap">{{ fact.value }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+        <template v-if="problemPaths(detail).length">
+          <div class="section-title">未能读取 / 仅采样</div>
+          <div v-for="group in problemPaths(detail)" :key="group.label" class="path-group">
+            <div class="muted">{{ group.label }}（{{ group.paths.length }}）</div>
+            <pre class="log">{{ group.paths.join('\n') }}</pre>
+          </div>
+        </template>
         <div class="section-title">结果</div>
-        <el-descriptions v-if="Object.keys(detail.result || {}).length" :column="2" border size="small">
-          <el-descriptions-item v-for="(value, key) in detail.result" :key="key" :label="String(key)">
+        <el-descriptions v-if="remainingResult(detail).length" :column="2" border size="small">
+          <el-descriptions-item v-for="[key, value] in remainingResult(detail)" :key="key" :label="String(key)">
             <span class="wrap">{{ Array.isArray(value) ? `${value.length} 项` : String(value ?? '—') }}</span>
           </el-descriptions-item>
         </el-descriptions>
-        <el-empty v-else description="该任务暂无结果" :image-size="60" />
+        <el-empty v-else-if="!Object.keys(detail.result || {}).length" description="该任务暂无结果"
+                  :image-size="60" />
+        <div v-else class="muted">其余字段已在上方「覆盖情况」中列出</div>
         <div v-if="detail.log" class="section-title">日志</div>
-        <pre v-if="detail.log" class="log">{{ String(detail.log).slice(-4000) }}</pre>
+        <pre v-if="detail.log" class="log">{{ detail.log }}</pre>
       </template>
       <template #footer><el-button @click="detail = null">关闭</el-button></template>
     </el-dialog>
@@ -423,6 +525,8 @@ onMounted(load)
 
 <style scoped>
 .muted { color: var(--soc-text-dim); font-size: 12px; }
+.path-group { margin-bottom: 10px; }
+.path-group .log { max-height: 180px; overflow: auto; }
 .type-picker { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
 .type-picker :deep(.el-radio) { margin-right: 0; height: auto; padding: 10px 14px; white-space: normal; }
 .type-picker :deep(.el-radio__label) { white-space: normal; line-height: 1.5; }

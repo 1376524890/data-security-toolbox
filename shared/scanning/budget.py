@@ -12,6 +12,7 @@ chunk-sized so a long read can be interrupted between chunks.
 """
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -38,21 +39,27 @@ TERMINATION_UNCONFIGURED = "unconfigured"
 #: They still make the report incomplete, so nothing unseen gets retired.
 CONTENT_TRUNCATION_REASONS = frozenset({TERMINATION_ROWS, TERMINATION_FILE_SIZE})
 
-# Documented defaults: 10000 files (max 100000), depth 3 (max 8), 500
-# directories, 2 MiB content sample, 25 rows, 120 s task budget, 8 MiB
-# full-hash ceiling.
+# One rule for every *coverage* knob - files, directories, depth, bytes, and
+# wall-clock: **0 means "no limit"**, so an operator can ask a scan to cover a
+# whole tree instead of stopping early. A non-zero value is their own cap and is
+# clamped to the matching ceiling. Ceilings apply to non-zero values only, so
+# they can never turn "unlimited" into a silent floor (a floor of 1 second is
+# exactly how every file-source check task used to end "Partial / time_budget").
+# Content knobs (row sampling, XLSX limits, block size) keep their shipped
+# defaults: they bound how much of *one* file is parsed for detection, not which
+# files the scan reaches.
 DEFAULT_LIMITS: dict[str, Any] = {
-    "max_files": 10000,
+    "max_files": 0,
     "max_files_ceiling": 100000,
-    "max_depth": 32,
+    "max_depth": 0,
     "max_depth_ceiling": 64,
-    "max_dirs": 50000,
+    "max_dirs": 0,
     #: 0 means "no time limit": the run is bounded by bytes/files instead.
     "max_runtime_seconds": 0,
     "max_runtime_ceiling": 0,
-    "max_bytes_read": 100 * 1024 ** 3,
-    "max_single_file_size": 10 * 1024 ** 3,
-    "max_full_hash_size": 512 * 1024 * 1024,
+    "max_bytes_read": 0,
+    "max_single_file_size": 0,
+    "max_full_hash_size": 0,
     "large_file_sampling": True,
     "sample_block_size": 64 * 1024,
     "max_sample_rows": 25,
@@ -67,6 +74,19 @@ DEFAULT_LIMITS: dict[str, Any] = {
     "xlsx_max_columns": 256,
     "xlsx_max_rows": 200,
 }
+
+
+def _capped(value: Any, ceiling: Any) -> int:
+    """A limit with one meaning for 0: unlimited.
+
+    Non-zero values are clamped to ``ceiling`` when one is configured, so a typo
+    cannot ask for more than the ceiling allows - but 0 never becomes a silent
+    floor, which is what made "0 = no time limit" behave like a one-second run.
+    """
+    limit = int(value or 0)
+    if limit <= 0:
+        return 0
+    return min(limit, int(ceiling)) if ceiling else limit
 
 
 class BudgetExceeded(RuntimeError):
@@ -108,17 +128,23 @@ class ScanBudget:
         merged = dict(DEFAULT_LIMITS)
         merged.update({key: value for key, value in (self.limits or {}).items() if value is not None})
         self.limits = merged
-        self.max_files = min(max(int(merged["max_files"]), 1), int(merged["max_files_ceiling"]))
-        self.max_depth = min(max(int(merged["max_depth"]), 0), int(merged["max_depth_ceiling"]))
-        self.max_dirs = max(int(merged["max_dirs"]), 1)
-        # 0 (the default) or a 0 ceiling means "no time limit"; anything else is
-        # clamped to the ceiling. A timed run still stops on bytes/files.
+        # 0 = unlimited for each coverage knob; only a non-zero value is clamped.
+        self.max_files = _capped(merged["max_files"], merged["max_files_ceiling"])
+        self.max_depth = _capped(merged["max_depth"], merged["max_depth_ceiling"])
+        self.max_dirs = _capped(merged["max_dirs"], None)
+        # 0 means "no time limit". A requested cap is honoured and only clamped
+        # when a ceiling is actually configured - the old rule dropped every
+        # requested timeout whenever the ceiling was 0, so a profile asking for a
+        # 120 s budget silently ran unbounded instead.
         runtime = float(merged["max_runtime_seconds"] or 0)
         ceiling = float(merged.get("max_runtime_ceiling") or 0)
-        self.max_runtime = 0.0 if (runtime <= 0 or ceiling <= 0) else min(runtime, ceiling)
-        self.max_bytes = max(int(merged["max_bytes_read"]), 1)
-        self.max_single_file = max(int(merged["max_single_file_size"]), 1)
-        self.max_full_hash = max(int(merged["max_full_hash_size"]), 0)
+        if runtime <= 0:
+            self.max_runtime = 0.0
+        else:
+            self.max_runtime = min(runtime, ceiling) if ceiling > 0 else runtime
+        self.max_bytes = _capped(merged["max_bytes_read"], None)
+        self.max_single_file = _capped(merged["max_single_file_size"], None)
+        self.max_full_hash = _capped(merged["max_full_hash_size"], None)
         self.block_size = max(int(merged["sample_block_size"]), 1024)
         self.max_rows = max(int(merged["max_sample_rows"]), 1)
         self.max_cpu = max(float(merged.get("max_cpu_seconds") or 0), 0.0)
@@ -130,7 +156,13 @@ class ScanBudget:
         return self.limits.get(name, fallback)
 
     def clamp_file_size(self, size: int) -> int:
-        """Bytes this file may contribute, capped by the per-file sample limit."""
+        """Bytes this file may contribute, capped by the per-file sample limit.
+
+        With no per-file limit configured the whole file is in scope, so the
+        caller can read it end to end instead of sampling windows.
+        """
+        if not self.max_single_file:
+            return max(int(size), 0)
         return min(max(int(size), 0), self.max_single_file)
 
     # -- cooperative stop ---------------------------------------------------
@@ -162,7 +194,8 @@ class ScanBudget:
         if self.deadline is not None and time.monotonic() >= self.deadline:
             self.stop(TERMINATION_TIMEOUT, f"{self.max_runtime:.0f}s")
             raise BudgetExceeded(TERMINATION_TIMEOUT, f"{self.max_runtime:.0f}s")
-        if self.bytes_read >= self.max_bytes:
+        # 0 = no byte ceiling; only an explicit cap can stop the read.
+        if self.max_bytes and self.bytes_read >= self.max_bytes:
             self.stop(TERMINATION_BYTES, f"{self.max_bytes} bytes")
             raise BudgetExceeded(TERMINATION_BYTES, f"{self.max_bytes} bytes")
         if self.max_cpu and time.process_time() - self.started_at > self.max_cpu:
@@ -191,6 +224,10 @@ class ScanBudget:
 
     # -- accounting ---------------------------------------------------------
     def remaining_bytes(self) -> int:
+        # Unlimited reads report the whole address space so ``clamp_read`` never
+        # becomes the thing that truncates a file.
+        if not self.max_bytes:
+            return sys.maxsize
         return max(self.max_bytes - self.bytes_read, 0)
 
     def clamp_read(self, requested: int) -> int:
@@ -206,18 +243,18 @@ class ScanBudget:
 
     def spend_rows(self, count: int) -> None:
         self.rows += max(int(count), 0)
-        if self.rows > self.max_rows * 64:
+        if self.max_rows and self.rows > self.max_rows * 64:
             self.stop(TERMINATION_ROWS, f"{self.rows} rows")
 
     def note_file(self) -> None:
         self.files += 1
-        if self.files > self.max_files:
+        if self.max_files and self.files > self.max_files:
             self.stop(TERMINATION_FILES, f"{self.max_files} files")
             raise BudgetExceeded(TERMINATION_FILES, f"{self.max_files} files")
 
     def note_directory(self) -> None:
         self.directories += 1
-        if self.directories > self.max_dirs:
+        if self.max_dirs and self.directories > self.max_dirs:
             self.stop(TERMINATION_DIRECTORIES, f"{self.max_dirs} directories")
             raise BudgetExceeded(TERMINATION_DIRECTORIES, f"{self.max_dirs} directories")
 
@@ -239,7 +276,9 @@ class ScanBudget:
             self._enumeration_reason, self._enumeration_detail = reason, detail
 
     def mark_truncated(self, name: str) -> None:
-        if len(self.truncated_files) < 32 and name not in self.truncated_files:
+        # No cap: the list is what tells an operator which files were only
+        # sampled, and a truncated list of truncated files is not a report.
+        if name not in self.truncated_files:
             self.truncated_files.append(name)
 
     # -- reporting ----------------------------------------------------------

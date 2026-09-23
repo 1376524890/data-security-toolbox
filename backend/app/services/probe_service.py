@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.services.data_objects import persistence
@@ -29,6 +29,7 @@ from app.models import (
     PcapRecord,
     Probe,
     ProbeDeployment,
+    ProbeDeploymentEvent,
     ProbeEnrollment,
     Task,
 )
@@ -83,6 +84,21 @@ def delete_probe_record(db: Session, probe_id: int) -> dict[str, str]:
     ))).all()
     if any(item.status not in FINISHED_DEPLOYMENT_STATES for item in deployments):
         raise ProbeInUseError("探针部署尚未结束，请等待部署结束后再删除")
+    # The probe row itself is going away, so an install that still reads ONLINE
+    # must not keep claiming a live agent: the console would show a deployment
+    # for a host the platform no longer has a probe on, and no later event would
+    # ever move it on. Recorded as an event so the history says why it ended.
+    for item in deployments:
+        if item.status != "ONLINE":
+            continue
+        item.status = "REMOVED"
+        item.current_stage = "REMOVED"
+        item.progress = 100
+        highest = db.scalar(select(func.max(ProbeDeploymentEvent.seq)).where(
+            ProbeDeploymentEvent.deployment_id == item.id))
+        db.add(ProbeDeploymentEvent(
+            deployment_id=item.id, seq=int(highest or 0) + 1, stage="REMOVED",
+            message="平台已回收该探针记录，这次安装不再是在线状态"))
     # Preserve collected records and deployment history, clearing foreign keys.
     for model in (Asset, FileRecord, PcapRecord, Incident, Alert, AlertHit, ProbeDeployment, ProbeEnrollment):
         db.execute(update(model).where(model.probe_id == probe_id).values(probe_id=None))

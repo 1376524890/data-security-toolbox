@@ -1,4 +1,6 @@
 from celery import Celery
+from celery.signals import worker_ready
+
 from app.core.config import settings
 
 celery_app = Celery(
@@ -12,6 +14,22 @@ celery_app = Celery(
         "app.workers.deployment_tasks",
     ],
 )
+
+
+@worker_ready.connect
+def _sweep_stale_scan_temp_dirs(**_kwargs) -> None:
+    """Drop downloads a previously killed worker never got to unlink.
+
+    A file-source scan copies each file into ``/tmp`` and deletes it right after
+    the hash and detection run; a ``SIGKILL`` mid-copy skips both, so the copy
+    outlives the worker. Clearing them at startup is the only moment that is
+    guaranteed to happen before the next scan can run.
+    """
+    from app.services.file_scan.scan import sweep_stale_temp_dirs
+
+    sweep_stale_temp_dirs()
+
+
 celery_app.conf.update(
     task_track_started=True,
     task_time_limit=1800,

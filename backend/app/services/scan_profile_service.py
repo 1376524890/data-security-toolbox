@@ -33,15 +33,22 @@ DEFAULT_SCOPE: dict[str, Any] = {
 
 #: Fields a caller may set, mapped to (type, minimum, maximum). Values outside the
 #: range are rejected rather than clamped, so an operator sees the mistake.
+#:
+#: Every *coverage* knob accepts 0, which means "no limit" all the way through the
+#: probe: files, directories, depth, bytes, per-file size, hashing and wall-clock.
+#: The maximum is a ceiling for non-zero values only, so it can never quietly turn
+#: an unlimited scope into a capped one (a depth ceiling of 3 is exactly how every
+#: inventory stopped three levels down).
 NUMERIC_BOUNDS: dict[str, tuple[type, float, float]] = {
-    "max_files": (int, 1, DEFAULT_LIMITS["max_files_ceiling"]),
-    "max_dirs": (int, 1, 100_000),
+    "max_files": (int, 0, DEFAULT_LIMITS["max_files_ceiling"]),
+    "max_dirs": (int, 0, 100_000),
     "max_depth": (int, 0, DEFAULT_LIMITS["max_depth_ceiling"]),
-    # 0 seconds = no time limit; a timed profile is clamped by its ceiling.
+    # 0 seconds = no time limit.
     "max_runtime_seconds": (int, 0, 31536000),
-    "max_bytes_read": (int, 1024, 100 * 1024 ** 3),
-    "max_single_file_size": (int, 1024, 10 * 1024 ** 3),
-    # Full hashing is expensive, so the ceiling stays below the read budget.
+    "max_bytes_read": (int, 0, 100 * 1024 ** 3),
+    "max_single_file_size": (int, 0, 10 * 1024 ** 3),
+    # Full hashing is expensive; an operator who wants it can still raise this,
+    # up to the ceiling, or use 0 for "hash whatever is in scope".
     "max_full_hash_size": (int, 0, 10 * 1024 ** 3),
     "sample_block_size": (int, 4096, 8 * 1024 * 1024),
     "max_sample_rows": (int, 1, 1000),

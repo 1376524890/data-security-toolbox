@@ -697,8 +697,9 @@ def discover_data_assets(config: dict, stop_event=None, on_progress=None) -> dic
             pass
 
     def walk_error(exc):
-        if len(errors) < 10:
-            errors.append(f'目录不可读取: {exc.filename}')
+        # Every unreadable directory is reported: an operator chasing a coverage
+        # gap needs the whole list, not the first ten.
+        errors.append(f'目录不可读取: {exc.filename}')
 
     def exhausted(exc: BudgetExceeded) -> None:
         """Record why the scan stopped; a silent break would look like success."""
@@ -882,12 +883,17 @@ def guard_report(report: dict) -> dict:
 
 
 def _walk(root: Path, max_depth: int, onerror=None):
-    """os.walk wrapper honouring the depth limit without loading the whole tree."""
+    """os.walk wrapper honouring the depth limit without loading the whole tree.
+
+    ``max_depth`` of 0 means "no depth limit" - the same rule the platform uses
+    for every coverage knob - so a configured scan reaches the whole tree instead
+    of stopping three levels down.
+    """
     import os
 
     base_depth = len(root.parts)
     for current, subdirs, files in os.walk(root, followlinks=False, onerror=onerror):
         depth = len(Path(current).parts) - base_depth
-        if depth >= max_depth:
+        if max_depth and depth >= max_depth:
             subdirs[:] = []
         yield current, subdirs, files

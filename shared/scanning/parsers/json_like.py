@@ -51,7 +51,11 @@ def parse(path: Path, size: int, *, budget, jsonl: bool, rows: int | None = None
         result.note = "空文件"
         return result
     try:
-        whole_limit = min(WHOLE_PARSE_LIMIT, int(budget.limit("max_single_file_size", WHOLE_PARSE_LIMIT)))
+        configured = int(budget.limit("max_single_file_size", WHOLE_PARSE_LIMIT) or 0)
+        # 0 means "no operator cap"; the document still has to fit in memory, so
+        # fall back to the parser's own ceiling instead of collapsing the window
+        # to 0 - which skipped structure parsing and silently degraded to text.
+        whole_limit = min(WHOLE_PARSE_LIMIT, configured) if configured else WHOLE_PARSE_LIMIT
         if not jsonl and size <= whole_limit and budget.clamp_read(size) >= size:
             budget.check()
             with path.open("rb") as handle:

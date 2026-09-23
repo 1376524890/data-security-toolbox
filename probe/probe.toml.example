@@ -28,7 +28,8 @@ token_path = "/etc/data-security-toolbox/probe.token"
 ports = [22, 80, 443, 445, 3306, 5432, 6379, 8080]
 # Directories scanned for file content (sha256 + md5 + sensitive-data analysis).
 paths = []
-max_files = 10000
+# 0 = collect every file under `paths` (no count cap, no size skip).
+max_files = 0
 demo = false
 
 # Data-asset inventory of the server the probe runs on. Only identity, inferred
@@ -51,20 +52,23 @@ timeout_seconds = 0
 allow_remote = false
 poll_seconds = 30
 
-# Every limit below is enforced by the shared ScanBudget, so one run can never
-# read an unbounded amount of data. The report states which limit stopped it,
-# and a stopped run is Partial - it never claims a path disappeared.
+# Coverage limits below are enforced by the shared ScanBudget. 0 means "no
+# limit" for every one of them, which is the default shipped here: a scan is
+# meant to cover the whole scope, and the report states exactly what it reached.
+# Set a non-zero value only when you deliberately want a cap; the report names
+# the limit that stopped the run and a stopped run never claims a path vanished.
 #
 # Files/directories visited, and how deep the walk goes below each root.
-max_files = 10000
-max_depth = 32
-max_dirs = 50000
+max_files = 0
+max_depth = 0
+max_dirs = 0
 # Total bytes read across the whole run, and per file.
-max_bytes_read = 107374182400
-max_single_file_size = 10737418240
+max_bytes_read = 0
+max_single_file_size = 0
 # Files up to this size get a FULL_SHA256; larger ones get a versioned partial
-# fingerprint (size + HEAD/25%/50%/75%/TAIL blocks) and are marked as candidates.
-max_full_hash_size = 536870912
+# fingerprint (size + HEAD/25%/50%/75%/TAIL blocks). 0 hashes whatever is in
+# scope in full.
+max_full_hash_size = 0
 sample_block_size = 65536
 max_sample_rows = 25
 # 0 disables the corresponding resource guard (CPU seconds / peak RSS MiB).

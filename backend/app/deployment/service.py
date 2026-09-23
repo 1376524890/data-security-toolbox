@@ -76,8 +76,11 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
     data_paths = [str(item) for item in (data_config.get("paths") or []) if str(item).strip()]
     data_enabled = "true" if data_paths else "false"
     data_interval = int(data_config.get("interval_seconds") or 3600)
-    data_max_files = int(data_config.get("max_files") or 10000)
-    data_max_depth = int(data_config.get("max_depth") or 3)
+    # 0 = "no limit" and it has to survive this round-trip: ``or 10000`` / ``or 3``
+    # turned a deliberate 0 back into the old cap, which is how a probe-deployed
+    # data inventory silently stopped three levels down.
+    data_max_files = int(data_config.get("max_files") or 0)
+    data_max_depth = int(data_config.get("max_depth") or 0)
     data_databases = "true" if data_config.get("include_databases", True) else "false"
     return "\n".join(
         [
@@ -106,7 +109,8 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
             'token_path = "/etc/data-security-toolbox/probe.token"',
             "ports = [22, 80, 443, 445, 3306, 5432, 6379, 8080]",
             f"paths = {paths}",
-            "max_files = 50",
+            # Same rule as [data]: 0 = no cap on how many files are collected.
+            "max_files = 0",
             "demo = false",
             "",
             "[scan]",

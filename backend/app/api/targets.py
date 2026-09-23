@@ -28,8 +28,10 @@ class TargetSpec(BaseModel):
     private_key: str | None = Field(default=None, max_length=16384)
     key_passphrase: str | None = Field(default=None, max_length=512)
     roots: list[str] = Field(default_factory=list, max_length=16)
-    max_depth: int = Field(default=3, ge=0, le=target_tree.MAX_DEPTH)
-    max_entries: int = Field(default=500, ge=1, le=target_tree.MAX_ENTRIES)
+    #: 0 = no cap. The picker expands one level per call, so a deep tree is walked
+    #: on demand rather than cut off at a fixed depth (it used to stop at 3).
+    max_depth: int = Field(default=0, ge=0, le=target_tree.MAX_DEPTH)
+    max_entries: int = Field(default=0, ge=0, le=target_tree.MAX_ENTRIES)
 
 
 def _spec(payload: TargetSpec) -> dict:
@@ -48,7 +50,7 @@ def test_target(payload: TargetSpec, user: User = Depends(require_active_admin))
 
 @router.post("/targets/browse")
 def browse_target(payload: TargetSpec, user: User = Depends(require_active_admin)) -> dict:
-    """Bounded, synchronous directory listing for the scope picker."""
+    """Synchronous directory listing for the scope picker; 0 means no cap."""
     try:
         return target_tree.browse_ssh(_spec(payload), roots=payload.roots,
                                       max_depth=payload.max_depth, max_entries=payload.max_entries)

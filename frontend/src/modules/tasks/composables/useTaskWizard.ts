@@ -162,7 +162,10 @@ export function useTaskWizard() {
     const path = node.level === 0 ? (host.root || '/') : String(node.data?.path || '/')
     try {
       const result = await apiPost<{ rows: TreeRow[]; truncated: boolean; reason: string }>(
-        '/targets/browse', { ...spec(host), roots: [path], max_depth: 1, max_entries: 500 })
+        // One level per expansion and no entry cap: the tree is walked on demand,
+        // so a wide directory is not cut off at 500 rows and the depth is not
+        // bounded - the operator can reach any level of the tree.
+        '/targets/browse', { ...spec(host), roots: [path], max_depth: 1, max_entries: 0 })
       if (result.truncated) ElMessage.warning(`目录过大，已截断（${result.reason}）`)
       resolve(result.rows.map((row) => ({
         ...row, leaf: row.type !== 'dir', disabled: row.type !== 'dir',

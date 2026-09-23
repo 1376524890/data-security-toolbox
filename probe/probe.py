@@ -92,7 +92,8 @@ DEFAULT_CONFIG = {
         "allow_auto_reenroll": False,
         "ports": [22, 80, 443, 445, 3306, 5432, 6379, 8080],
         "paths": [],
-        "max_files": 10000,
+        # 0 = no cap on the file inventory; see file_records().
+        "max_files": 0,
         "demo": False,
     },
     "scan": {
@@ -384,14 +385,21 @@ def detect_configured_services(ports: list[int], host: str = "") -> list[dict[st
     return services
 
 
-def file_records(paths: list[Path], max_files: int = 50) -> list[dict[str, Any]]:
+def file_records(paths: list[Path], max_files: int = 0) -> list[dict[str, Any]]:
+    """Hash the files under ``paths``; ``max_files`` of 0 means every one of them.
+
+    A previous release stopped at 50 files and dropped anything over 500 MiB, so a
+    configured directory was only partly covered and the missing files were not
+    reported anywhere. Both rules are gone: the walk lists what is there, and a
+    large file is hashed in chunks like any other.
+    """
     records: list[dict[str, Any]] = []
     for root in paths:
         if not root.exists():
             continue
         candidates = root.rglob("*") if root.is_dir() else [root]
         for item in candidates:
-            if not item.is_file() or item.stat().st_size > 500 * 1024 * 1024:
+            if not item.is_file():
                 continue
             digest_sha = hashlib.sha256()
             digest_md5 = hashlib.md5()
@@ -407,7 +415,7 @@ def file_records(paths: list[Path], max_files: int = 50) -> list[dict[str, Any]]
                 "md5": digest_md5.hexdigest(),
                 "file_type": item.suffix.lstrip("."),
             })
-            if len(records) >= max_files:
+            if max_files and len(records) >= max_files:
                 return records
     return records
 

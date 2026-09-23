@@ -1,5 +1,79 @@
 # 当前任务：资产与数据安全增强
 
+## 第四十三批：扫描临时文件清理 + 旧版本探针回收（2026-09-23）
+
+用户要求：每个文件整份下载 + 全量哈希，**分析完成后及时清理即可**；并**回收旧版本探针，确保没有
+历史版本的内容影响**。
+
+**扫描临时文件（已在，本轮补上崩溃路径）**
+
+- 现状核对：`backend/app/services/file_scan/scan.py` 每个文件下载到
+  `TemporaryDirectory(prefix='dst-file-scan-')` 下的 `content<后缀>`，`ingest.analyze` 与
+  `_sha256_file`（分块，整份哈希）跑完后在 `finally: local.unlink(missing_ok=True)` 删除，一次扫描
+  只占一个文件的空间。工作/运行容器 `/tmp` 复核为空，无遗留。
+- 新增 `scan.sweep_stale_temp_dirs()`：`TemporaryDirectory` 与 `unlink` 都跑不到的场景只有
+  `SIGKILL`／容器停止，此时整份拷贝会永久留在 `/tmp`（一份多 GB 的 dump 就够撑爆磁盘）。启动时清扫
+  **超过 6 小时**的 `dst-file-scan-*`（年龄保护，不会碰别的 worker 正在写的目录），接在
+  `workers/celery_app.py` 的 `worker_ready` 信号上（懒导入，beat/API 不触发）。
+- 回归：`backend/tests/test_file_scan_containment.py` 增 2 例——① 每个文件都是整份拷贝、全量哈希、
+  跑完 `/tmp` 里连目录都不剩；② 启动清扫只清陈旧目录，保留刚写入的。**反向验证**：把修复摘掉后第 1 例
+  仍失败（`copied` 断言可捕获），确认不是空断言。
+- 真机复验：在 `source-worker-1` 里放一个 7 小时前与一个刚写入的 `dst-file-scan-planted-*`，
+  `docker restart source-worker-1` 后陈旧的消失、新的保留。
+
+**旧版本探针回收**
+
+- **发布目录里的旧包**：`probe_packages/probe-3.7.0/arm64/` 还是修复前的源码（`probe.py` 仍是
+  `max_files` 50/10000 上限与 500 MiB 跳过、`install.sh` 仍是 `max_files = 50`、`shared/` 四个文件也不同）。
+  用 `scripts/build_probe_packages.py --arch=arm64` 从当前树重建，产物 `probe-3.7.0-arm64.tar.gz`
+  sha256 由 `dd020dd1a927d776bfb0dfb90cc16e638867cf46ee4284d462c58f65b7c457db` 变为
+  `e39afa560ae322a58dca1529a4d31dd34da299516c1e18570b4dbad6faafae33`，重建后与工作树逐字节一致；
+  旧目录备份在 `/tmp/probe-pkg-backup/probe-3.7.0.old`。**版本号仍是 3.7.0**，源码变了版本没变，
+  以后只有 `package_digest` 能区分（如需可辨识需另起版本号，影响面较大，本批未动）。
+- **根因修复**：`services/probe_service.py::delete_probe_record` 回收探针时把 `probe_deployments.probe_id`
+  置空，却把 `status` 留在 `ONLINE`，于是历史里永远显示一台不存在的在线探针（`probes` 表已空、该行已无
+  探针可指，没有任何事件能再推进它）。现在会把属于该探针的 `ONLINE` 安装行改为 `REMOVED` 并补一条
+  `ProbeDeploymentEvent` 说明原因；回归用例
+  `tests/deployment/test_removal.py::test_reclaiming_a_probe_takes_its_install_offline`
+  （摘掉修复后确认失败）。
+- **线上两条孤儿行**：`probe_deployments` 3/5（`install`，host `192.168.110.168`，`probe_id` NULL、
+  `ONLINE`，`preflight arch=arm64`）按同语义改为 `REMOVED` + 事件 + 审计
+  （`audit_logs.action='probe_deployment.reclaim'`），同时把两行的 `probe_enrollments.expires_at` 收到
+  当下。处理的判据是「该主机已无任何探针记录」（`probes` 表空）。
+- **真机事实**（只读核对，未登录任何探针主机）：本机 `192.168.110.168` **没有安装探针**
+  （`/opt|/etc|/var/lib/data-security-toolbox`、`data-security-toolbox-probe.service` 均不存在），
+  `probes` 表 0 行，`files/asset_instances/detections/assets/pcaps/alerts` 里 `probe_id` 非空的行全为 0——
+  即**没有旧探针留下的数据**，`/home` 那次 15137 个文件是平台用 SFTP 直连采的。遗留的
+  `dstprobe`(uid 995) 系统账号是远端卸载时 `keep_user` 保留的，非 root 无法清理，且不影响结果。
+- **架构**：本机是 **aarch64**（`Linux gb-pc ... aarch64`，Kylin，装 exagear 跑 x86），所以只构建/保留 arm64 包
+  是对的；amd64 包需在 amd64 构建机上出（`scripts/build_probe_runtime.py --arch amd64` 本机跑不通，
+  `probe_packages/runtimes/amd64` 一直是空的，属既有状态）。
+
+**一致性修补：源 1 的旧上限**
+
+- `file_sources` 1（`192.168.110.168 直连采集` `/home`）仍留着老值
+  `max_files=10000, max_depth=3, max_bytes=64 MiB, max_file_bytes=8 MiB, max_seconds=120`，
+  `last_error=byte_budget`——这正是「目录只能看三层 / 被截断」的来源。经 `PUT /file-sources/1` 全部改为
+  0，4 个来源现在都是 `{max_files:0,max_depth:0,max_bytes:0,max_file_bytes:0,max_seconds:0}`
+  （审计 `file_source.update` id=26）。核对了资产分布：只有 `file-source:3`(15137，深度 3–17) 与
+  `file-source:4`(6) 有实例，源 1/源 2 **0 条**，所以没有截断期的历史资产混在库里。
+
+**发布与复验**
+
+- 重建并切换：`source-backend:latest`（target api）与 `source-worker:latest`（target analysis-worker）
+  用 legacy builder 重建，`--force-recreate` 了 backend/worker/beat/pcap-worker/deployment-worker；
+  `/api/v1/health` = ok（3 worker、`analysis_worker: ready`、tshark/zeek/suricata 均可用）。
+- 测试：`test_file_scan_containment`(3)、`test_file_scan_global_stop`(1)、`test_file_sources`(21)、
+  `test_scan_profiles`(28)、`test_targets`(6)、`test_data_asset_boundaries`(3)、`test_probe_boundaries`(9)、
+  `test_task_boundaries`(9)、`tests/shared/test_scanning_core`(42)、`tests/deployment`(arm64 全绿) 通过。
+- 既有失败（与 `HEAD` 相同，非本轮引入，已用 `git archive HEAD` 建立干净树对照）：`test_api.py::test_health`、
+  `test_bugfix_regressions.py`、`test_dlp_detection_quality.py`、`test_rule_execution.py`、`test_rule_libraries.py`
+  （`app.api.rules` 已拆走）、`shared/test_distribution.py` 里需要 `offline/`、`backend/Dockerfile`、
+  `docker-compose.yml` 的 3 条、`tests/deployment/test_api.py::test_create_deployment_persists_data_asset_config`；
+  另有 `tests/test_gap_fixes.py::test_file_upload_persists_md5_from_probe_metadata` 在容器内无 broker 时挂起
+  （HEAD 同样挂起，环境问题）。
+- **未做**：没有登录或改动任何探针主机（无凭据也未获授权）；没有 `git commit`。
+
 ## 第四十二批：目标机接入远程 Git + 探针监控修复上线（2026-09-22）
 
 用户目标：把目标机上那份项目接到 `git@github.com:1376524890/data-security-toolbox.git` 并纳入版本控制。

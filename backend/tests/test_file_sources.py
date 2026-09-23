@@ -32,6 +32,28 @@ def test_password_encrypted_and_task_snapshot_has_no_secret():
         db.rollback()
 
 
+def test_empty_limits_mean_no_limit_and_survive_normalization():
+    """0 must stay "no limit" for every coverage knob.
+
+    The regression this guards: the normalizer floored every key but max_depth at
+    1, so a check task queued with ``limits: {}`` (what the console sends) was
+    stored with ``max_seconds: 1`` and stopped after one second - every run ended
+    "Partial / time_budget" after a handful of files.
+    """
+    with SessionLocal() as db:
+        row = service.save(db, config('unlimited-source'))
+        assert row.limits == {'max_files': 0, 'max_depth': 0, 'max_bytes': 0,
+                              'max_file_bytes': 0, 'max_seconds': 0}
+        # An explicit cap is still stored as asked, and an explicit 0 stays 0.
+        capped = service.save(db, dict(config('capped-source'),
+                                       limits={'max_seconds': 120, 'max_files': 5}))
+        assert capped.limits['max_seconds'] == 120 and capped.limits['max_files'] == 5
+        zeroed = service.save(db, dict(config('zeroed-source'), limits={'max_seconds': 0,
+                                                                        'max_depth': 0}))
+        assert zeroed.limits['max_seconds'] == 0 and zeroed.limits['max_depth'] == 0
+        db.rollback()
+
+
 def test_read_only_scan_persists_membership_and_cleans_temporary_files(monkeypatch):
     paths = []
     remote = Mock()
@@ -92,6 +114,37 @@ def test_failed_connection_is_terminal_without_password_echo(monkeypatch):
         assert task.status == 'Failed'
         assert not result['complete_scope']
         assert 'never-return-this' not in task.error
+
+
+def test_a_root_that_cannot_be_listed_is_never_a_complete_scope(monkeypatch):
+    """A missing root must not read as "Success / 0 files".
+
+    The regression this guards: an unlistable directory was only counted as
+    skipped while ``complete`` stayed true, so a check task pointed at a path the
+    host does not have reported success with no assets - and a complete scope is
+    exactly what lets the platform mark every instance it had seen NOT_OBSERVED.
+    """
+    remote = Mock()
+    remote.entries.side_effect = adapters.SourceError('unreadable_root')
+    remote.entries_raw.side_effect = adapters.SourceError('unreadable_root')
+
+    @contextmanager
+    def connect(*args):
+        yield remote
+
+    monkeypatch.setattr(adapters, 'connect', connect)
+    with SessionLocal() as db:
+        row = service.save(db, config('missing-root'))
+        task = service.queue(db, row)
+        db.commit()
+        result = scan.run(db, task.id)
+        assert result['assets'] == 0
+        assert result['complete_scope'] is False
+        assert result['termination_reason'] == 'unreadable'
+        assert result['unreadable'] == [{'path': '/share', 'reason': 'SourceError',
+                                        'fallback': 'SourceError'}]
+        db.refresh(task)
+        assert task.status == 'Failed'
 
 
 @pytest.mark.parametrize('name', ['..', '/etc/passwd', 'a/b', 'a\\b', 'bad\r\nRETR x'])

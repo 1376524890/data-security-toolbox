@@ -2,6 +2,7 @@ import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { collectProbeDataAssets } from '../../../api/probes'
 import { getTask } from '../../../api/tasks'
+import { formatTerminationReason } from '../../../utils/format'
 
 /** Collection owns its progress; a completed report asks the read side to refresh. */
 export function useDataAssetCollection(onCollected: () => void) {
@@ -9,7 +10,9 @@ export function useDataAssetCollection(onCollected: () => void) {
   const collecting = ref(false)
   const collectProgress = ref(0)
   const collectStage = ref('')
-  const collectForm = reactive({ probe_id: null as number | null, pathsText: '', max_files: 200, max_depth: 3, timeout_seconds: 120, include_databases: true })
+  // 0 = 不限制 for every coverage knob: the dialog must not quietly cap a scan at
+  // 200 files / depth 3 / 120 s, which is what made every inventory stop early.
+  const collectForm = reactive({ probe_id: null as number | null, pathsText: '', max_files: 0, max_depth: 0, timeout_seconds: 0, include_databases: true })
 
   function openCollect(): void {
     collectDialog.value = true
@@ -22,10 +25,16 @@ export function useDataAssetCollection(onCollected: () => void) {
   function partialReason(result: { coverage?: Record<string, unknown>; not_observed?: number }): string {
     const coverage = result.coverage || {}
     const parts: string[] = []
-    if (coverage.termination_reason) parts.push(`终止原因：${String(coverage.termination_reason)}`)
+    if (coverage.termination_reason) {
+      parts.push(`终止原因：${formatTerminationReason(String(coverage.termination_reason))}`)
+    }
     const truncated = coverage.truncated_files
-    if (Array.isArray(truncated) && truncated.length) parts.push(`截断文件 ${truncated.length} 个`)
-    if (coverage.max_files != null) parts.push(`文件上限 ${String(coverage.max_files)}`)
+    if (Array.isArray(truncated) && truncated.length) parts.push(`仅采样内容的文件 ${truncated.length} 个`)
+    // 0 is "no limit", so it must not be reported as if it were a cap.
+    if (Number(coverage.max_files) > 0) parts.push(`文件上限 ${String(coverage.max_files)}`)
+    if (coverage.max_depth != null && Number(coverage.max_depth) > 0) {
+      parts.push(`目录深度上限 ${String(coverage.max_depth)}`)
+    }
     if (coverage.files_analyzed != null && coverage.files_discovered != null) {
       parts.push(`已分析 ${String(coverage.files_analyzed)}/${String(coverage.files_discovered)}`)
     }

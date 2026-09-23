@@ -121,9 +121,9 @@ onMounted(() => { load(); loadProbes() })
         <el-form-item label="采集目录" required>
           <el-input v-model="collectForm.pathsText" type="textarea" :rows="4" placeholder="每行一个绝对路径，例如：&#10;/srv/data&#10;/var/www/uploads" />
         </el-form-item>
-        <el-form-item label="文件上限"><el-input-number v-model="collectForm.max_files" :min="1" :max="2000" /></el-form-item>
-        <el-form-item label="执行时限（秒）"><el-input-number v-model="collectForm.timeout_seconds" :min="5" :max="1800" /></el-form-item>
-        <el-form-item label="目录深度"><el-input-number v-model="collectForm.max_depth" :min="0" :max="8" /></el-form-item>
+        <el-form-item label="文件上限"><el-input-number v-model="collectForm.max_files" :min="0" :max="100000" /><span class="muted" style="margin-left: 8px">0 = 不限制</span></el-form-item>
+        <el-form-item label="执行时限（秒）"><el-input-number v-model="collectForm.timeout_seconds" :min="0" :max="31536000" /><span class="muted" style="margin-left: 8px">0 = 不限制</span></el-form-item>
+        <el-form-item label="目录深度"><el-input-number v-model="collectForm.max_depth" :min="0" :max="64" /><span class="muted" style="margin-left: 8px">0 = 不限制（扫描整棵目录树）</span></el-form-item>
         <el-form-item label="数据库服务"><el-switch v-model="collectForm.include_databases" /></el-form-item>
       </el-form>
       <el-progress v-if="collecting" :percentage="collectProgress" :stroke-width="10" />
