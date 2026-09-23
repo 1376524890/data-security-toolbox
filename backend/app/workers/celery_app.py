@@ -76,5 +76,12 @@ celery_app.conf.update(
             "task": "security_toolbox.mark_stale_probes_offline",
             "schedule": 30.0,
         },
+        # A wedged segment analysis holds a pcap worker slot and leaves its
+        # record ``pending``; the sweep is what turns that into a visible
+        # failure instead of a queue that never drains.
+        "sweep-stale-analyses": {
+            "task": "security_toolbox.sweep_stale_analyses",
+            "schedule": 60.0,
+        },
     },
 )

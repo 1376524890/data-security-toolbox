@@ -24,6 +24,7 @@ from app.engine.risk_engine.engine import RiskEngine
 from app.models import (
     Alert,
     DetectionFinding,
+    PcapRecord,
     Task,
 )
 from app.services import pcap_storage
@@ -40,6 +41,7 @@ from app.workers.task_names import (
     ENFORCE_PCAP_STORAGE_CAP,
     EXPIRE_PROBE_TASKS,
     MARK_STALE_PROBES_OFFLINE,
+    SWEEP_STALE_ANALYSES,
     SYNC_WAZUH_ALERTS,
     WORKER_CAPABILITY_HEARTBEAT,
 )
@@ -257,3 +259,61 @@ def mark_stale_probes_offline() -> int:
 
     with SessionLocal() as db:
         return mark_stale_offline(db)
+
+
+#: An analysis task that has not finished in this long is wedged, not slow: the
+#: longest legitimate single step is Suricata's 61 s startup budget, and a 30 s
+#: segment is meant to be analysed well inside the window in which the next one
+#: fills. 15 minutes is ~30 segments of backlog - already beyond the congestion
+#: budget - so anything past it is a leak to be closed, not work to wait for.
+STALE_ANALYSIS_SECONDS = 900
+
+
+@celery_app.task(name=SWEEP_STALE_ANALYSES)
+@task_guard
+def sweep_stale_analyses_task() -> dict[str, int]:
+    """Close analysis tasks that died without leaving a terminal status.
+
+    A worker killed mid-run (restart, OOM, a third-party binary that never
+    returns) leaves its task row ``Running`` and the segment record ``pending``
+    forever, because nothing on the failure path survives to write them. The
+    console then shows a busy queue that never drains, and the same segment can
+    never be told apart from one still being worked on.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=STALE_ANALYSIS_SECONDS)
+    closed = 0
+    records = 0
+    reclaimed = 0
+    with SessionLocal() as db:
+        # Rows whose payload a storage sweep already deleted can never be
+        # analysed either. ``release`` now closes them as it frees the file, but
+        # rows evicted before that existed still read as pending work.
+        for orphan in db.scalars(
+            select(PcapRecord).where(
+                PcapRecord.analysis_status == "pending",
+                PcapRecord.retention_status == pcap_storage.STATUS_RETAINED,
+            )
+        ).all():
+            orphan.analysis_status = "evicted"
+            reclaimed += 1
+        stale = db.scalars(
+            select(Task).where(Task.status == "Running", Task.updated_at < cutoff)
+        ).all()
+        for task in stale:
+            task.status = "Failed"
+            task.error = "分析未在预期时间内完成，已判定为中断（见 sweep_stale_analyses）"
+            task.current_stage = "分析中断"
+            task.finished_at = datetime.now(UTC)
+            closed += 1
+            pcap_id = (task.payload or {}).get("pcap_id")
+            if not pcap_id:
+                continue
+            record = db.get(PcapRecord, int(pcap_id))
+            # Only a record still waiting is repainted: one that reached
+            # ``analyzed`` before the worker died is not a failure.
+            if record is not None and record.analysis_status == "pending":
+                record.analysis_status = "failed"
+                records += 1
+        if closed or reclaimed:
+            db.commit()
+    return {"tasks": closed, "records": records, "evicted": reclaimed}

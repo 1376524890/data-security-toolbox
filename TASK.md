@@ -1,5 +1,75 @@
 # 当前任务：资产与数据安全增强
 
+## 第四十八批：修复探针抓包「抓空网卡」与「空段拖垮分析队列」（2026-09-23）
+
+用户要求：先修复 → 复核密码评估在检查任务里的位置与展示 → 起新版本 → 推 git →
+给本机下发一个持久监控任务（**不能让抓包速率大于分析速率而卡死**）→ 打包发布 release。
+本轮把「卡死」的两个真根因都抓出来了，都不是配置问题。
+
+### 根因一：探针抓在了一块没插网线的网卡上
+
+preflight 用 `ls /sys/class/net` 列出所有非 lo 名字，`capture_interface_for` 取**第一个非虚拟**的。
+真机 `enp1s0`（网线未插，`operstate=down`、无地址）排在 `wlan0`（`UP`，192.168.110.168/24）前面，
+于是探针被派去抓一块**永远没有流量**的网卡：部署记录是 `ONLINE`、心跳正常、段也在上传，
+表面上一切正常，只有「永远没有内容」这一个症状。
+
+- `deployment/preflight.py`：新增 `operstate` 探测，`interfaces` 只给**内核报告为 up** 的非 lo 网卡；
+  完整清单另存 `all_interfaces` 供控制台展示（死网卡仍然看得见，只是不会被选）。驱动把 operstate
+  报成 `unknown` 的主机（部分虚拟/无线栈）回退到全部非 lo 名字，不会因此 preflight 失败。
+- `deployment/service.py`：`capture_interface_for` 文档补上「候选已按 up 过滤」的契约。
+- 测试：`tests/deployment/test_runtime_preflight.py` 新增 2 项（死网卡不被选中 + 运维显式选择优先、
+  虚拟网卡跳过、无候选回落 `any`）。
+
+### 根因二：一个空抓包段会占用 60 秒分析时间，而且永远清不掉
+
+段里**零个数据包**时仍然跑全部引擎。Suricata 对读不出包的 pcap **不是快速失败**：它耗尽自身 ~60 秒
+启动预算，然后抛 `failed to get first packet timestamp`。两件事同时发生：
+
+1. 这个异常从 `EngineRegistry.run` 冒出去，**中止整段分析**，段记录停在 `pending` 永不落地，
+   而 pcap worker 的槽位被占满 60 秒 —— 抓包 30 秒一段、分析 60 秒一段，**积压必然无界增长**；
+2. 安静窗口（或抓空的网卡）每 30 秒产出一个这样的段，于是「越积越多直到卡死」。
+
+真机实测坐实：探针 8 四十分钟内 `pending` 段从 7 涨到 **75**，`tasks.kind='pcap'` 里 583 条 Failed，
+6 条卡在 Running。
+
+- `workers/analysis_tasks.py`：`analyze_pcap_task` 在跑引擎前判断 `parsed["packets"]` 为空 ——
+  零包不可能是证据，写一条 `capture` 模块的 AnalysisResult（中文说明「空抓包：该时间窗口内未捕获到
+  任何数据包」）后直接收尾，不再付引擎的钱。
+- `engine/core/registry.py`：**引擎隔离** —— 单个引擎抛异常只记 warning、把失败挂到
+  `context.data["engine_errors"]`，其余引擎照常产出；pcap 任务把 `engine_errors` 落成
+  `engine_error` 模块的 AnalysisResult（**盲区要看得见，不能读成「干净抓包」**）。
+- 测试：`tests/test_empty_capture_analysis.py`（上传真实 dumpcap 空段字节 → `analyzed` + `capture`
+  结果 + 无 `engine_error` + 任务 Success）、`tests/engine/test_core.py` 新增引擎隔离用例。
+  空段字节取自真机产物，存为 `tests/fixtures/generate_empty_capture.py`（272 字节，注释写明来源）。
+
+### 根因三：死掉的分析任务与「已被回收却仍显示 pending」的行
+
+worker 在分析中途被杀（重启/OOM/第三方二进制不返回）时没人写终态：任务行永远 `Running`、
+段记录永远 `pending`，控制台于是显示一个「永远排不完的队列」。另外存储护栏删**文件**保留行
+（`pcap_storage.release`），却没动 `analysis_status`，被回收的段也读成「等分析」——本轮实测
+**208 行** 这样的幻影积压（65 MiB/段、`retention_status=retained_analysis`、文件已不在）。
+
+- `services/pcap_storage.py::release`：删文件同时把仍是 `pending` 的段标成 `evicted`
+  （已 `analyzed` 的不动，保留它的结论）。
+- 新增 beat 任务 `security_toolbox.sweep_stale_analyses`（60 秒，
+  `workers/maintenance_tasks.py::sweep_stale_analyses_task`）：`Running` 超过 900 秒的任务判为
+  `Failed`（写明「分析未在预期时间内完成，已判定为中断」），其段记录 `pending → failed`；
+  同时把历史上「已回收仍 pending」的行收成 `evicted`。
+- 测试：`tests/test_stale_analysis_sweep.py` 3 项、`tests/test_storage_guard.py` 新增 1 项。
+
+**测试与证据**：全量后端 **34 FAILED 与 HEAD 基线逐条一致**（另 2 个既有 collection ERROR 同样复现），
+passed 888（+5）；新代码 ruff 0 违规（改动文件只剩原有存量 E501）。无 Alembic 迁移。
+
+### 密码评估复核（不改码）
+
+「密码评估」只在**检查任务（单次）**向导里出现（`wizard.cryptoAssess`，`taskType==='inspection'`，
+顶层 `TaskCenter.vue` 第 502 行），下游一路通到 `workers/analysis_tasks.py` 写
+`summary["crypto_profiles"]` / `["crypto_profile_hosts"]`；**展示位置在任务中心详情抽屉**
+（`TaskCenter.vue` 第 342 行 `<CryptoAssessmentPanel>`），不是独立页面。真机复核任务 1355
+（`POST /scan` target=192.168.110.168 + `crypto_assess=true`）：`Success`，
+`crypto_profile_hosts=1`，`crypto_profiles` 正常返回。**结论**：流程内有、界面上有，
+按用户「如果没有展示才在资产中心新建页面」的条件，本轮不新建页面。
+
 ## 第四十七批：执行误报治理 1–5、清掉存量误报并复核（2026-09-23）
 
 第四十六批把误报的**根因**堵住了，但清理计划（五层）只写了方案、一条没执行；用户要求“执行 1-5”，

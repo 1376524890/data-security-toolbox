@@ -101,6 +101,11 @@ def release(db: Session, record: PcapRecord) -> int:
             freed = 0
     record.retention_status = STATUS_RETAINED
     record.status = STATUS_RETAINED
+    # A segment whose file was just deleted can never be analysed. Leaving it
+    # ``pending`` reads as "still waiting for a worker" forever, so a sweep that
+    # freed the disk also invented a backlog that no worker could ever drain.
+    if record.analysis_status == "pending":
+        record.analysis_status = "evicted"
     return freed
 
 

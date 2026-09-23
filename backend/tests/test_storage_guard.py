@@ -98,6 +98,29 @@ def test_eviction_frees_unheld_segments_and_keeps_the_row(tmp_path, monkeypatch)
         assert result["skipped_held"] >= 1
 
 
+def test_eviction_closes_a_segment_that_never_got_analysed(tmp_path, monkeypatch) -> None:
+    """A freed file can never be analysed, so its record must not say ``pending``.
+
+    The row is kept on purpose, but ``pending`` reads as "waiting for a worker"
+    forever: a space sweep that freed the disk also invented a backlog nothing
+    could drain, and the console showed the queue as permanently behind.
+    """
+    monkeypatch.setattr(pcap_storage, "stored_bytes", lambda: 0)
+    with _isolated_session(tmp_path) as db:
+        analysed, _ = _segment(db, tmp_path, 1)
+        analysed.analysis_status = "analyzed"
+        unanalysed, unanalysed_path = _segment(db, tmp_path, 2)
+        assert unanalysed.analysis_status == "pending"
+        db.flush()
+
+        pcap_storage.evict_oldest(db, include_held=True)
+
+        assert not unanalysed_path.exists()
+        assert unanalysed.analysis_status == "evicted"
+        # A segment that did finish keeps the verdict it reached.
+        assert analysed.analysis_status == "analyzed"
+
+
 def test_the_floor_overrides_the_hold_on_open_forensic_payload(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(pcap_storage, "stored_bytes", lambda: 0)
     with _isolated_session(tmp_path) as db:

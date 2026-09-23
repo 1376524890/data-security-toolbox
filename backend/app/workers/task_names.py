@@ -27,3 +27,7 @@ SWEEP_DEPLOYMENT_TIMEOUTS = "security_toolbox.sweep_deployment_timeouts"
 #: (see services.probe_status): nothing else ever wrote ``offline`` back when a
 #: probe stopped heartbeating, so the column and the list disagreed forever.
 MARK_STALE_PROBES_OFFLINE = "security_toolbox.mark_stale_probes_offline"
+#: A segment analysis that never returns leaves its task ``Running`` forever and
+#: its record ``pending``, so the queue looks busy while nothing drains. Nothing
+#: else ever closed those rows (a killed worker cannot), so the sweep does.
+SWEEP_STALE_ANALYSES = "security_toolbox.sweep_stale_analyses"
