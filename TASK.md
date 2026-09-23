@@ -1,5 +1,75 @@
 # 当前任务：资产与数据安全增强
 
+## 第四十九批：漏洞库「任务不存在」、抓包刷屏任务监控、大屏两张图分开切换（2026-09-24）
+
+用户要求：① 大屏的「地理位置态势」和「数据流动」做成两个可切换的页面、不要并列、并在地图上
+把数据流动链路划清楚；② pcap 抓包不要刷屏任务监控；③ 漏洞库显示 `Error: 任务不存在` 要查出原因并修复；
+④ 修复后重新打包发布、推 git。
+
+### 缺陷一：漏洞库页永久停在「Error: 任务不存在」
+
+**根因（客户端与服务端各自都对，是生命周期错配）**：`useVulnerabilityLibrary` 把 Grype 任务的 id 存在
+`localStorage['grype-library-job']`，而任务的状态文件存在服务端 `settings.storage_dir/library_jobs/`。
+重新部署会换掉 `storage_dir`（bind mount 换新），于是页面拿着**新容器从没听说过的 id** 去轮询
+`GET /offline/grype/jobs/{id}`，`integrations.py::job_path` 找不到文件就 `404 任务不存在`；
+`poll()` 把 404 当成普通错误写进 `error`，然后**每 2 秒重排一次**——页面既有一个永远清不掉的红色报错，
+又永远停不下来。本机 `deploy-data` 被换过多次，这个 id 因此长期存活。
+
+- `api/client.ts`：响应拦截器把 HTTP 状态码挂到 Error 上（`failure.status`）。此前只有一句话，
+  调用方无法区分「这条记录没有了」（404）和「服务端不健康」（5xx），而这两者的处置完全相反。
+- `useVulnerabilityLibrary.ts`：`poll()` 认 404 为「任务已不存在」——清 `localStorage`、把 `busy` 复位、
+  把 `job` 置空、用 `hint` 与一次 warning 说明「已清除本地记录」，然后**return（不再排下一次轮询）**。
+  非 404 的失败仍旧重试，仍旧记进 `error`（瞬时故障不该终止展示）。
+- 测试：`__tests__/cve-network-state.test.ts` 新增 2 项（404 清记录并停表、502 保持等待且保留 id）。
+
+### 缺陷二：抓包段刷屏任务监控
+
+**根因（过滤条件依赖了一个可能不存在的字段）**：`default_task_filter()` 只按
+`payload['monitor_task_id'] IS NULL` 隐藏抓包段——它假定**每个段都被挂到了监控任务上**。
+段的挂链发生在**上传那一刻**（`api/pcaps.py` 的 `ensure_monitor_task` + `attach_segment`），所以
+「上传时没有 Running 监控任务」和「挂链存在之前建的行」都会留下**没有链接的段**，它们满足过滤条件，
+于是以一条条裸 `pcap` 行出现在任务中心。本机实测：`GET /tasks` 共 94 行，最新的 8 行全是 `pcap`；
+库里 76 行段没有链接（`pcap` 共 1685 行）。
+
+- `services/probe_task_service.py::default_task_filter`：默认列表**直接排除 `kind='pcap'`**
+  （用 `monitoring.SEGMENT_KIND`，不写字符串字面量），再叠加原来的链接条件。段的可达性不变：
+  `kind=pcap`（任务中心的类型下拉里本来就有）仍旧能翻到全部段。
+- 实测（本机重启后端容器后）：`GET /tasks` 总数 **94 → 18**，无 `pcap` 行；`kind=pcap` 仍返回
+  1261 段；驾驶舱「最近任务」（同一个过滤器）只显示 monitoring/scan/file_source_scan。
+- 没有改数据：过滤即修复，76 行历史段原地保留、仍可按类型检索。
+- 测试：`tests/test_monitoring_stop.py` 新增 1 项（没有链接的段不出现在默认列表、仍能按 `kind=pcap` 找到）。
+
+### 缺陷三：大屏两张图并列，且看不出数据流向
+
+- `DashboardScreen.vue` 中心列原先**上下堆叠** `TrafficMap` + `GeoMap`，各占一半高度（原注释就写着
+  「两张图各占一半，谁也不藏起来」）。现在改成**两个可切换的视图**（`数据流动` / `地理位置态势`），
+  默认 `数据流动`，同一时刻只渲染一张图，当前图拿满整列高度。切换状态 `centerView` 与 `metric` 一样
+  放在 `composables/useDashboardScreen.ts`，视图不再自己持有状态。
+- `components/GeoMap.vue` **在地图上画出数据流动链路**：从内网 hub 到每个目的国家/地区一条曲线，
+  **粗细=数据量、颜色=该组敏感等级**，虚线沿 hub→目的地流动（静态线说不出的就是方向），
+  悬停给出「内网 → 美国 · 2 主机 · 4.0 KB · L3 高敏感个人信息」。链路按**目的地区分组**画，
+  不画主机到主机——服务端 `GET /dashboard/geo-map` 只把目的地址判定到国家，没有主机级坐标，
+  画主机连线等于声称一个没人测量过的几何。
+- **地球改为朝向数据量最大的境外目的地**：地球只能朝一面，原先固定 105°E，于是 `-98.6°` 的美国
+  落在背面被静默丢掉（原代码只 `filter(visible)`，什么都不说）。现在按最大流量目的地定朝向，
+  背面剩下的组在脚注里计数（「地球背面 N 组未绘制」），不再无声消失。
+- 测试：`dashboard-screen.test.ts` 新增「切换中心列」1 项（两个 tab、一次只渲染一张图、切回、链路数量与
+  标题、背面无遗漏）；`dashboard-screen-state.test.ts` 新增 1 项（`centerView` 默认值）；geo/投影用例未改。
+  前端 22 文件 / **124 项通过**（原 120），`vue-tsc --noEmit` 无输出。
+
+### 交付与验证
+
+平台版本 3.1.0 → **3.2.0**（`backend/app/main.py`、`frontend/package.json`、`frontend/package-lock.json`），
+探针保持 3.7.0，**无新增 Alembic 迁移**。后端全量（容器内）
+`pytest --ignore=tests/test_rule_libraries.py`：**29 failed / 978 passed / 5 skipped / 2 errors**，
+29 条与发布前基线**逐条一致、无新增**（基线 34 条里有 5 条因本轮把 `probe/`、`shared/` 一并放进容器而转绿）；
+ruff 对改动文件无新增违规。
+
+**已知遗留（非本轮引入）**：`backend/tests/test_rule_libraries.py` 仍 `from app.api.rules import ...`，
+而 `app/api/rules.py` 已在 `8080857` 被删除（该 commit 忘了删这个测试）。它会让 `pytest` 在收集阶段
+直接中断，所以全量跑必须带 `--ignore=tests/test_rule_libraries.py`；删除或改写该测试属于另一件事，
+本轮只在文档记录，不动它。
+
 ## 第四十八批：修复探针抓包「抓空网卡」与「空段拖垮分析队列」（2026-09-23）
 
 用户要求：先修复 → 复核密码评估在检查任务里的位置与展示 → 起新版本 → 推 git →

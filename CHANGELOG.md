@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-09-24 — v3.2.0：漏洞库不再卡在「任务不存在」、抓包段不再刷屏任务监控、大屏两张图分开并画出数据链路
+
+平台版本自 3.1.0 升到 **3.2.0**（`backend/app/main.py`、`frontend/package.json` 与
+`frontend/package-lock.json`），探针保持 3.7.0，**无新增 Alembic 迁移**（head 仍为
+`0019_policy_group_fingerprints`）。三处改动都来自运营侧的真实报障。
+
+- **漏洞库永久停在 `Error: 任务不存在`**：Grype 任务的 id 存在浏览器 `localStorage`，任务状态文件
+  存在服务端 `storage_dir/library_jobs/`，而**重新部署会换掉 `storage_dir`**。页面于是拿着一个
+  新容器从没听说过的 id 去轮询 `GET /offline/grype/jobs/{id}`，`job_path` 找不到文件返回
+  `404 任务不存在`；`poll()` 把 404 当普通错误写进 `error` 后**照旧每 2 秒再排一次**——报错清不掉，
+  轮询也停不下来。现在 `api/client.ts` 把 HTTP 状态码挂到 Error（`failure.status`），
+  `useVulnerabilityLibrary` 认 404 为「这条记录已经不存在」：清 `localStorage`、复位 `busy`、
+  提示一次「已清除本地记录」，并**结束轮询**；非 404 的失败仍旧重试并记入 `error`。
+  **判别依据是状态码，不是文案**，服务端改措辞不会让这段逻辑失效。
+- **pcap 抓包段刷屏任务监控**：`default_task_filter()` 原先完全押
+  `payload['monitor_task_id'] IS NULL` 来判断「是不是监控任务的子任务」，而挂链只发生在上传那一刻
+  （`api/pcaps.py` 的 `ensure_monitor_task` + `attach_segment`）。**上传时没有 Running 监控任务**、
+  或**挂链机制存在之前建的行**，都会留下没有链接的段，它们满足过滤条件，于是一条条裸 `pcap` 行挤满
+  任务中心——本机实测 `GET /tasks` 共 94 行、最新 8 行全是 `pcap`，库里 76 行段没有链接。
+  默认列表现在**直接排除 `kind='pcap'`**（用 `monitoring.SEGMENT_KIND`，不写字符串字面量），
+  不再依赖那个可能不存在的字段；段的可达性不变，`kind=pcap` 仍能翻到全部段。实测 `GET /tasks`
+  总数 **94 → 18**、无 `pcap` 行，驾驶舱「最近任务」（同一过滤器）只显示 monitoring/scan/file_source_scan。
+  **过滤即修复，没有改一行历史数据**。
+- **大屏「数据流动」与「地理位置态势」改成两个可切换视图，并在图上画出数据链路**：中心列原先上下
+  并列两张图、各占一半高度（一张地图矮到看不清自己的连线）。现在同一时刻只渲染一张
+  （`数据流动` 默认 / `地理位置态势`），当前图拿满整列高度；切换状态 `centerView` 与 `metric` 一样
+  归 `useDashboardScreen`。地理态势里**画出数据流动链路**：从内网 hub 到每个目的国家/地区一条曲线，
+  **粗细=数据量、颜色=该组敏感等级**、虚线沿 hub→目的地流动（方向是静态线说不出来的），悬停给出
+  「内网 → 美国 · 2 主机 · 4.0 KB · L3 高敏感个人信息」。链路按**目的地区分组**绘制，
+  **不画主机到主机**——`GET /dashboard/geo-map` 只把目的地址判定到国家、没有主机级坐标，
+  画主机连线等于声称一个没人测量过的几何。另外**地球改为朝向数据量最大的境外目的地**：
+  地球只能朝一面，原先固定 105°E，`-98.6°` 的美国落在背面被 `filter(visible)` 静默丢弃；
+  现在背面剩下的组会在脚注里计数（「地球背面 N 组未绘制」），不再无声消失。
+- **测试**：前端 22 文件 / **124 项通过**（新增 4 项：漏洞库 404 清记录并停表、502 保持等待、
+  中心列切换、`centerView` 默认值），`vue-tsc --noEmit` 无输出。后端全量（容器内，需带
+  `--ignore=tests/test_rule_libraries.py`）**29 failed / 978 passed / 5 skipped / 2 errors**，
+  29 条与发布前基线**逐条一致、零新增**；改动文件 ruff 无违规。
+
 ## 2026-09-24 — v3.1.0：抓包队列不再被空段拖垮、流量误报的口径修正，密码评估结果回到资产中心
 
 平台版本自 3.0.0 升到 **3.1.0**（`backend/app/main.py`、`frontend/package.json` 与
