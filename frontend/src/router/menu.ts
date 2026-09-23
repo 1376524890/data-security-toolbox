@@ -45,6 +45,7 @@ export const menuGroups: MenuGroup[] = [
   { group: '资产中心', items: [
     { path: '/data-assets', title: '数据资产', icon: 'Coin' },
     { path: '/data-assets', title: '网络资产', icon: 'Connection', query: { view: 'network' } },
+    { path: '/data-assets', title: '密码评估', icon: 'Lock', query: { view: 'crypto' } },
   ]},
   { group: '数据流动与防护', items: [
     { path: '/network/dlp', title: '风险数据流动报告', icon: 'Lock' },

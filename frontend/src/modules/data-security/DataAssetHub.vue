@@ -5,6 +5,7 @@ import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
 import BarChart from '../../components/charts/BarChart.vue'
 import NetworkAssets from './NetworkAssets.vue'
+import CryptoAssessmentResults from './CryptoAssessmentResults.vue'
 import { getAssessment, type AssessmentEnvelope, type AssessmentKpi } from '../../api/assessments'
 
 // 资产中心 has two inventories: 数据资产 (a: the overview and distribution of the
@@ -12,6 +13,8 @@ import { getAssessment, type AssessmentEnvelope, type AssessmentKpi } from '../.
 // (what the active scan found on the wire). Both are read-only aggregations of
 // rows the engines already produced — the same numbers the big screen shows — so
 // there is no second source of truth and no duplicated 数据类型 / 检测中心 page.
+// 密码评估 is the third: it reads back the 检查任务 results, which used to be
+// reachable only from the task drawer in 任务中心.
 const route = useRoute()
 const router = useRouter()
 const active = ref(String(route.query.view || 'data'))
@@ -169,6 +172,9 @@ onMounted(load)
       </el-tab-pane>
       <el-tab-pane label="网络资产" name="network">
         <NetworkAssets v-if="active === 'network'" />
+      </el-tab-pane>
+      <el-tab-pane label="密码评估" name="crypto" lazy>
+        <CryptoAssessmentResults />
       </el-tab-pane>
     </el-tabs>
   </div>

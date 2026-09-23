@@ -56,10 +56,14 @@ describe('navigation menu', () => {
     expect(menuGroups[0].items.map((item) => item.path)).toEqual(['/', '/cockpit'])
   })
 
-  it('lists 网络资产 and 漏洞库 under the section that owns them', () => {
+  it('lists 网络资产, 密码评估 and 漏洞库 under the section that owns them', () => {
     const assetSection = menuGroups.find((g) => g.group === '资产中心')!
-    expect(assetSection.items.map((item) => item.title)).toEqual(['数据资产', '网络资产'])
+    expect(assetSection.items.map((item) => item.title)).toEqual(['数据资产', '网络资产', '密码评估'])
     expect(assetSection.items[1].query).toEqual({ view: 'network' })
+    // 密码评估 reuses the data-asset hub: it is the third view of the same page,
+    // not a second asset page with its own numbers.
+    expect(assetSection.items[2].query).toEqual({ view: 'crypto' })
+    expect(new Set(assetSection.items.map((item) => item.path))).toEqual(new Set(['/data-assets']))
     const ruleSection = menuGroups.find((g) => g.group === '采集与规则')!
     expect(ruleSection.items.some((item) => item.title === '漏洞库')).toBe(true)
   })

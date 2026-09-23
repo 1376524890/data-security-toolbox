@@ -57,8 +57,46 @@ worker 在分析中途被杀（重启/OOM/第三方二进制不返回）时没�
   同时把历史上「已回收仍 pending」的行收成 `evicted`。
 - 测试：`tests/test_stale_analysis_sweep.py` 3 项、`tests/test_storage_guard.py` 新增 1 项。
 
+### 根因四：两条流量规则几乎在**每一段**上都报，且是同一类错误
+
+把空段问题修掉、探针 9 真正抓到内容之后，新的段立刻开始产出成片的「端口扫描 / 高包速率」——
+这一批才是「误报严重」的主因。两条规则各错在一次**度量口径**上，且都在两个产出者里各写了一遍：
+
+- **`NETWORK_PORT_SCAN`（滚动状态，High，27 条）**：`RollingTrafficState` 只按**源地址**建键、
+  直接数 `dst_port`。抓包流是**单向**的，DNS 服务器的应答是
+  `114.114.114.114:53 → 客户端:临时端口`，一个客户端一条流、目的端口各不相同——
+  于是**每台繁忙服务器在每一段里都被判成在扫描它自己服务的网**。改为按
+  `(probe, src, dst)` 建键、用 `traffic_scope.service_port()` 取**服务侧**端口，引擎按 `(src, dst)` 对遍历；
+  `dedup_key` / `seen()` 一并带上 `dst`。
+- **`NET_RATE_001` 与遗留 `high_packet_rate`（Medium，各 38 条）**：都是
+  `packets / max(span, 0.001)`，**只有一个包的会话**（span=0）算出 **1000 pps**，
+  直接越过 `packet_rate > 500`。凡是段里出现一个单包会话就报一次 = 几乎每段都报。
+  改为共用 `traffic_scope.conversation_rate()`，跨度下限 **0.05 秒**：单包读 20 pps，
+  1000 包/10 ms 仍是 20000 pps。两条产出者从此不可能对不上口径——它们本来就是同一个异常的两次上报。
+
+### 存量清理：只清「指标口径已被改掉」的三条规则
+
+`POST /admin/findings/purge-false-positives` 的 `rules` 参数语义是「运维已确认该规则把指标描述错了」，
+所以只清本轮**改过口径**的三条：`NETWORK_PORT_SCAN` + `NET_RATE_001` + `high_packet_rate`。
+先 `dry_run=true` 对齐（119 finding / 0 alert / 0 detection），再实删：**删除 119 条 finding + 6 条级联告警**。
+**刻意不清 `NET_SCAN_001`**（5 条）：它的 `port_count` 走 `_busiest_port_window`，本来就是
+「按 `(源,目的)` 对 + 服务侧端口」的口径，本轮没动它——按行证据判定它仍然成立，清了才是误删。
+
+### 仍未解决的误报（本轮只记录，未改码）
+
+清理后仍在产出的是**探针主机自己的流量**：`192.168.110.168` 既跑平台、又跑平台发起的 nmap/nuclei
+扫描（nuclei 命中的 `host` 就是 `192.168.110.168`），探针又恰好在自己的 wlan0 上抓包，
+所以「本机扫本机 / 本机对外开连接」会变成本机被扫描的 finding
+（例：`192.168.110.168 → 43.199.29.225` 60 秒内 38 个服务端口）。这不是度量算错，是**范围**问题；
+平台已有的正解是 `DLP_SELF_ENDPOINTS`（`services/dlp/self_traffic.py`，`filter_flows` 会在任何指标之前丢弃
+命中行）。把它配上会同时屏蔽该主机的其余流量，属于**运维取舍**，因此没有替用户默认打开。
+另有一条**待决策项**：同一异常有 YAML 与遗留两套产出者（`NET_SCAN_001` 与内置 `NETWORK_PORT_SCAN`，
+标题都是「端口扫描」），同一台主机各报一遍。
+
 **测试与证据**：全量后端 **34 FAILED 与 HEAD 基线逐条一致**（另 2 个既有 collection ERROR 同样复现），
-passed 888（+5）；新代码 ruff 0 违规（改动文件只剩原有存量 E501）。无 Alembic 迁移。
+passed 897（本轮流量修复新增 5 项用例：`test_traffic_state` +2、`test_traffic_scope` +3）；
+新代码 ruff 0 违规（改动文件只剩原有存量 E501，逐个与 `git show HEAD:` 的 HEAD 版本比对、
+未新增任何违规）。无 Alembic 迁移。
 
 ### 密码评估复核（不改码）
 
