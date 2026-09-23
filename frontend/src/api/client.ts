@@ -22,7 +22,12 @@ client.interceptors.response.use(
   (error) => {
     const detail = error?.response?.data?.detail
     const message = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : error?.message || '请求失败'
-    return Promise.reject(new Error(message))
+    // The status rides along with the message so a caller can tell "this record
+    // is gone" (404) from "the server is unwell" (5xx): the difference decides
+    // whether retrying can ever succeed, and the wording cannot carry it.
+    const failure = new Error(message) as Error & { status?: number }
+    failure.status = error?.response?.status
+    return Promise.reject(failure)
   },
 )
 

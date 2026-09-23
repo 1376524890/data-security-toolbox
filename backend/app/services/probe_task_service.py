@@ -3,11 +3,11 @@
 import re
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.models import PolicyGroup, Probe, Task
-from app.services import scan_scope
+from app.services import monitoring, scan_scope
 
 PROBE_TASK_KINDS = ("probe_scan", "data_asset_scan")
 TERMINAL = ("Success", "Failed", "Partial", "Cancelled")
@@ -28,8 +28,16 @@ def default_task_filter():
     A capture segment is child work of a monitoring task, so the default list
     shows the monitor; ``kind=pcap`` reaches the segments. Shared by
     ``GET /tasks`` and the cockpit's 最近任务 card so both hide the same rows.
+
+    The kind is excluded outright rather than trusting the link: a segment whose
+    ``monitor_task_id`` is missing (uploaded while no monitor was running, or
+    created before segments were linked at all) is still one 30 s capture, and
+    the operator's question is about the monitor, not about 76 of its children.
     """
-    return Task.payload["monitor_task_id"].as_integer().is_(None)
+    return and_(
+        Task.kind != monitoring.SEGMENT_KIND,
+        Task.payload["monitor_task_id"].as_integer().is_(None),
+    )
 
 
 def _validated_policy_group_ids(db: Session, ids: list[int] | None) -> list[int]:

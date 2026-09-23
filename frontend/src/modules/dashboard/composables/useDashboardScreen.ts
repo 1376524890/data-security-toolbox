@@ -27,6 +27,14 @@ import { assetTypeLabels, severityLabels, severityOrder, severityTagColors } fro
 /** Which series the 检测趋势 card shows. */
 export type DetectionMetric = 'findings' | 'incidents' | 'alerts'
 
+/**
+ * The centre column shows one map at a time: the flow topology and the
+ * geographic view answer the same question ("where did the data go?") and
+ * stacking them halved both. The switch is state like any other, so it lives
+ * here rather than in the view.
+ */
+export type CenterView = 'traffic' | 'geo'
+
 // The ``09-22`` axis label is shared with the cockpit, so it lives in
 // utils/format; re-exported here for the callers (and tests) that read it from
 // this module.
@@ -155,6 +163,7 @@ export function useDashboardScreen(options: UseDashboardScreenOptions = {}) {
   const integrations = ref<IntegrationStatus[]>([])
   const engineFindings = ref<Array<{ engine: string; count: number }>>([])
   const metric = ref<DetectionMetric>('findings')
+  const centerView = ref<CenterView>('traffic')
   const updatedAt = ref<Date | null>(null)
   const now = ref(new Date())
 
@@ -256,7 +265,7 @@ export function useDashboardScreen(options: UseDashboardScreenOptions = {}) {
 
   return {
     loading, error, overview, traffic, geo, risk, detectionTrend, events, probes, integrations,
-    engineFindings, metric, updatedAt, now,
+    engineFindings, metric, centerView, updatedAt, now,
     riskSlices, assetSlices, nodes, links, loop,
     detectionX, detectionValues, detectionLabel, detectionColor, flowX,
     engineRows, engineSummary,

@@ -38,9 +38,17 @@ const { frameStyle } = useScreenScale()
 const {
   loading, error, overview, traffic, geo, risk, events, probes, loop, now,
   riskSlices, assetSlices, nodes, detectionX, detectionValues, detectionLabel,
-  detectionColor, flowX, engineRows, engineSummary, metric, updatedAt,
+  detectionColor, flowX, engineRows, engineSummary, metric, centerView, updatedAt,
   refresh,
 } = useDashboardScreen()
+
+// Both views answer "where did the data go?": the topology says through which
+// sessions, the geographic view says to which places. They are alternatives,
+// not companions, so the centre column shows one at a time.
+const centerTabs: Array<{ key: 'traffic' | 'geo'; label: string }> = [
+  { key: 'traffic', label: '数据流动' },
+  { key: 'geo', label: '地理位置态势' },
+]
 
 const selected = ref<FlowNode | null>(null)
 const drawerOpen = ref(false)
@@ -143,8 +151,20 @@ const sensitiveText = computed(() => {
         </div>
 
         <div class="ds-center">
-          <TrafficMap :traffic="traffic" @select="openNode" />
-          <GeoMap :geo="geo" />
+          <div class="ds-center-tabs">
+            <button
+              v-for="tab in centerTabs"
+              :key="tab.key"
+              class="ds-switch"
+              type="button"
+              :class="{ active: centerView === tab.key }"
+              @click="centerView = tab.key"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
+          <TrafficMap v-if="centerView === 'traffic'" :traffic="traffic" @select="openNode" />
+          <GeoMap v-else :geo="geo" />
         </div>
 
         <div class="ds-column">
@@ -251,11 +271,13 @@ const sensitiveText = computed(() => {
 }
 .ds-column { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .ds-column > * { flex: 1; min-height: 0; }
-/* The centre column stacks the flow topology on top of the geographic map: both
-   are "where the data went", and half the height each keeps them both on screen
-   instead of hiding one behind a tab on a wall nobody can click. */
-.ds-center { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-.ds-center > * { flex: 1; min-height: 0; }
+/* The centre column switches between the flow topology and the geographic map:
+   they answer the same question, and stacked they halved each other - a map too
+   short to read its own links. One at a time gives the active map full height. */
+.ds-center { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.ds-center-tabs { display: flex; gap: 6px; flex-shrink: 0; }
+.ds-center-tabs .ds-switch { font-size: 12px; padding: 3px 14px; }
+.ds-center > section { flex: 1; min-height: 0; }
 .ds-bottom {
   height: 250px; flex-shrink: 0;
   display: grid; grid-template-columns: 1.25fr 0.95fr 0.9fr 1.5fr; gap: 10px;

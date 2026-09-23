@@ -103,3 +103,28 @@ def test_stop_still_refuses_a_kind_whose_executor_cannot_notice():
         response = client.post(f"/api/v1/tasks/{task_id}/stop")
         assert response.status_code == 409
         assert "监测任务" in response.json()["detail"]
+
+
+def test_an_unlinked_segment_never_reaches_the_default_list():
+    """A segment with no monitor link is still a segment, not a task row.
+
+    The link is written at upload time, so a segment that arrived while no
+    monitor was running (or was created before segments were linked at all)
+    satisfied ``default_task_filter()`` and sat in 任务中心 as a bare ``pcap``
+    row — the local database held 76 of them, which is exactly the "抓包刷屏"
+    the operator saw. The kind is excluded from the default list outright;
+    ``kind=pcap`` stays the way to reach the segments.
+    """
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            orphan = Task(kind=monitoring.SEGMENT_KIND, status="Success",
+                          payload={"pcap_id": 4242})
+            db.add(orphan)
+            db.commit()
+            orphan_id = orphan.id
+        # The row is the newest one, so it would head the default list if the
+        # filter still let it through.
+        default_ids = [item["id"] for item in client.get("/api/v1/tasks").json()["items"]]
+        assert orphan_id not in default_ids
+        listed = client.get("/api/v1/tasks", params={"kind": "pcap"}).json()
+        assert orphan_id in [item["id"] for item in listed["items"]]

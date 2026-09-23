@@ -195,15 +195,55 @@ describe('数据安全态势大屏 view', () => {
     expect(text).toContain('数据更新于')
     expect(host.querySelector('.ds-overlay')).toBeNull()
 
-    // Geo map: the four sensitivity levels are named and 内网/国内/境外 appear.
-    expect(text).toContain('内网')
-    expect(text).toContain('国内')
-    expect(text).toContain('境外')
+    // The centre column draws one map at a time: the flow topology by default,
+    // the geographic view behind its own switch (see the test below).
+    expect(host.querySelector('.ds-map')).not.toBeNull()
+    expect(host.querySelector('.ds-geo')).toBeNull()
+  })
+
+  it('switches the centre column between the topology and the geographic view', async () => {
+    await mountScreen()
+
+    const tabs = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.ds-center-tabs .ds-switch'))
+    expect(tabs().map((tab) => tab.textContent?.trim())).toEqual(['数据流动', '地理位置态势'])
+    expect(tabs()[0].classList.contains('active')).toBe(true)
+
+    tabs()[1].click()
+    await flushing()
+
+    // Exactly one of the two: the point of the switch is that they are not
+    // crammed side by side into half a screen each.
+    expect(host.querySelector('.ds-map')).toBeNull()
+    const geo = host.querySelector('.ds-geo')
+    expect(geo).not.toBeNull()
+    expect(tabs()[1].classList.contains('active')).toBe(true)
+
+    // The four sensitivity levels are named and 内网/国内/境外 appear.
+    const geoText = geo?.textContent || ''
+    expect(geoText).toContain('内网')
+    expect(geoText).toContain('国内')
+    expect(geoText).toContain('境外')
     expect(host.querySelectorAll('.ds-geo .ds-legend-item').length).toBe(5)
     expect(stateGeoLevels(host)).toEqual([
       'L4 核心/极高敏感', 'L3 高敏感个人信息', 'L2 一般个人信息/重要业务数据', 'L1 低敏感/公开',
     ])
     expect(host.querySelectorAll('.ds-geo-marker').length).toBeGreaterThan(0)
+
+    // The links are drawn on the map itself: one to 国内 on the China map and
+    // one to 美国 on the globe, each captioned 内网 -> destination.
+    const links = Array.from(host.querySelectorAll('.ds-geo-flow'))
+    expect(links.length).toBe(2)
+    expect(links.map((line) => line.querySelector('title')?.textContent || '').join('|'))
+      .toContain('内网 → 美国')
+    // 美国 is 203° from the old fixed globe centre and used to be dropped as
+    // "far side"; the globe now turns to the busiest destination, so nothing is
+    // left undrawn here.
+    expect(geoText).not.toContain('地球背面')
+
+    tabs()[0].click()
+    await flushing()
+    expect(host.querySelector('.ds-geo')).toBeNull()
+    expect(host.querySelector('.ds-map')).not.toBeNull()
   })
 
   it('says the posture is unavailable instead of drawing an empty wall', async () => {

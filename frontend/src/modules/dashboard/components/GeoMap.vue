@@ -26,9 +26,8 @@ const props = defineProps<{ geo: GeoDistribution | null }>()
 // scaled, exactly like every other card on the screen.
 const CHINA = { width: 430, height: 250 }
 const GLOBE = { width: 430, height: 250, radius: 104 }
-const GLOBE_VIEW = {
-  lat: 0, lon: 105, radius: GLOBE.radius, cx: GLOBE.width / 2, cy: GLOBE.height / 2,
-}
+//: The longitude the globe faces when nothing has been classified as 境外 yet.
+const GLOBE_DEFAULT_LON = 105
 const PARALLELS = [60, 30, 0, -30, -60]
 
 /** The enterprise's own address space, drawn as one schematic hub: RFC1918 has
@@ -36,6 +35,8 @@ const PARALLELS = [60, 30, 0, -30, -60]
 const INTERNAL_HUB = projectEquirectangular(84.5, 19.0, CHINA.width, CHINA.height)
 
 interface Placed { point: GeoPoint; x: number; y: number; r: number }
+/** A globe placement also knows whether it is on the drawn hemisphere. */
+interface GlobePlaced extends Placed { visible: boolean }
 
 const mainlandPath = computed(() => outlinePath(CHINA_MAINLAND, CHINA.width, CHINA.height))
 const islandPaths = computed(() =>
@@ -72,32 +73,114 @@ function colorOf(point: GeoPoint): string {
   return sensitivityColors[point.level] || sensitivityColors.unknown
 }
 
-/** 内网 and 国内 on the China map. 内网 keeps its fixed schematic position; the
- *  国内 group sits on the country's label point from the same shared table. */
-const chinaMarkers = computed<Placed[]>(() => {
-  const placed: Placed[] = []
-  const internal = points.value.find((item) => item.region === 'internal')
-  if (internal) {
-    placed.push({ point: internal, x: INTERNAL_HUB.x, y: INTERNAL_HUB.y, r: radiusOf(internal) })
+/** 内网 has no geography - private ranges are the enterprise's own space - so
+ *  it is one schematic hub and every link starts from it. */
+interface Hub { x: number; y: number; r: number; point: GeoPoint | null }
+
+/**
+ * The globe can only face one way, and the fixed 105°E centre pointed away from
+ * where the data actually went: a US address sat on the far side and was dropped
+ * from the panel with nothing said about it. The view now turns to the busiest
+ * 境外 destination - which is the one an operator needs to see - and the
+ * destinations still behind the globe are counted in the note rather than lost.
+ */
+const overseasPoints = computed(() => points.value.filter(
+  (item) => item.region === 'overseas' && item.lat !== null && item.lon !== null))
+
+const globeView = computed(() => {
+  const busiest = [...overseasPoints.value].sort((a, b) => b.bytes - a.bytes)[0]
+  return {
+    lat: 0,
+    lon: busiest ? Number(busiest.lon) : GLOBE_DEFAULT_LON,
+    radius: GLOBE.radius,
+    cx: GLOBE.width / 2,
+    cy: GLOBE.height / 2,
   }
-  const domestic = points.value.find((item) => item.region === 'domestic')
-  if (domestic && domestic.lat !== null && domestic.lon !== null) {
-    const at = projectEquirectangular(domestic.lon, domestic.lat, CHINA.width, CHINA.height)
-    placed.push({ point: domestic, x: at.x, y: at.y, r: radiusOf(domestic) })
-  }
-  return placed
 })
+
+/** The globe's hub sits at the middle of the drawn disc: a fixed geographic
+ *  guess would fall off the back as soon as the globe turned, and 内网 has no
+ *  geography to be right about. The marker is labelled 内网（示意）. */
+const globeHub = computed(() => ({ x: GLOBE.width / 2, y: GLOBE.height / 2 }))
+
+const hub = computed<Hub | null>(() => {
+  const internal = points.value.find((item) => item.region === 'internal')
+  const hasTargets = points.value.some((item) => item.region !== 'internal')
+  if (!internal && !hasTargets) return null
+  return {
+    x: INTERNAL_HUB.x,
+    y: INTERNAL_HUB.y,
+    r: internal ? radiusOf(internal) : Math.max(4, radiusOf(points.value[0]) - 2),
+    point: internal || null,
+  }
+})
+
+/** The hub's caption states its own numbers when the server sent a 内网 group
+ *  and says it is schematic when it did not - a caption must not invent hosts. */
+const hubCaption = computed(() => (hub.value?.point
+  ? `${hub.value.point.region_label} ${hostText(hub.value.point)}` : '内网（示意）'))
+const hubLevel = computed(() => (hub.value?.point ? levelText(hub.value.point) : '链路起点'))
+
+/** 国内 sits on the country's label point from the same shared table. */
+const domesticMarkers = computed<Placed[]>(() => {
+  const domestic = points.value.find((item) => item.region === 'domestic')
+  if (!domestic || domestic.lat === null || domestic.lon === null) return []
+  const at = projectEquirectangular(domestic.lon, domestic.lat, CHINA.width, CHINA.height)
+  return [{ point: domestic, x: at.x, y: at.y, r: radiusOf(domestic) }]
+})
+
+/** A link is "the enterprise sent this much data to this place": the server
+ *  resolves a country per destination and no position per host, so drawing a
+ *  host-to-host line would claim a geometry nobody measured. Width is the
+ *  volume, colour is the destination's sensitivity - the same two readings as
+ *  the markers, so the line and the dot cannot disagree. */
+function linkPath(from: { x: number; y: number }, to: { x: number; y: number }): string {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const length = Math.hypot(dx, dy) || 1
+  const bow = Math.min(16, length * 0.16)
+  const cx = (from.x + to.x) / 2 - (dy / length) * bow
+  const cy = (from.y + to.y) / 2 + (dx / length) * bow
+  return `M ${from.x.toFixed(1)} ${from.y.toFixed(1)}`
+    + ` Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${to.x.toFixed(1)} ${to.y.toFixed(1)}`
+}
+
+const maxLinkBytes = computed(() => Math.max(1, ...points.value.map((item) => item.bytes)))
+function linkWidth(point: GeoPoint): number {
+  return 0.8 + 3.2 * (Math.log(1 + point.bytes) / Math.log(1 + maxLinkBytes.value))
+}
+
+interface FlowLine { key: string; path: string; width: number; color: string; title: string }
+
+function linesTo(targets: Placed[], origin: { x: number; y: number }): FlowLine[] {
+  return targets.map((target) => ({
+    key: target.point.id,
+    path: linkPath(origin, target),
+    width: linkWidth(target.point),
+    color: colorOf(target.point),
+    title: `${hub.value?.point?.region_label || '内网'} → `
+      + `${target.point.country_name || target.point.region_label} · `
+      + `${hostText(target.point)} · ${levelText(target.point)}`,
+  }))
+}
+
+const chinaLinks = computed(() =>
+  (hub.value ? linesTo(domesticMarkers.value, hub.value) : []))
 
 /** The globe is drawn from the equator, so a marker on the far side is folded
  *  away rather than drawn on the wrong hemisphere. */
-const globeDots = computed<Placed[]>(() =>
-  points.value
-    .filter((item) => item.region === 'overseas' && item.lat !== null && item.lon !== null)
-    .map((item) => {
-      const at = projectGlobe(item.lat as number, item.lon as number, GLOBE_VIEW)
-      return { point: item, x: at.x, y: at.y, r: radiusOf(item), visible: at.visible }
-    })
-    .filter((item) => item.visible))
+const globePlaced = computed<GlobePlaced[]>(() =>
+  overseasPoints.value.map((item) => {
+    const at = projectGlobe(Number(item.lat), Number(item.lon), globeView.value)
+    return { point: item, x: at.x, y: at.y, r: radiusOf(item), visible: at.visible }
+  }))
+
+const globeDots = computed<GlobePlaced[]>(() => globePlaced.value.filter((item) => item.visible))
+
+/** Destinations on the far side of the globe: not drawn, but not ignored. */
+const globeHidden = computed(() => globePlaced.value.length - globeDots.value.length)
+
+const globeLinks = computed(() => linesTo(globeDots.value, globeHub.value))
 
 const globeLabels = computed(() =>
   [...globeDots.value]
@@ -149,7 +232,22 @@ function hostText(point: GeoPoint): string {
             <path v-for="(island, index) in islandPaths" :key="`i${index}`" :d="island" class="ds-geo-land" />
             <circle v-for="(dot, index) in dots" :key="`d${index}`" :cx="dot.x" :cy="dot.y"
                     r="1" class="ds-geo-dot" />
-            <g v-for="marker in chinaMarkers" :key="marker.point.id"
+            <!-- 数据流动链路：内网 -> 每个目的国家/地区，粗细是数据量、颜色是敏感等级 -->
+            <path v-for="line in chinaLinks" :key="line.key" :d="line.path"
+                  class="ds-geo-link ds-geo-flow" :stroke="line.color" :stroke-width="line.width">
+              <title>{{ line.title }}</title>
+            </path>
+            <g v-if="hub" :transform="`translate(${hub.x} ${hub.y})`">
+              <circle :r="hub.r + 6"
+                      :fill="hub.point ? colorOf(hub.point) : sensitivityColors.unknown"
+                      class="ds-geo-halo" />
+              <circle :r="hub.r"
+                      :fill="hub.point ? colorOf(hub.point) : sensitivityColors.unknown"
+                      class="ds-geo-marker" />
+              <text x="14" y="4" class="ds-geo-label">{{ hubCaption }}</text>
+              <text x="14" y="17" class="ds-geo-sublabel">{{ hubLevel }}</text>
+            </g>
+            <g v-for="marker in domesticMarkers" :key="marker.point.id"
                :transform="`translate(${marker.x} ${marker.y})`">
               <circle :r="marker.r + 6" :fill="colorOf(marker.point)" class="ds-geo-halo" />
               <circle :r="marker.r" :fill="colorOf(marker.point)" class="ds-geo-marker" />
@@ -160,8 +258,8 @@ function hostText(point: GeoPoint): string {
                 {{ levelText(marker.point) }}
               </text>
             </g>
-            <text v-if="!chinaMarkers.length" :x="CHINA.width - 6" :y="CHINA.height - 8"
-                  text-anchor="end" class="ds-geo-hint">国内暂无目的地址</text>
+            <text v-if="!hub && !domesticMarkers.length" :x="CHINA.width - 6"
+                  :y="CHINA.height - 8" text-anchor="end" class="ds-geo-hint">国内暂无目的地址</text>
             <text :x="CHINA.width - 6" :y="12" text-anchor="end" class="ds-geo-hint">
               地图范围 {{ CHINA_BOUNDS.lonMin }}–{{ CHINA_BOUNDS.lonMax }}°E
             </text>
@@ -179,6 +277,14 @@ function hostText(point: GeoPoint): string {
             <line v-for="parallel in parallels" :key="`p${parallel.lat}`"
                   :x1="GLOBE.width / 2 - parallel.half" :x2="GLOBE.width / 2 + parallel.half"
                   :y1="parallel.y" :y2="parallel.y" class="ds-globe-line" />
+            <path v-for="line in globeLinks" :key="line.key" :d="line.path"
+                  class="ds-geo-link ds-geo-flow" :stroke="line.color" :stroke-width="line.width">
+              <title>{{ line.title }}</title>
+            </path>
+            <g v-if="globeDots.length" :transform="`translate(${globeHub.x} ${globeHub.y})`" class="ds-geo-anchor">
+              <circle r="5" class="ds-geo-marker ds-geo-hub-outline" />
+              <text x="10" y="4" class="ds-geo-sublabel">内网（示意）</text>
+            </g>
             <circle v-for="(marker, index) in globeDots" :key="`g${index}`"
                     :cx="marker.x" :cy="marker.y" :r="marker.r"
                     :fill="colorOf(marker.point)" class="ds-geo-marker">
@@ -201,9 +307,11 @@ function hostText(point: GeoPoint): string {
     </div>
 
     <div class="ds-geo-note">
+      连线是聚合成链路的会话：起点内网（位置为示意），终点是国内/境外的目的国家或地区，粗细是数据量、颜色是敏感等级。
       按目的地址聚合：内网是本企业私网地址段（位置为示意），国内/境外由离线地区表判定，未命中地区表的目的地址不计入「境外」。
       <span v-if="totals"> 会话 {{ totals.sessions }} · 数据包 {{ totals.packets }}</span>
       <span v-if="unplaced.length"> · 未定位 {{ unplaced.length }} 组（无该国家标签点）</span>
+      <span v-if="globeHidden"> · 地球背面 {{ globeHidden }} 组未绘制</span>
     </div>
   </section>
 </template>
@@ -235,6 +343,12 @@ function hostText(point: GeoPoint): string {
 .ds-globe-line { fill: none; stroke: rgba(53, 160, 255, 0.18); stroke-width: 0.7; }
 .ds-geo-marker { stroke: rgba(6, 20, 36, 0.9); stroke-width: 1; }
 .ds-geo-halo { opacity: 0.16; }
+/* The link layer sits under the markers. The dashes travel hub -> destination,
+   which is the one thing a static line cannot say: which way the data went. */
+.ds-geo-link { fill: none; opacity: 0.9; }
+.ds-geo-flow { stroke-dasharray: 5 9; animation: ds-geo-flow 1.4s linear infinite; }
+.ds-geo-anchor .ds-geo-hub-outline { fill: none; stroke: #9ec2e6; stroke-width: 1; }
+@keyframes ds-geo-flow { to { stroke-dashoffset: -14; } }
 .ds-geo-label { fill: #bad6f3; font-size: 10px; }
 .ds-geo-sublabel { fill: #7f9bc0; font-size: 9px; }
 .ds-geo-hint { fill: #4f6b8a; font-size: 10px; }

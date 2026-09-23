@@ -196,6 +196,15 @@ describe('数据安全态势大屏 state', () => {
       .toEqual(['internal', 'domestic', 'overseas', 'unknown'])
   })
 
+  it('starts on the topology and switches the centre column to the geo view', async () => {
+    await mountScreen()
+    // One map at a time: the switch defaults to the flow topology, and the
+    // geographic view is one assignment away - not a second stacked panel.
+    expect(state.centerView.value).toBe('traffic')
+    state.centerView.value = 'geo'
+    expect(state.centerView.value).toBe('geo')
+  })
+
   it('asks the topology for exactly the links the card can draw', async () => {
     await mountScreen()
     expect(dashboard.getTrafficFlow).toHaveBeenCalledWith({ limit: 3, days: 7 })
