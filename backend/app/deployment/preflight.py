@@ -58,8 +58,33 @@ def run_preflight(ssh: SshClient, profile: str | None = None, backend_url: str |
     add("disk", ">=1024 MB free", f"{disk_mb} MB", disk_ok)
 
     _, interfaces = _run(ssh, "ls /sys/class/net 2>/dev/null")
-    iface_list = [line for line in interfaces.splitlines() if line and line not in {"lo"}]
-    add("interface", "non-loopback NIC", ", ".join(iface_list[:5]) or "none", bool(iface_list))
+    all_ifaces = [
+        line.strip() for line in interfaces.splitlines() if line.strip() and line.strip() != "lo"
+    ]
+    # ``ls /sys/class/net`` lists dead ports too. A host with wifi plus an
+    # unplugged ethernet port used to hand the ethernet port to the capture
+    # picker (alphabetically first), so the probe watched a NIC that carries no
+    # traffic and recorded nothing. Only offer NICs the kernel reports as up.
+    _, states = _run(
+        ssh,
+        "for n in $(ls /sys/class/net 2>/dev/null); do "
+        "[ \"$n\" = lo ] && continue; "
+        "echo \"$n $(cat /sys/class/net/$n/operstate 2>/dev/null)\"; done",
+    )
+    up_ifaces: list[str] = []
+    for line in states.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "up" and parts[0] != "lo":
+            up_ifaces.append(parts[0])
+    # Prefer up NICs, but never fail a host whose driver reports operstate as
+    # "unknown" (some virtual/wifi stacks do): fall back to every non-loopback.
+    iface_list = [name for name in all_ifaces if name in set(up_ifaces)] or all_ifaces
+    add(
+        "interface",
+        "non-loopback NIC that is up",
+        ", ".join(iface_list[:5]) or "none",
+        bool(iface_list),
+    )
 
     _, sudo = _run(ssh, "sudo -n true 2>&1 && echo sudo-ok || echo no-sudo")
     sudo_ok = "sudo-ok" in sudo or (ssh.username == "root")
@@ -99,6 +124,7 @@ def run_preflight(ssh: SshClient, profile: str | None = None, backend_url: str |
         "disk_mb": disk_mb,
         "capture_tool": capture_tool,
         "interfaces": iface_list,
+        "all_interfaces": all_ifaces,
         "backend_connectivity": connectivity_ok,
         "backend_url": backend_url,
         "sudo": sudo_ok,

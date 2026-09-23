@@ -79,7 +79,9 @@ def capture_interface_for(data_config: dict[str, Any] | None, candidates: list[s
     """Pick the capture NIC: the operator's choice, else the first real one.
 
     ``candidates`` comes from the target host's preflight, so the decision uses
-    what that host actually has rather than a name guessed on the platform.
+    what that host actually has rather than a name guessed on the platform, and
+    it is already narrowed to NICs the kernel reports as up - see
+    ``preflight.run_preflight`` for why a down port must never be offered.
     """
     chosen = str((data_config or {}).get("capture_interface") or "").strip()
     if chosen:

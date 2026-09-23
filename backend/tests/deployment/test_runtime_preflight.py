@@ -6,6 +6,51 @@ import pytest
 
 from app.deployment import preflight, runtime
 from app.deployment.package import PackageError
+from app.deployment.service import capture_interface_for
+
+
+def test_preflight_offers_only_up_interfaces_when_a_dead_port_exists(monkeypatch):
+    """A down NIC must not be handed to the capture picker.
+
+    Regression: a host with wifi plus an unplugged ethernet port reported both,
+    ``capture_interface_for`` took the alphabetically first real name, and the
+    probe captured on a port that carries no traffic at all.
+    """
+    def execute(command, **kwargs):
+        if 'os-release' in command:
+            return 0, 'ID=kylin', ''
+        if 'uname -m' in command:
+            return 0, 'aarch64', ''
+        if 'ps -p 1' in command:
+            return 0, 'systemd', ''
+        if 'free -m' in command:
+            return 0, '4096', ''
+        if 'df -P' in command:
+            return 0, '10485760', ''
+        if 'operstate' in command:
+            return 0, 'enp1s0 down\nwlan0 up\n', ''
+        if '/sys/class/net' in command:
+            return 0, 'enp1s0\nlo\nwlan0', ''
+        if 'sudo -n' in command:
+            return 0, 'sudo-ok', ''
+        raise AssertionError(command)
+
+    ssh = Mock(username='root')
+    ssh.exec.side_effect = execute
+    monkeypatch.setattr(preflight, 'check_runtime', Mock(return_value={
+        'ok': True, 'python': '3.11.16', 'capture_tool': 'dumpcap', 'connectivity': True,
+    }))
+    result = preflight.run_preflight(ssh, backend_url='http://platform:8000')
+    assert result['interfaces'] == ['wlan0']
+    assert result['all_interfaces'] == ['enp1s0', 'wlan0']
+    assert capture_interface_for(None, result['interfaces']) == 'wlan0'
+
+
+def test_capture_interface_prefers_operator_choice_and_skips_virtual_nics():
+    assert capture_interface_for({'capture_interface': 'wlan0'}, ['enp1s0']) == 'wlan0'
+    assert capture_interface_for(None, ['docker0', 'br-abc', 'veth1', 'wlan0']) == 'wlan0'
+    # Nothing usable is left: fall back rather than render an empty NIC.
+    assert capture_interface_for(None, []) == 'any'
 
 
 def test_preflight_does_not_require_host_python_or_capture_tools(monkeypatch):
