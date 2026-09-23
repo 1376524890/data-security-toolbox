@@ -33,10 +33,36 @@
   画主机连线等于声称一个没人测量过的几何。另外**地球改为朝向数据量最大的境外目的地**：
   地球只能朝一面，原先固定 105°E，`-98.6°` 的美国落在背面被 `filter(visible)` 静默丢弃；
   现在背面剩下的组会在脚注里计数（「地球背面 N 组未绘制」），不再无声消失。
+- **探针分发包比源码旧，探针在录自己的上传**（部署到 `.50` 做真机验证时才暴露）：探针源码里的
+  BPF 支持是 `3d03b18`（09-23 16:36）加的，而 `probe_packages/probe-3.7.0/arm64/probe.py` 的构建时间是
+  **同一天 08:21** —— 包比源码旧 8 小时。`probe_packages/` 被 gitignore，`probe/` 改动后没有任何东西
+  会重建它，于是**源码已修、发出去的包还是旧行为**：平台把
+  `filter = "not (host 192.168.110.50 and port 8000)"` 正确写进了配置，真机上 dumpcap 却**没有 `-f`**，
+  一个 64 MB 段里 `282 192.168.110.168 → 192.168.110.50:8000` 占满全段；wlan0 发送 ≈ 21 MB/s，
+  段 30 秒一段、分析 20 秒一段，**抓包速率永远大于分析速率**，探针 spool 涨到 1.9 GB / 2 GB 上限并进入
+  degraded。修复：重建分发包（包内 `probe.py` 带 `capture_filter_args` / `-f`，
+  `sha256 12f6bd79…` 取代 `e39afa56…`），并在 `scripts/make_offline_release.py` 加
+  `verify_probe_package()` 闸门——把包内 `probe/` 成员与 `shared/**/*.py` 逐字节（按 LF 归一）与源码
+  比对，不一致就**拒绝出包**并列出文件名。重装后 dumpcap 命令行变成
+  `-i wlan0 -f not (host 192.168.110.50 and port 8000) -a duration:30 -a filesize:65536`，
+  wlan0 立刻回到 ~0.006 MB/s。
+- **tshark 的 TCP 重组让分析永远追不上抓包**：`.50` 的 pcap worker 报
+  `AnalysisTimeout: tshark exceeded 300s timeout`，一个 64 MB 段**光把帧号列一遍就要 200 秒以上**。
+  段里只有 44 131 个包、格式完全正常（1 个 SHB + 1 个 IDB + 44 131 个 EPB），既不是坏文件也不是磁盘慢——
+  是 **Wireshark 的 TCP 流重组**：段里有一条 2 GB 的 HTTP 上传流，重组器**必须把整条流缓冲下来才肯
+  报告任何东西**，单段成本随流长平方增长，而且它在缓冲期间**不把中间段认成 http**。实测同一条命令加
+  `-o tcp.desegment_tcp_streams:FALSE`：10 000 包的段 **48.4 s → 0.8 s**，`frame.protocols` 里带 http 的帧
+  **8 → 9 353**——**性能与覆盖率同向，不是取舍**。现在只对**不需要重组**的三条元数据通道关掉它：
+  `services/protocol_service.py` 的 `parse_pcap`（每段分析的入口，就是超时的那一条）与
+  `protocol_distribution`、`engine/protocol_engine/engine.py` 的 `tcp_streams`（只读 `tcp.len`/`tcp.payload`
+  的长度）。**刻意不动** `app_analysis`（要 `http.request.uri`、TLS SNI）与 `pcap_files`（要重组出完整对象，
+  且本来就有 120 秒 + 文件数/字节数上限）。
 - **测试**：前端 22 文件 / **124 项通过**（新增 4 项：漏洞库 404 清记录并停表、502 保持等待、
   中心列切换、`centerView` 默认值），`vue-tsc --noEmit` 无输出。后端全量（容器内，需带
-  `--ignore=tests/test_rule_libraries.py`）**29 failed / 978 passed / 5 skipped / 2 errors**，
-  29 条与发布前基线**逐条一致、零新增**；改动文件 ruff 无违规。
+  `--ignore=tests/test_rule_libraries.py`）**29 failed / 980 passed / 5 skipped**（本轮新增 2 项，
+  断言三条元数据通道的 argv 里带 `tcp.desegment_tcp_streams:FALSE`）。缺陷五做了一次**同容器 A/B**
+  （改动文件换回 HEAD 跑一遍、再换回改动版跑一遍），两次失败集合 **diff 为空**、通过数 978 → 980，
+  **零新增失败**；改动文件 ruff 告警集合与 HEAD 完全相同（19 E501 + 2 I001 + 1 B905 + 1 F401 + 1 F841）。
 
 ## 2026-09-24 — v3.1.0：抓包队列不再被空段拖垮、流量误报的口径修正，密码评估结果回到资产中心
 

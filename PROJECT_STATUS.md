@@ -2,6 +2,8 @@
 
 2026-09-24 第四十九批（本轮）：**平台升到 3.2.0**。三个运营侧缺陷各自找到真根因并落码，
 已在本机真机验证（任务列表 94 → 18 行、无 `pcap` 刷屏），前端 22 文件 / 124 项通过。
+随后把包部署到 192.168.110.50 做真机验证，又暴露出两处只有落到真机才现形的问题（见下 ④ ⑤）：
+**探针分发包比源码旧**（探针在录自己的上传）与 **tshark 的 TCP 重组让分析永远追不上抓包**。
 
 **① 漏洞库 `Error: 任务不存在`（永久红色报错）**：任务 id 存在浏览器 localStorage，任务状态文件存在
 服务端 `storage_dir/library_jobs/`；重新部署换掉 `storage_dir` 后，页面拿一个**新容器没听说过的 id**
@@ -25,9 +27,29 @@
 判定到国家，没有主机级坐标。另外**地球改为朝向数据量最大的境外目的地**：原先固定 105°E，`-98.6°`
 的美国落在背面被静默丢弃，现在背面剩下的组会在脚注里计数，不再无声消失。
 
+**④ 探针分发包比源码旧**（部署到 `.50` 做真机验证才现形）：探针源码的 BPF 支持是 `3d03b18`（09-23 16:36）
+加的，而 `probe_packages/probe-3.7.0/arm64/probe.py` 的构建时间是**同一天 08:21**——包比源码旧 8 小时。
+`probe_packages/` 被 gitignore，`probe/` 改动后没有任何东西会重建它，于是**源码已修、发出去的包还是旧行为**：
+平台把 `filter = "not (host 192.168.110.50 and port 8000)"` 正确写进了配置，真机上 dumpcap 却**没有 `-f`**，
+一个 64 MB 段里 `282 192.168.110.168 → 192.168.110.50:8000` 占满全段；wlan0 发送 ≈ 21 MB/s，段 30 秒一段、
+分析 20 秒一段，**抓包速率永远大于分析速率**，spool 涨到 1.9 GB / 2 GB 并进入 `degraded`。现重建分发包
+（`sha256 12f6bd79…` 取代 `e39afa56…`）并在 `scripts/make_offline_release.py` 加 `verify_probe_package()`
+闸门：包内 `probe/` 成员与 `shared/**/*.py` 逐字节（按 LF 归一）与源码比对，不一致就**拒绝出包**。
+
+**⑤ tshark 的 TCP 重组让分析永远追不上抓包**：`.50` 的 pcap worker 报 `AnalysisTimeout: tshark exceeded
+300s timeout`，一个 64 MB 段**光把帧号列一遍就要 200 秒以上**。段里只有 44 131 个包、格式完全正常
+（1 SHB + 1 IDB + 44 131 EPB），既不是坏文件也不是磁盘慢——是 **Wireshark 的 TCP 流重组**：段里有一条
+2 GB 的 HTTP 上传流，重组器**必须把整条流缓冲下来才肯报告任何东西**，单段成本随流长平方增长，
+且缓冲期间**不把中间段认成 http**。实测同一个 10 000 包的段加 `-o tcp.desegment_tcp_streams:FALSE`：
+**48.4 s → 0.8 s**，`frame.protocols` 里带 http 的帧 **8 → 9 353**——**性能与覆盖率同向，不是取舍**。
+现只对**不需要重组**的三条元数据通道关掉它（`parse_pcap`、`protocol_distribution`、`tcp_streams`），
+**刻意不动** `app_analysis`（要 URI / TLS SNI）与 `pcap_files`（要重组出完整对象，本来就有 120 秒上限）。
+
 **测试与交付**：前端 22 文件 / 124 项通过（新增 4 项），`vue-tsc --noEmit` 无输出；后端全量
-（容器内，带 `--ignore=tests/test_rule_libraries.py`）29 failed / 978 passed，**29 条与基线逐条一致、
-零新增**；改动文件 ruff 无违规。**无 Alembic 迁移**，探针保持 3.7.0。
+（容器内，带 `--ignore=tests/test_rule_libraries.py`）29 failed / **980 passed**（本轮新增 2 项）。
+缺陷五做了**同容器 A/B**（被改文件换回 HEAD 跑一遍、再换回改动版跑一遍），两次失败集合 **diff 为空**、
+通过数 978 → 980，**零新增失败**；改动文件 ruff 告警集合与 HEAD 完全相同。
+**无 Alembic 迁移**，探针保持 3.7.0（分发包重建，版本号不变）。
 
 **已知遗留（非本轮引入）**：`backend/tests/test_rule_libraries.py` 仍 import 早已在 `8080857` 删除的
 `app.api.rules`，会让 pytest 在收集阶段中断，全量跑必须带 `--ignore`；本轮只记录、不动它。

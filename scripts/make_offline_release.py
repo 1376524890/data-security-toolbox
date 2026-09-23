@@ -57,6 +57,43 @@ def platform_version() -> str:
     return json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))["version"]
 
 
+def verify_probe_package() -> None:
+    """Refuse to ship a probe package built from older probe sources.
+
+    ``probe_packages/`` is a build output and is gitignored, so nothing rebuilds
+    it when ``probe/`` or ``shared/`` changes - the two are only wired together
+    by whoever remembers to run ``scripts/build_probe_packages.py``. The 3.2.0
+    bundle was staged before the capture filter landed, so every sensor it
+    deployed ignored the platform's ``filter`` and recorded its own upload until
+    the 2 GB spool filled and capture went degraded. Comparing the packaged
+    members with the sources turns that silent drift into a failed build.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from build_probe_packages import FILES  # the authority on what a package carries
+
+    package_dir = PROBE_PACKAGE.parent
+    pairs = [(ROOT / "probe" / name, package_dir / name) for name in FILES]
+    pairs += [
+        (source, package_dir / "shared" / source.relative_to(ROOT / "shared"))
+        for source in sorted((ROOT / "shared").rglob("*.py"))
+    ]
+    stale = [
+        str(source.relative_to(ROOT))
+        for source, packaged in pairs
+        if source.is_file()
+        and (
+            not packaged.is_file()
+            or packaged.read_bytes() != source.read_bytes().replace(b"\r\n", b"\n")
+        )
+    ]
+    if stale:
+        sys.exit(
+            "探针分发包与 probe/ 或 shared/ 源码不一致，先重建：\n"
+            "  python3 scripts/build_probe_packages.py --arch=arm64\n"
+            "不一致的文件：\n  " + "\n  ".join(stale)
+        )
+
+
 def host_arch() -> str:
     """The daemon's architecture in OCI spelling (arm64 / amd64)."""
     return subprocess.run(
@@ -172,6 +209,7 @@ def main() -> None:
     if not IMAGES_TAR.exists():
         sys.exit("缺少 dist-offline/security-toolbox-images.tar，先跑：python3 scripts/offline_bundle.py --save")
 
+    verify_probe_package()
     staged = stage(name, arch, version)
     files = sum(1 for f in staged.rglob("*") if f.is_file())
     print(f"暂存完成：{staged}（{files} 个文件）")

@@ -6,7 +6,7 @@ from typing import Any
 from app.engine.core.base import DetectionEngine
 from app.engine.core.context import DetectionContext
 from app.engine.core.result import DetectionResult
-from app.services.protocol_service import stream_tshark
+from app.services.protocol_service import NO_TCP_DESEGMENT, stream_tshark
 from app.engine.data_engine.engine import shannon_entropy
 from app.rules.library import rule_params
 
@@ -85,7 +85,8 @@ def tcp_streams(path: Path, timeout: int = 300) -> list[dict[str, Any]]:
     fields = ["tcp.stream", "tcp.seq", "tcp.len", "tcp.payload", "frame.time_epoch", "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport"]
     field_args = [item for field in fields for item in ("-e", field)]
     streams: dict[str, dict[str, Any]] = defaultdict(lambda: {"stream": "", "packets": 0, "bytes": 0, "payload_size": 0, "src_ip": "", "dst_ip": "", "src_port": 0, "dst_port": 0, "start": 0.0, "end": 0.0})
-    for line in stream_tshark(["-r", str(path), "-T", "fields", *field_args], timeout):
+    args = [*NO_TCP_DESEGMENT, "-r", str(path), "-T", "fields", *field_args]
+    for line in stream_tshark(args, timeout):
         parts = line.split("\t")
         if len(parts) < 9:
             continue

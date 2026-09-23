@@ -30,6 +30,17 @@ TSHARK_FIELDS = [
     "_ws.col.Destination",
 ]
 
+#: Wireshark's TCP reassembly, off, for the passes that read only per-frame
+#: metadata. Reassembly is what makes one long-lived stream quadratic: the
+#: dissector buffers a whole transfer before it will report anything, so a
+#: saturated segment cost 48s per 10k packets and reported 8 HTTP frames where
+#: the flag-off run reported 9353. Addresses, ports, lengths and
+#: ``frame.protocols`` are per-frame facts, so this buys ~60x on the pass that
+#: gates every analysis and *improves* protocol coverage rather than trading it
+#: away. The passes that reassemble application objects on purpose
+#: (``protocol_engine.app_analysis``, ``pcap_files``) deliberately do not use it.
+NO_TCP_DESEGMENT = ["-o", "tcp.desegment_tcp_streams:FALSE"]
+
 
 class AnalysisTimeout(Exception):
     """Raised when a tshark subprocess exceeds its configured timeout."""
@@ -137,7 +148,8 @@ def capinfos(path: Path, timeout: int = 30) -> dict[str, Any]:
 
 def protocol_distribution(path: Path, timeout: int = 300) -> dict[str, int]:
     counter: Counter[str] = Counter()
-    for line in stream_tshark(["-r", str(path), "-T", "fields", "-e", "frame.protocols"], timeout):
+    args = [*NO_TCP_DESEGMENT, "-r", str(path), "-T", "fields", "-e", "frame.protocols"]
+    for line in stream_tshark(args, timeout):
         for proto in line.split(":"):
             if proto:
                 counter[proto] += 1
@@ -202,7 +214,8 @@ def parse_pcap(path: Path, max_index_packets: int = 10000, max_packets: int | No
     protocol_counter: Counter[str] = Counter()
     field_args = [item for field in TSHARK_FIELDS for item in ("-e", field)]
     seen_packets = 0
-    for line in stream_tshark(["-n", "-r", str(path), "-T", "fields", "-E", "occurrence=f", *field_args], timeout=timeout):
+    args = [*NO_TCP_DESEGMENT, "-n", "-r", str(path), "-T", "fields", "-E", "occurrence=f", *field_args]
+    for line in stream_tshark(args, timeout=timeout):
         seen_packets += 1
         parts = line.split("\t")
         if len(parts) < 12:

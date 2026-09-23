@@ -61,14 +61,70 @@
 
 平台版本 3.1.0 → **3.2.0**（`backend/app/main.py`、`frontend/package.json`、`frontend/package-lock.json`），
 探针保持 3.7.0，**无新增 Alembic 迁移**。后端全量（容器内）
-`pytest --ignore=tests/test_rule_libraries.py`：**29 failed / 978 passed / 5 skipped / 2 errors**，
-29 条与发布前基线**逐条一致、无新增**（基线 34 条里有 5 条因本轮把 `probe/`、`shared/` 一并放进容器而转绿）；
-ruff 对改动文件无新增违规。
+`pytest --ignore=tests/test_rule_libraries.py`：**29 failed / 980 passed / 5 skipped**
+（998 项，本轮新增 2 项）。为了不靠「和上次的数字比」，缺陷五的改动做了一次**同容器 A/B**：
+把两个被改文件换回 HEAD 版本跑一次、再换回改动版本跑一次，两次的失败集合 **diff 为空**，
+通过数 978 → **980**（正好等于新增的 2 项）——**零新增失败**。ruff 对改动文件无新增违规
+（`protocol_service.py` / `protocol_engine/engine.py` 的告警集合与 HEAD 完全相同：
+19 E501 + 2 I001 + 1 B905 + 1 F401 + 1 F841）。
 
 **已知遗留（非本轮引入）**：`backend/tests/test_rule_libraries.py` 仍 `from app.api.rules import ...`，
 而 `app/api/rules.py` 已在 `8080857` 被删除（该 commit 忘了删这个测试）。它会让 `pytest` 在收集阶段
 直接中断，所以全量跑必须带 `--ignore=tests/test_rule_libraries.py`；删除或改写该测试属于另一件事，
 本轮只在文档记录，不动它。
+
+### 部署验证中新发现的缺陷四：探针分发包比源码旧
+
+**现象**：`.50` 上把 `filter = "not (host 192.168.110.50 and port 8000)"` 正确写进了探针配置，
+`.168` 上真正跑起来的 dumpcap 命令行却**没有 `-f`** —— 探针在录自己的上传，一个 64 MB 段里
+`282 192.168.110.168 → 192.168.110.50:8000` 能占满整个段。wlan0 发送 ≈ 21 MB/s，段 30 秒一段、
+分析 20 秒一段，**抓包速率永远大于分析速率**，探针 spool 涨到 1.9 GB / 2 GB 上限并进入 degraded。
+
+**根因（构建产物没跟着源码走）**：`probe/probe.py` 的 BPF 支持是 `3d03b18`（09-23 16:36）才加进去的，
+而 `probe_packages/probe-3.7.0/arm64/probe.py` 的构建时间是**同一天 08:21** —— 包比源码旧 8 小时。
+`probe_packages/` 在 `.gitignore` 里，没有任何东西会在 `probe/` 改动后重建它，于是**源码已经修好、
+发出去的包还是旧行为**。这不是探针逻辑错，是发布流程缺一道闸。
+
+**修复**：
+
+- 按 `scripts/build_probe_packages.py --arch=arm64` 重建分发包，确认包内 `probe.py` 带
+  `capture_filter_args` 与 `-f`（`sha256 12f6bd79…`，原 `e39afa56…`）。
+- `scripts/make_offline_release.py` 新增 `verify_probe_package()` 闸门：把包内 `probe/` 成员与
+  `shared/**/*.py` 逐字节（按 LF 归一）与源码比对，不一致就**拒绝出包**并列出是哪些文件。
+  闸门放在打 tar 之前——「静默漂移」这类问题只能用类级防御挡。
+- 真机复核：重装后 dumpcap 命令行变成
+  `-i wlan0 -f not (host 192.168.110.50 and port 8000) -a duration:30 -a filesize:65536`，
+  wlan0 立刻回到 ~0.006 MB/s（把自身上传摘掉后，这条链路本来就是闲的）。
+
+### 部署验证中新发现的缺陷五：tshark 的 TCP 重组让分析永远追不上抓包
+
+**现象**：在把自录环断掉之前，`.50` 的 pcap worker 报
+`AnalysisTimeout: tshark exceeded 300s timeout`；一个 64 MB 段**光把帧号列一遍就要 200 秒以上**，
+149 个段排队等分析。
+
+**根因（一次实测定位）**：段里只有 44 131 个包 / 64 MB，格式完全正常（1 个 SHB + 1 个 IDB +
+44 131 个 EPB），所以既不是坏文件也不是磁盘慢 —— 是 **Wireshark 的 TCP 流重组**。同一条命令加上
+`-o tcp.desegment_tcp_streams:FALSE`：
+
+| 同一条 10 000 包的段 | 耗时 | `frame.protocols` 里带 http 的帧 |
+| --- | --- | --- |
+| 重组开（默认） | 48.4 s | 8 |
+| 重组关 | **0.8 s** | **9 353** |
+
+原因很直白：这些段里有一条 2 GB 的 HTTP 上传流，重组器**必须把整条流缓冲下来才肯报告任何东西**，
+单段成本随流长平方增长；而且它在缓冲期间**不把中间段认成 http**，覆盖率反而更差。
+关掉之后逐帧独立判定，HTTP 从 8 帧变成 9 353 帧 —— **性能与覆盖率同向，不是取舍**。
+
+**修复**：只对**不需要重组**的三条元数据通道关掉它（地址、端口、长度、`frame.protocols` 都是逐帧事实）：
+
+- `services/protocol_service.py`：新增常量 `NO_TCP_DESEGMENT`，用于 `parse_pcap`（每段分析的入口，
+  就是超时的那一条）与 `protocol_distribution`；
+- `engine/protocol_engine/engine.py`：`tcp_streams`（只读 `tcp.len` / `tcp.payload` 的长度）；
+- **刻意不动** `app_analysis`（要 `http.request.uri`、`tls.handshake.extensions_server_name`）与
+  `pcap_files`（要重组出完整对象）——它们按语义就需要重组，且 `pcap_files` 本来就有
+  120 秒 + 文件数/字节数上限。
+- 测试：`tests/test_protocol_service.py` 新增 2 项，断言这三条通道的 argv 里带
+  `tcp.desegment_tcp_streams:FALSE`。丢掉它是**静默**的：照样返回看起来合理的数据，只是慢到追不上抓包。
 
 ## 第四十八批：修复探针抓包「抓空网卡」与「空段拖垮分析队列」（2026-09-23）
 
