@@ -802,15 +802,22 @@ def test_migrated_object_counters_are_recounted_immediately() -> None:
 
 
 def test_categories_keep_their_own_confidence_and_sample_size() -> None:
-    """One file can hold a verified category and a keyword-only clue."""
+    """One file can hold a verified category and a clue that is only a clue.
+
+    The two must not share a number: copying the file's maximum onto both made a
+    keyword-only clue look as proven as an email. And a clue stays a clue -- a
+    category these rules would not confirm is reported as a candidate instead of
+    becoming a finding.
+    """
     with TestClient(app) as client:
         probe_id, token = _register_probe(client, "confidence-probe")
         path = "/srv/data/mixed.csv"
-        email = _hit("email", count=4)
+        email = _hit("email", count=4, rules=("SD_EMAIL_001",))
         email["confidence"] = 0.85
         for item in email["evidence"]:
             item["confidence"] = 0.85
-        credential = _hit("credential", count=1)
+        credential = _hit("credential", count=1, rules=("SD_CREDENTIAL_001",),
+                          evidence_types=("keyword",))
         credential["confidence"] = 0.3
         for item in credential["evidence"]:
             item["confidence"] = 0.3
@@ -824,7 +831,13 @@ def test_categories_keep_their_own_confidence_and_sample_size() -> None:
             rows = {row.category: row for row in db.scalars(
                 select(Detection).where(Detection.instance_id == instance.id)).all()}
         assert round(rows["email"].confidence, 3) == 0.85
-        assert round(rows["credential"].confidence, 3) == 0.3
+        # A ``password`` *keyword* says the file is worth checking, not that a
+        # password was found in it: no finding, but the file still says so.
+        assert "credential" not in rows
+        listed = client.get(f"/api/v1/data/assets?probe_id={probe_id}").json()["items"]
+        mixed = next(item for item in listed if item["path"] == path)
+        assert mixed["categories"] == ["email"]
+        assert mixed["candidate_categories"] == ["credential"]
         # The actual sample (2 rows) and the configured ceiling (50) stay apart.
         assert rows["email"].sample_size == 2 and rows["email"].sample_limit == 50
         # A later, smaller observation is current; the larger one stays as history.

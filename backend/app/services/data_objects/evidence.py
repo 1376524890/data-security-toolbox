@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AssetInstance, DataObject, Detection, DetectionEvidence
+from app.services import detection_gate
 from app.services.data_objects.persistence import _get_or_create
 from app.services.data_objects.values import _float, _int, _newest, _text, category_name
 
@@ -151,7 +152,22 @@ def _merge_detection(
     confidence: float,
     severity: str,
     level: str,
-) -> Detection:
+) -> Detection | None:
+    # The score in the payload is the probe's claim about its own rule set. The
+    # platform re-derives it from the rules it scans with today and refuses to
+    # raise a finding the current rules would not: an over-matching pattern that
+    # scored itself conclusive stops at the ingest instead of at the next purge.
+    # ``None`` means there was nothing to judge (no evidence, or rules this
+    # platform no longer holds), and the reported score stands.
+    derived = detection_gate.derived_confidence(category, evidence_rows)
+    if derived is not None:
+        if not detection_gate.is_confirmed(derived):
+            return None
+        # A report may not claim more precision than the rule behind it has. The
+        # engine's own per-hit score is kept below that ceiling -- a validator's
+        # verdict (a card number failing its checksum) says more than the rule's
+        # flat precision, and must not be flattened into it.
+        confidence = min(_float(confidence), derived)
     current_count = _int(counts.get(category))
     detection, created = _get_or_create(
         db,

@@ -5,15 +5,24 @@ refresh and the manual Suricata/YARA import) lives in ``api/rules.py``, and the
 offline vulnerability-library maintenance in ``api/integrations.py``; both used
 to share this module.
 """
-from fastapi import APIRouter, Depends, HTTPException
+# FastAPI dependency defaults are part of the existing HTTP contract.
+# ruff: noqa: B008
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models import SystemSetting
-from app.services.rule_library import (managed_rules, rule_confidence, save_manual_rule,
-                                       sensitive_entity, set_rule_enabled, update_presidio)
+from app.services import rule_noise
+from app.services.rule_library import (
+    managed_rules,
+    rule_confidence,
+    save_manual_rule,
+    sensitive_entity,
+    set_rule_enabled,
+    update_presidio,
+)
 
 router = APIRouter(prefix='/api/v1', tags=['rule-libraries'])
 
@@ -51,6 +60,29 @@ def list_dlp_rules(db: Session = Depends(get_db)):
     for rule in rules:
         rule['alertable'] = rule['sensitive'] and rule['confidence'] >= threshold
     return {'items': rules, 'total': len(rules)}
+
+
+@router.get('/dlp/rules/noise')
+def dlp_rule_noise(limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db)):
+    """Which rules raise the most, and how much of it the platform would still raise.
+
+    Read-only: every number is an aggregate of rows that already exist, so an
+    operator can rank the rules by noise before deciding what to fix or switch off.
+    """
+    return rule_noise.noise_report(db, limit=limit)
+
+
+@router.post('/dlp/rules/{identifier}/replay')
+def replay_dlp_rule(identifier: str, db: Session = Depends(get_db)):
+    """Dry-run one rule over the原文 already stored against it.
+
+    Nothing is written; the answer is how much of that history the rule, as it
+    stands now, still matches -- including its validator.
+    """
+    result = rule_noise.replay(db, identifier)
+    if result is None:
+        raise HTTPException(404, '规则不存在')
+    return result
 
 
 @router.post('/dlp/rules')

@@ -1,5 +1,102 @@
 # 当前任务：资产与数据安全增强
 
+## 第四十七批：执行误报治理 1–5、清掉存量误报并复核（2026-09-23）
+
+第四十六批把误报的**根因**堵住了，但清理计划（五层）只写了方案、一条没执行；用户要求“执行 1-5”，
+并在执行后**分析全部检查记录、给出误报的解决方案**。本轮把五层全部落到代码上，并真正清掉存量。
+
+### 五层（全部落码）
+
+1. **清存量**：扩展 `services/finding_hygiene.py` 的清理判定，`POST /admin/findings/purge-false-positives`
+   新增两个**运维显式声明**的入口，语义与既有的 `addresses` 一致（空列表不匹配任何行、不做任何推断）：
+   - `roots`：平台自己的存储树（`/app/data/storage` 下的 pcap 与上传池）。命中这些路径的文件证据
+     描述的是**检查器自己**，不是甲方数据——`DATA_YARA_001` 382 条全部命中的是平台自己 65 MiB 的 pcapng。
+   - `rules`：运维已确认“指标写错了”的规则 id（见第 4 层）。**判定不变**：只有当现行规则集**不会再产出**它时才删；
+    仅是严重度错配（如 Zeek weird 降级）**不算**，因为现行规则仍会产出它。
+2. **入库闸门**（`services/detection_gate.py`，新）：不再相信探针自报的置信度，入库时按**平台当前规则**重算。
+   `regex`/`validator` 两类证据取规则自身精度；其余（`keyword`/`field_name`/上下文词）**封顶 0.5**，
+   低于 0.6 告警线、只作证据。接不进类别/无证据的**不做裁剪**（规则被删 ≠ 值有错）。
+   接入 `services/data_objects/evidence.py`（`_merge_detection` 改返回 `Detection | None`）、
+   `data_objects/ingestion.py`、`database_scan/ingest.py`：判不下来的类别进 `candidate_categories`，
+   **仍然可见、只是不再单独定案**。
+3. **规则包收敛**（`services/rule_library.py`）：Presidio 导入时记录 `rule_confidence`（纯数字规则封顶），
+   `enabled` = `confidence >= MIN_ALERT_CONFIDENCE` 且是敏感实体；新增 `enabled_by_analyst` 标记——
+   运维手工开关过的规则**保留其选择并重新打标**，不会被下一次导入覆盖。
+4. **回放与噪声报告**（`services/rule_noise.py`，新）：`GET /dlp/rules/noise` 按规则给出
+   `detections`/`evidence_rows`/`unconfirmable_rows`/`findings`/`alerts`/`noise_ratio` 与
+   `known_rule`/`alertable`/`platform_confidence`，全部是既有行的聚合、只读；`POST /dlp/rules/{id}/replay`
+   对某条规则**已存的原文**做只读重放（现行规则+validator），未知 id 返回 404。
+5. **扫描范围护栏**（`services/scan_scope.py`，新）：探针安装树（`/opt|/etc|/var/lib/data-security-toolbox`）
+   永久排除——`queue_probe_data_asset_job` 下发前把它并进 `exclude_paths`；显式 include 落进这棵树**直接 400**
+   （`api/error_handlers.py` 接 `ScanScopeError`），不返回“已完成”的空扫描。排除随任务 payload 下发，一处可见。
+
+### 根因修复（本轮新增两处）
+
+- **YARA 口令规则过匹配**（`app/rules/data/sensitive.yar`）：`$password = /password\s*[=:]\s*[^\s]+/`
+  的 `[^\s]+` 会在**任意捕获字节**里匹配——平台自己的 pcapng 上传被读进来，`DATA_YARA_001` 因此产出
+  **382 条全部误报**。改为要求行内形态（`\b(password|passwd|pwd)\b[ \t]*[=:][ \t]*[!-~]{8,120}` 且**行尾**）、
+  ASCII、`filesize < 20MB`；`$secret` 扩充 `api_key`/`access_key`/`private_key`，provider token 前缀独立成 `$provider`。
+  **YARA 4.5.4 不支持非捕获组 `(?:…)`，只能用捕获组**（本轮踩过）。二进制噪声样本现不再命中，真实配置行仍命中。
+- **Zeek weird 一律 High**（`integrations/zeek/adapter.py`）：`bad_HTTP_request` 是**解析器自身的限制**
+  （客户端连到代理/非 HTTP 端口），却被判 High/0.8 越过告警线——单台被监控主机产出 **102 条 High + 82 条告警**。
+  改为按名字定级：`bad_http_request`/`http_unknown_method`/`dns_question_too_long` → Low（只留证、不告警），
+  `ssl_invalid`/`ssl_self_signed` → Medium。
+
+### 真机执行（真实删除，全部带审计）
+
+先 dry-run 对齐再执行，三条命令合计 **删除 2497 条 finding、54 条告警**，`detection_findings` 3013 → **516**：
+
+| 命令入参 | dry-run | 实删 findings | 实删 alerts |
+| --- | --- | --- | --- |
+| `{"roots":["/app/data/storage"]}` | 382 | 382（`DATA_YARA_001`） | 4 |
+| `{"rules":["NET_RATE_001","NET_BROAD_001","NET_SCAN_001","NETWORK_PORT_SCAN"]}` | 1275 | 1275 | 50 |
+| `{"rules":["high_packet_rate","broad_communication"]}` | 840 | 840 | 0 |
+
+**第 4 层暴露的一处事实**：同一类网络异常有**两套并行的产出者**——YAML 规则（`NET_SCAN_001`/`NET_BROAD_001`/
+`NET_RATE_001`）与遗留的 `services/traffic_service.py`（`NETWORK_PORT_SCAN`/`broad_communication`/
+`high_packet_rate`），rule id 不同、同一台主机各报一遍（`192.168.110.168` 同时出现在两族里）。三条删除命令
+因此必须覆盖两族，否则只清一半（本轮第一遍就只清了第一族，第二遍才发现剩余 840 条）。
+
+**清理后**剩余 top：`ZEK_WEIRD_001` 102 / `NUCLEI_http-missing-security-headers` 80(Low) /
+`SURICATA_DNS_ERROR_001` 54(Low) / `ZEK_HTTP_UA_001` 48(Medium) / `DLP_TRANSFER_001` 38，
+均为单条个位数量级的真实低危项；`SD_*`（DLP 数据规则）`noise_ratio` 已降到 0–0.4，`SD_EMAIL_001` 278 条检测
+只剩 1 条不可确认。
+
+### 误报的解决方案（回答用户“给出解决误报严重的解决方案”）
+
+**先分类，再分别用不同手段**——把“误报”当成一件事修，只会把漏报换进来：
+
+| 误报类型 | 本轮实例 | 手段 |
+| --- | --- | --- |
+| 规则**按错误指标**判定（方向、整段聚合） | 端口扫描/大范围通信/包速率 | 修指标本身（第四十六批 `traffic_scope`），存量按 `rules` 清 |
+| 规则**过匹配**（字符类落在任意字节上） | `DATA_YARA_001` 382 条 | 收紧模式 + 限定文件形态，存量按 `roots` 清 |
+| **严重度错配**（解析器限制当成攻击） | `ZEK_WEIRD_001` 102 条 | 按证据名定级，**不删**（事件真实发生，现行规则仍会产出它） |
+| **第三方代码**里的敏感形态 | 954 条检测中的 403 条 | 采集范围默认排除依赖/VCS 目录，存量按 `path_excluded_by_scope` 清 |
+| 探针**自报置信度**不可信 | 331 条瑞典组织号 | 入库闸门按平台规则重算，低于线只留证 |
+| **扫自己** | 安装树里的 `password = …` | 下发前并入 `exclude_paths`，显式 include 直接 400 |
+
+**三道防回流的机制**：① 入库闸门（第 2 层）——以后探针再报过匹配也不进 Finding；② 噪声报告 + 回放（第 4 层）
+——运维可随时看“哪条规则最吵”，并对已存原文重放验证；③ 精度回归基线（`tests/test_false_positive_baseline.py`）
+——把“这些样本不应产出 finding”固化进测试，改规则时回归。
+
+### 验证与测试
+
+- 新增 `tests/test_detection_gate.py`(6)、`test_rule_pack_curation.py`(5)、`test_rule_noise.py`(6)、
+  `test_false_positive_baseline.py`(8)、`test_credential_yara_precision.py`(3)；`test_finding_hygiene.py` 4 → 6
+  （`roots`、`rules` 各一），`tests/integrations/test_zeek.py` 新增 weird 定级用例；
+  `test_data_objects.py`/`test_data_asset_probe_api.py` 随闸门与范围护栏更新。
+- 全量后端 **34 FAILED，与 HEAD 基线逐条一致**（另 2 个既有 collection ERROR 同样复现），
+  passed 878（较基线 +2）；`ruff` 对新增/改动行负责，新代码 0 违规（`rule_library.py` 存量 E501 反而少一条）。
+- **无 Alembic 迁移**：本轮不新增表/列，`enabled_by_analyst` 存在既有 `file_sources.limits` JSON 里。
+
+### 待办
+
+- incident 由 `POST /incidents/rebuild-attribution` 重算——**本构建没有该路由**（`api/incidents.py` 已在
+  `8080857` 随页面删除），`1275+840` 条 finding 删除后留下 **116 条挂在 incident 上的告警**（`finding_id` 为空）
+  指向已重算的旧事件链，待恢复该路由或补一条维护端点后重算，**不凭空造数**。
+- `ZEK_WEIRD_001` 存量 102 条仍是 High（现行规则会产出，只是 Low），重跑分析才会按新定级落库；
+  本构建没有“重算严重度”的路径，暂不处理。
+
 ## 第四十六批：存储护栏 + 抓包平衡点 + 历史误报清理（2026-09-23）
 
 用户要求三件事：① **解决存储问题防止卡死**；② 找一个**抓包分析的平衡点**，兼顾性能、存储与覆盖率；

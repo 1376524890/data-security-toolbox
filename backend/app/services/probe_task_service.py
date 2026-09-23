@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import PolicyGroup, Probe, Task
+from app.services import scan_scope
 
 PROBE_TASK_KINDS = ("probe_scan", "data_asset_scan")
 TERMINAL = ("Success", "Failed", "Partial", "Cancelled")
@@ -141,6 +142,10 @@ def queue_probe_data_asset_job(db: Session, probe_id: int, config: dict, *, prof
             f"探针版本 {version} 不支持数据资产采集，请在探针部署页升级到 "
             f"{settings.probe_agent_version}"
         )
+    # Narrowed before it is queued, so the scope in the task payload is the scope
+    # the probe runs: an exact request for the platform's own tree is refused, and
+    # a broader one simply never walks it.
+    config = scan_scope.exclude_own_tree(config)
     expire_probe_tasks(db)
     active = db.scalar(
         select(Task).where(

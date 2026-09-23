@@ -40,6 +40,10 @@ REASON_EXCLUDED_PATH = "path_excluded_by_scope"
 REASON_IGNORED_ADDRESS = "evidence_address_out_of_scope"
 
 _IP_KEYS = ("src", "dst", "src_ip", "dst_ip", "source_ip", "target_ip", "peer_ip")
+#: Evidence keys that name the file a finding was raised from. Only keys that are
+#: a real path count: ``source`` is usually a bare file name, so matching a root
+#: against it would delete findings from anywhere on the host.
+_FILE_KEYS = ("file", "path")
 
 
 def _values(evidence: DetectionEvidence) -> list[str]:
@@ -223,12 +227,67 @@ def stale_traffic_findings(db: Session, addresses: Iterable[str]) -> list[Detect
     return victims
 
 
+def _file_roots(entries: Iterable[str]) -> list[str]:
+    roots = []
+    for entry in entries or ():
+        text = str(entry).strip().rstrip("/")
+        if text and text.startswith("/") and ".." not in text.split("/"):
+            roots.append(text)
+    return roots
+
+
+def _under(path: str, roots: list[str]) -> bool:
+    return any(path == root or path.startswith(root + "/") for root in roots)
+
+
+def stale_file_findings(db: Session, roots: Iterable[str]) -> list[DetectionFinding]:
+    """Findings raised *from* a file the operator has named out of scope.
+
+    The platform's own storage holds the captures and reports it produced, so a
+    finding that names a file inside it describes the checker rather than the
+    customer -- the same reasoning as the address range, and just as explicit: an
+    empty list matches nothing.
+    """
+    named = _file_roots(roots)
+    if not named:
+        return []
+    victims: list[DetectionFinding] = []
+    for finding in db.scalars(select(DetectionFinding)).all():
+        evidence = finding.evidence or {}
+        found = [
+            str(evidence[key]) for key in _FILE_KEYS
+            if isinstance(evidence.get(key), str) and evidence.get(key)
+        ]
+        if any(_under(path, named) for path in found):
+            victims.append(finding)
+    return victims
+
+
+def stale_rule_findings(db: Session, rules: Iterable[str]) -> list[DetectionFinding]:
+    """Findings from a rule the operator has verified is stale.
+
+    A rule that described the metric wrongly (a server's directional replies
+    read as a port scan, a whole-segment byte count read as a host's traffic)
+    keeps its findings after the rule is corrected: the fix stops the next one,
+    not the ones already stored. Naming the rule id is the operator's explicit
+    statement that the history it produced cannot hold - an empty list matches
+    nothing, exactly like the address and root sweeps.
+    """
+    named = sorted({str(entry).strip() for entry in rules or () if str(entry).strip()})
+    if not named:
+        return []
+    query = select(DetectionFinding).where(DetectionFinding.rule_id.in_(named))
+    return list(db.scalars(query).all())
+
+
 def purge(
     db: Session,
     *,
     revalidate: bool = True,
     exclude_owned_paths: bool = True,
     addresses: Iterable[str] = (),
+    roots: Iterable[str] = (),
+    rules: Iterable[str] = (),
     dry_run: bool = True,
 ) -> dict[str, Any]:
     """Apply the verdicts above. ``dry_run`` reports without deleting.
@@ -237,10 +296,13 @@ def purge(
     cascades, but ``alerts.finding_id`` does not, and an alert whose finding was
     proven stale is the alert the operator asked to be rid of. Incidents are not
     touched - they are derived by the correlation engine and are rebuilt from the
-    surviving findings with ``POST /incidents/rebuild-attribution``.
+    surviving findings with ``POST /incidents/rebuild-attribution``. ``addresses``,
+    ``roots`` and ``rules`` are the operator-named out-of-scope inputs described
+    above; each is empty by default so a purge never happens by accident.
     """
     verdict = stale_file_detections(db, revalidate=revalidate, excluded_paths=exclude_owned_paths)
-    findings = stale_traffic_findings(db, addresses)
+    findings = (stale_traffic_findings(db, addresses) + stale_file_findings(db, roots)
+                + stale_rule_findings(db, rules))
     evidence_rows = 0
     alert_rows = 0
     if not dry_run:
@@ -264,6 +326,8 @@ def purge(
         "findings": len(findings),
         "alerts_deleted": alert_rows,
         "addresses": [str(item) for item in addresses],
+        "roots": _file_roots(roots),
+        "rules": sorted({str(item).strip() for item in rules or () if str(item).strip()}),
     }
     if dry_run:
         summary["sample_detection_ids"] = {

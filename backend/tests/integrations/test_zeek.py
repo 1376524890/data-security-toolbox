@@ -58,6 +58,22 @@ def test_zeek_weird() -> None:
     assert any(item.rule_id == "ZEK_WEIRD_001" for item in result.findings)
 
 
+def test_zeek_weird_severity_follows_what_the_name_means() -> None:
+    """A parser artifact must not be graded like a broken certificate: one
+    monitored host produced ``bad_HTTP_request`` 102 times and every one of them
+    was raised High and alerted."""
+    def severity(name):
+        records = [{"event_type": "weird", "name": name, "ts": "2026-01-01T00:00:00Z"}]
+        findings = ZeekAdapter().adapt(records).findings
+        assert findings, name
+        return findings[0].severity
+
+    assert severity("bad_HTTP_request") == "Low"
+    assert severity("http_unknown_method") == "Low"
+    assert severity("dns_question_too_long") == "Low"
+    assert severity("SSL_invalid_ServerName") == "Medium"
+
+
 def test_zeek_parse_json_lines(tmp_path: Path) -> None:
     path = tmp_path / "dns.json"
     path.write_text('{"query":"example.com","ts":1}\n', encoding="utf-8")

@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AssetInstance, DataObject
-from app.services import sensitivity_map
+from app.services import detection_gate, sensitivity_map
 from app.services.data_objects.definitions import (
     HASH_SCOPED,
     IDENTITY_SCOPED,
@@ -133,6 +133,16 @@ def ingest_table(db: Session, ctx: ScanContext, scan: dict[str, Any]) -> dict[st
         category_name(item) for item in (scan.get("candidates") or [])
         if category_name(item) not in confirmed
     ]
+    evidence_rows = _evidence_rows({"evidence": {"hits": scan.get("hits") or []}})
+    # The scan runs where the probe is and carries that probe's rule set, which may
+    # be older than this platform's. Re-derive its score before anything is
+    # labelled, so a pack that over-scores its own pattern cannot mark a column as
+    # discovered data here; a category the current rules would not raise stays
+    # visible as a candidate instead.
+    demoted = detection_gate.demoted_categories(confirmed, evidence_rows)
+    if demoted:
+        confirmed = [category for category in confirmed if category not in demoted]
+        candidates = list(dict.fromkeys([*candidates, *demoted]))
     # A label comes from content only. A field name (``phone``) is recorded as
     # inference in ``field_only_categories`` and in the column metadata, so a
     # table whose column is *named* for personal data is never presented as a
@@ -254,12 +264,11 @@ def ingest_table(db: Session, ctx: ScanContext, scan: dict[str, Any]) -> dict[st
     }
     db.flush()
 
-    evidence_rows = _evidence_rows({"evidence": {"hits": scan.get("hits") or []}})
     confidence = _category_confidence(scan)
     fallback = max(confidence.values(), default=0.0)
     detections = 0
     for category in confirmed:
-        _merge_detection(
+        written = _merge_detection(
             db,
             instance=instance,
             obj=obj,
@@ -278,7 +287,8 @@ def ingest_table(db: Session, ctx: ScanContext, scan: dict[str, Any]) -> dict[st
             severity=sensitivity_map.severity_for(category),
             level=sensitivity_map.level_for(category),
         )
-        detections += 1
+        # ``None`` means the platform's own rules refuse to raise it.
+        detections += 1 if written is not None else 0
     recount_object(db, obj)
     db.flush()
     return {

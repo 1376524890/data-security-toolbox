@@ -1,5 +1,36 @@
 # 项目状态
 
+2026-09-23 第四十七批（本轮）：**误报治理 1–5 全部落码并真正清了存量**（第四十六批只写了方案、没执行）。
+
+**五层全部落码**：① 存量清理入口扩展 `roots`（平台自身存储树）与 `rules`（运维已确认指标写错的规则 id）
+——语义与既有 `addresses` 一致，空列表不匹配任何行、只按行自身证据判定；② 新增 `services/detection_gate.py`，
+入库时按**平台当前规则**重算置信度（`regex`/`validator` 取规则精度，其余封顶 0.5），判不下来的类别进
+`candidate_categories` 仍可见、不再单独定案；③ `services/rule_library.py` 的 Presidio 导入改为按精度启用，
+运维手工开关记 `enabled_by_analyst`、不被下次导入覆盖；④ 新增 `services/rule_noise.py` +
+`GET /dlp/rules/noise`（按规则聚合 detections/findings/alerts/noise_ratio，只读）与
+`POST /dlp/rules/{id}/replay`（对已存原文只读重放）；⑤ 新增 `services/scan_scope.py`，探针安装树永久排除、
+显式 include 落进安装树直接 400（`ScanScopeError` → 400）。
+
+**两处新根因**：`app/rules/data/sensitive.yar` 的 `[^\s]+` 在**任意捕获字节**里命中，平台自己的 pcapng
+被读进来导致 `DATA_YARA_001` **382 条全部误报**——改为要求行内形态 + ASCII + `filesize < 20MB`
+（注意 **YARA 4.5.4 不支持非捕获组 `(?:…)`**）；Zeek `bad_HTTP_request` 是**解析器自身限制**却被判
+High/0.8 越过告警线（单机 102 条 High + 82 条告警）——改为按名字定级（解析器类 → Low 只留证）。
+
+**真机执行**（dry-run 对齐后实删，全部写审计）：`roots=["/app/data/storage"]` 删 382 finding/4 告警、
+`rules=[NET_RATE_001,NET_BROAD_001,NET_SCAN_001,NETWORK_PORT_SCAN]` 删 1275/50、
+`rules=[high_packet_rate,broad_communication]` 删 840/0，合计 **2497 finding + 54 告警**，
+`detection_findings` 3013 → **516**。**关键事实**：同一网络异常有**两套并行产出者**（YAML 规则
+`NET_*` 与遗留 `traffic_service` 的 `NETWORK_PORT_SCAN`/`broad_communication`/`high_packet_rate`），
+rule id 不同、同一主机各报一遍，清理必须覆盖两族（第一遍只清一族，第二遍才补齐 840 条）。
+清完后 top 噪声降到个位数量级的真实低危项（`ZEK_WEIRD_001` 102、NUCLEI/SURICATA Low 若干）；
+`SD_*` 的 `noise_ratio` 已到 0–0.4。
+
+测试：新增 28 项（`test_detection_gate` 6 / `test_rule_pack_curation` 5 / `test_rule_noise` 6 /
+`test_false_positive_baseline` 8 / `test_credential_yara_precision` 3），`test_finding_hygiene` 4 → 6、
+`test_zeek` 新增定级用例；全量后端 **34 FAILED 与 HEAD 基线逐条一致**（另 2 个既有 collection ERROR 同样复现），
+passed 878（+2），新代码 ruff 0 违规。**无 Alembic 迁移**（不新增列，`enabled_by_analyst` 存既有 JSON 里）。
+改动未提交。详见 `TASK.md` 第四十七批。
+
 2026-09-23 第四十六批（本轮）：**存储护栏落地 + 抓包平衡点 + 历史误报清理**。第四十五批诊断出的三个问题
 本轮都改到了代码上（该批只诊断、未改码）。
 

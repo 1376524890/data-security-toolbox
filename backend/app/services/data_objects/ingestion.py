@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AssetInstance, DataObject, Probe
-from app.services import fingerprint_candidates, sensitivity_map
+from app.services import detection_gate, fingerprint_candidates, sensitivity_map
 from app.services.data_objects.coverage import _is_late, complete_scope, in_scope
 from app.services.data_objects.definitions import (
     HASH_FULL,
@@ -85,6 +85,20 @@ def ingest_report(
         counts = {
             category_name(key): _int(value) for key, value in (entry.get("counts") or {}).items()
         }
+        evidence_rows = _evidence_rows(entry)
+        # Every count in this report is the probe's judgement about its own rule
+        # set, and a probe keeps the score it was shipped with. Re-derive it with
+        # the rules this platform scans with before a category is written into
+        # anything: a category the current rules would not raise moves to
+        # ``candidate_categories`` -- still visible to an operator, no longer
+        # counted as discovered data -- instead of becoming a finding.
+        demoted = detection_gate.demoted_categories(categories, evidence_rows)
+        if demoted:
+            categories = [category for category in categories if category not in demoted]
+            entry["categories"] = categories
+            entry["candidate_categories"] = list(
+                dict.fromkeys([*(entry.get("candidate_categories") or []), *demoted])
+            )[:16]
         severity = sensitivity_map.worst_severity(categories)
         size = _int(entry.get("size"))
 
@@ -249,7 +263,6 @@ def ingest_report(
         }
         db.flush()
 
-        evidence_rows = _evidence_rows(entry)
         # Confidence is a per-category value: one file can hold a verified email
         # (0.85) next to a keyword-only credential clue (0.3), and copying the
         # file's maximum onto both made the weak category look as strong as the

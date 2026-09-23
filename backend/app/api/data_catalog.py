@@ -637,12 +637,22 @@ class PurgeFalsePositives(BaseModel):
     addresses a capture should never have described (the platform's own container
     bridge, a loopback range), because that evidence cannot be recognised from
     the row alone without guessing.
+
+    ``roots`` does the same for file evidence: it names the storage trees that
+    belong to the platform itself (its own pcap and upload spool), so a rule that
+    fires on arbitrary capture bytes is not counted as a real credential leak.
+
+    ``rules`` names the rule ids an operator has verified describe the metric
+    wrongly, so the history they already produced is retired too - a rule fix
+    stops the next finding, not the stored ones.
     """
 
     dry_run: bool = True
     revalidate: bool = True
     exclude_owned_paths: bool = True
     addresses: list[str] = Field(default_factory=list, max_length=32)
+    roots: list[str] = Field(default_factory=list, max_length=32)
+    rules: list[str] = Field(default_factory=list, max_length=64)
 
 
 @router.post('/admin/findings/purge-false-positives')
@@ -656,6 +666,8 @@ def purge_false_positives(payload: PurgeFalsePositives, request: Request,
         revalidate=payload.revalidate,
         exclude_owned_paths=payload.exclude_owned_paths,
         addresses=payload.addresses,
+        roots=payload.roots,
+        rules=payload.rules,
         dry_run=payload.dry_run,
     )
     record_audit(db, request, action='findings.purge_false_positives', target='findings',

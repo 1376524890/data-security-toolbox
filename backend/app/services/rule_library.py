@@ -211,6 +211,13 @@ def save_manual_rule(value):
     return rule
 
 
+#: Set on a rule an operator enabled or disabled by hand. A pack refresh cannot
+#: tell "enabled because the pack said so" from "enabled because a human asked",
+#: and getting that wrong either resurrects an over-matching rule or undoes
+#: deliberate work, so the decision is written down instead of inferred.
+ANALYST_TOGGLE = 'enabled_by_analyst'
+
+
 def set_rule_enabled(rule_id, enabled):
     """Enable or disable one stored rule in place.
 
@@ -224,6 +231,7 @@ def set_rule_enabled(rule_id, enabled):
             if rule.get('id') != rule_id:
                 continue
             rule['enabled'] = bool(enabled)
+            rule[ANALYST_TOGGLE] = True
             atomic_json(path, document)
             return rule
     return None
@@ -231,7 +239,7 @@ def set_rule_enabled(rule_id, enabled):
 
 def import_presidio_wheel(content, version):
     rules, skipped = [], 0
-    current = {rule['id']: rule.get('enabled', True) for rule in managed_rules()}
+    current = {rule['id']: rule for rule in managed_rules()}
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
         for item in archive.infolist():
             if '/predefined_recognizers/' not in item.filename or not item.filename.endswith('.py'):
@@ -256,9 +264,26 @@ def import_presidio_wheel(content, version):
                                               'confidence': values.get('score')})
                         rule.update(id='presidio-' + hashlib.sha256((cls.name + values['name']).encode()).hexdigest()[:24],
                                     source='Presidio', version=version, recognizer=cls.name)
-                        # Metadata locators and weak patterns are imported for
-                        # evidence but stay disabled unless an analyst opts in.
-                        rule['enabled'] = current.get(rule['id'], rule['confidence'] >= MIN_ALERT_CONFIDENCE and sensitive_entity(rule))
+                        # The pack's score is not this platform's reading of the
+                        # rule: a pattern that can only match digits is capped
+                        # here exactly as it is on every later read. Storing the
+                        # uncapped score made the store disagree with the engine
+                        # and let an over-matching recognizer import itself
+                        # enabled -- 331 Swedish organisation numbers came from
+                        # precisely that.
+                        rule['confidence'] = rule_confidence(rule)
+                        kept = current.get(rule['id']) or {}
+                        if kept.get(ANALYST_TOGGLE):
+                            # A human decided this one; a pack refresh does not.
+                            # The decision is carried over with it, or the next
+                            # refresh would judge it again and switch it back on.
+                            rule['enabled'] = bool(kept.get('enabled', True))
+                            rule[ANALYST_TOGGLE] = True
+                        else:
+                            # Metadata locators and weak patterns are imported for
+                            # evidence but stay disabled until someone opts in.
+                            rule['enabled'] = (rule['confidence'] >= MIN_ALERT_CONFIDENCE
+                                               and sensitive_entity(rule))
                         rules.append(rule)
                     except (ValueError, TypeError, KeyError, SyntaxError):
                         skipped += 1

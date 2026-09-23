@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.main import app
 from app.models import DataAsset, Task
+from app.services import scan_scope
 
 
 def _register_probe(client: TestClient, name: str) -> tuple[int, str]:
@@ -78,7 +79,9 @@ def test_queued_job_carries_scope_filters_to_the_probe() -> None:
         assert queued.status_code == 200
         config = client.get(f"/api/v1/probes/{probe_id}/commands",
                             headers=_headers(probe_id, token)).json()["commands"][0]["config"]
-        assert config["exclude_paths"] == ["/srv/data/tmp", "node_modules"]
+        # The operator's filters arrive unchanged, and the platform's own install
+        # tree is added to them: a probe never reports on the toolbox itself.
+        assert config["exclude_paths"] == ["/srv/data/tmp", "node_modules", *scan_scope.OWN_TREE]
         assert config["file_types"] == [".csv", ".xlsx"]
 
 

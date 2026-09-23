@@ -119,3 +119,52 @@ def test_dry_run_reports_without_deleting(tmp_path) -> None:
         assert db.get(Detection, detection.id) is None
         assert db.get(DetectionFinding, finding.id) is None
         assert db.query(Alert).filter(Alert.finding_id == finding.id).count() == 0
+
+
+def test_findings_raised_from_the_platform_s_own_storage_are_named_out_of_scope(tmp_path) -> None:
+    """A credential rule firing on arbitrary capture bytes describes the checker,
+    not the customer: the file evidence points inside the platform's own spool."""
+    with _session(tmp_path) as db:
+        for target, evidence in (
+            ('self-capture', {'file': '/app/data/storage/pcaps/2026/up.pcapng'}),
+            ('real-file', {'path': '/srv/app/src/settings.py'}),
+        ):
+            evidence_row = {'rule_id': 'DATA_YARA_001', 'severity': 'Critical',
+                            'evidence': evidence}
+            db.add(DetectionFinding(target_type='file', target_id=target, engine='data',
+                                    **evidence_row))
+        db.flush()
+
+        # An empty root set matches nothing: only the tree the operator names.
+        assert finding_hygiene.stale_file_findings(db, []) == []
+        matched = finding_hygiene.stale_file_findings(db, ['/app/data/storage'])
+        assert [row.target_id for row in matched] == ['self-capture']
+
+        applied = finding_hygiene.purge(db, roots=['/app/data/storage'], dry_run=False)
+
+        assert applied['roots'] == ['/app/data/storage']
+        assert applied['findings'] == 1
+        assert db.query(DetectionFinding).filter(
+            DetectionFinding.target_id == 'self-capture').count() == 0
+
+
+def test_a_rule_an_operator_names_stale_retires_its_stored_history(tmp_path) -> None:
+    """A corrected rule stops the next finding, not the ones already stored: the
+    operator names the rule id whose history cannot hold."""
+    with _session(tmp_path) as db:
+        for target, rule in (('portscan', 'NETWORK_PORT_SCAN'), ('rate', 'NET_RATE_001')):
+            db.add(DetectionFinding(target_type='pcap', target_id=target, engine='traffic',
+                                    rule_id=rule, severity='Medium', evidence={'src': '10.0.0.5'}))
+        db.flush()
+
+        # An empty rule set matches nothing: only the ids the operator names.
+        assert finding_hygiene.stale_rule_findings(db, []) == []
+        matched = finding_hygiene.stale_rule_findings(db, ['NETWORK_PORT_SCAN'])
+        assert [row.target_id for row in matched] == ['portscan']
+
+        applied = finding_hygiene.purge(db, rules=['NETWORK_PORT_SCAN'], dry_run=False)
+
+        assert applied['rules'] == ['NETWORK_PORT_SCAN']
+        assert applied['findings'] == 1
+        assert db.query(DetectionFinding).filter(
+            DetectionFinding.rule_id == 'NET_RATE_001').count() == 1

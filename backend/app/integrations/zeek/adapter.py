@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.engine.core.context import DetectionContext
-from app.integrations.base import AdapterResult, IntegrationAdapter, finding, severity_map
+from app.integrations.base import AdapterResult, IntegrationAdapter, finding
 from app.integrations.zeek.parser import parse_zeek_payload
 from app.integrations.zeek.runner import run_zeek_payload
 
@@ -35,7 +35,21 @@ WEAK_CIPHERS = {
 
 SUSPICIOUS_USER_AGENTS = ("sqlmap", "nikto", "nmap", "python-requests", "curl/", "wget/", "masscan")
 FILE_EXTENSIONS = (".exe", ".dll", ".scr", ".bat", ".ps1", ".jar", ".docm", ".xlsm", ".vbs")
-SUSPICIOUS_WEIRD = ("dns_question_too_long", "bad_http_request", "ssl_invalid", "ssl_self_signed", "http_unknown_method")
+#: How much each Zeek ``weird`` name actually means, keyed by the token that is
+#: matched against the lower-cased name. A ``weird`` is Zeek's protocol parser
+#: saying it could not read something, and grading every one of them ``High``
+#: made the platform's own noise: ``bad_http_request`` is a client talking to a
+#: proxy or non-HTTP port, and one monitored host produced it 102 times, each
+#: raised as High and alerted. Parser-limit names are informational; only the
+#: ones that describe a real condition (a broken or self-signed certificate)
+#: keep a severity that is worth looking at.
+SUSPICIOUS_WEIRD = {
+    "bad_http_request": "Low",
+    "http_unknown_method": "Low",
+    "dns_question_too_long": "Low",
+    "ssl_invalid": "Medium",
+    "ssl_self_signed": "Medium",
+}
 
 
 class ZeekAdapter(IntegrationAdapter):
@@ -187,9 +201,15 @@ class ZeekAdapter(IntegrationAdapter):
     def _weird(self, record: dict[str, Any]) -> list[Any]:
         name = str(record.get("name") or "")
         evidence = {"record": record, "weird_name": name}
-        if any(token in name.lower() for token in SUSPICIOUS_WEIRD):
-            return [finding(self.name, "ZEK_WEIRD_001", severity_map("High"), 0.8, evidence, "Zeek 异常事件说明协议解析异常，应结合上下文判断攻击或误报。", str(record.get("ts", "")))]
-        return []
+        lowered = name.lower()
+        severity = next(
+            (value for token, value in SUSPICIOUS_WEIRD.items() if token in lowered), None
+        )
+        if severity is None:
+            return []
+        return [finding(self.name, "ZEK_WEIRD_001", severity, 0.8, evidence,
+                        "Zeek 异常事件：多数为协议解析器自身的限制，应结合上下文判断攻击或误报。",
+                        str(record.get("ts", "")))]
 
     def _conn(self, record: dict[str, Any]) -> list[Any]:
         orig = int(record.get("orig_bytes") or 0)
