@@ -1,5 +1,36 @@
 # 项目状态
 
+2026-09-24 第四十八批（本轮）：**平台升到 3.1.0**。抓包/分析失衡与流量误报的四个真根因都落码并真机验证，
+密码评估结果补到资产中心，已推 `develop` 并出离线包 `dst-toolbox-3.1.0-linux-arm64.tar.gz`。
+
+**本轮四个根因**（都不是配置问题）：① 探针抓在**没插网线**的网卡上——`preflight` 原先只按名字取第一个非虚拟网卡，
+真机把 `operstate=down` 的 `enp1s0` 排在 `UP` 的 `wlan0` 前面，于是「ONLINE、心跳正常、段也在传，只有永远没有内容」；
+现按 `operstate` 只把内核报告为 up 的网卡交给选择逻辑，完整清单另存 `all_interfaces`。
+② **空抓包段占 60 秒分析时间**：Suricata 读不出包时不是快速失败（耗尽自身 ~60 秒启动预算才抛异常），异常还会从
+`EngineRegistry.run` 冒出去中止整段分析、段记录永远停在 `pending`；30 秒一段 / 60 秒一段，积压必然无界增长
+（探针 8 实测 40 分钟内 `pending` 7 → 75）。现在空包直接写 `capture` 结果收尾，且 `EngineRegistry.run` **逐引擎隔离**，
+失败挂 `engine_errors` 并落成 `engine_error` 结果（盲区要看得见）。
+③ **死掉的分析任务与「已回收仍 pending」的行**：新增 60 秒 beat `sweep_stale_analyses`（Running>900s 判 Failed、
+段 `pending → failed`），`pcap_storage.release` 删文件时把 `pending` 标 `evicted`；真机一次收掉 208 行幻影积压。
+④ **流量误报的两处口径**：`RollingTrafficState` 只按源地址建键、直数 `dst_port`，把 DNS 应答
+（一事一客户、目的端口各不同）判成「服务器在扫描它服务的网」；`NET_RATE_001`/`high_packet_rate` 用
+`max(span, 0.001)` 做分母，单包会话（跨度 0）算出 1000 pps 越过 `>500`。现按 `(probe, src, dst)` 建键 +
+`service_port()` 取服务侧端口，速率共用 `traffic_scope.conversation_rate()`（跨度下限 0.05 s）。
+
+**存量清理**：`POST /admin/findings/purge-false-positives` 只清本轮改过口径的三条规则
+（`NETWORK_PORT_SCAN`/`NET_RATE_001`/`high_packet_rate`），dry-run 对齐后实删 **119 finding + 6 告警**；
+`NET_SCAN_001` 口径未动、按行证据仍成立，**刻意保留**。**本机未解决的误报**已在
+`docs/releases/v3.1.0.md`「已知遗留」逐条写清（阈值策略、`service_port` 分不开 P2P 与扫描、
+传感器主机自身流量在范围内），三者都要动**策略/口径**而非补丁，留给下一轮决策。
+
+**新增页面**：`资产中心 → 密码评估`（`/data-assets?view=crypto`）。检查任务的密码评估结果原先只在任务中心
+详情抽屉里，运营侧看不到；新页面复用既有 `CryptoAssessmentPanel` 与同一套 GB/T 39786 评估逻辑。
+新增 `useCryptoAssessmentResults` + 6 项 vitest，`vue-tsc` 通过、前端 22 文件 / 120 项通过。
+
+**测试**：全量后端 34 FAILED 与基线逐条一致、passed 897；新代码 ruff 未新增任何违规。**无 Alembic 迁移**。
+标签 `v3.1.0` 与交付物就绪；GitHub Release 需要 `repo` 权限凭据（构建机无 `gh` 也无 token），待运营侧创建。
+详见 `TASK.md` 第四十八批与 `docs/releases/v3.1.0.md`。
+
 2026-09-23 第四十七批（本轮）：**误报治理 1–5 全部落码并真正清了存量**（第四十六批只写了方案、没执行）。
 
 **五层全部落码**：① 存量清理入口扩展 `roots`（平台自身存储树）与 `rules`（运维已确认指标写错的规则 id）

@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-09-24 — v3.1.0：抓包队列不再被空段拖垮、流量误报的口径修正，密码评估结果回到资产中心
+
+平台版本自 3.0.0 升到 **3.1.0**（`backend/app/main.py`、`frontend/package.json` 与
+`frontend/package-lock.json`），探针保持 3.7.0，**无新增 Alembic 迁移**（head 仍为
+`0019_policy_group_fingerprints`）。本版全部内容来自 2026-09-23/24 三批真机排障。
+
+- **探针抓包改抓「真的有流量的网卡」**：`deployment/preflight.py` 原先用 `ls /sys/class/net`
+  列出全部非 lo 名字，`capture_interface_for` 取第一个非虚拟的，于是真机上把**网线没插**的 `enp1s0`
+  排在了 `UP` 的 `wlan0` 前面——部署记录 ONLINE、心跳正常、段也在上传，只有「永远没有内容」这一个症状。
+  preflight 现在读 `operstate`，只把内核报告为 up 的网卡交给选择逻辑，完整清单另存 `all_interfaces`
+  供控制台展示；驱动把 operstate 报成 `unknown` 时回退到全部非 lo 名字。
+- **空抓包段不再占用 60 秒分析时间**：零包的段仍会跑全部引擎，而 Suricata 对读不出包的 pcap 不是快速
+  失败（耗尽自身 ~60 秒启动预算才抛异常）。30 秒一段、60 秒一段地分析，积压必然无界增长（真机实测
+  探针 8 四十分钟内 pending 段 7 → **75**）。`analyze_pcap_task` 现在在跑引擎前判断包数为空，写一条
+  `capture` 模块结果后直接收尾。
+- **单个引擎抛异常不再中止整段分析**：`EngineRegistry.run` 逐个引擎隔离，失败只记 warning 并挂到
+  `context.data["engine_errors"]`，其余引擎照常产出；任务把 `engine_errors` 落成 `engine_error`
+  模块的结果——**盲区要看得见，不能读成「干净抓包」**。
+- **死掉的分析任务与「已回收却仍显示 pending」的行**：新增 60 秒 beat 任务
+  `security_toolbox.sweep_stale_analyses`，把 Running 超过 900 秒的任务判 Failed、段记录 `pending → failed`；
+  `pcap_storage.release` 删文件时同时把 `pending` 标成 `evicted`（已 `analyzed` 的不动）。
+  真机一次收掉 **208 行**幻影积压。
+- **流量误报的两处口径错误**（本版「误报严重」的主因）：
+  `RollingTrafficState` 原先只按**源地址**建键并直接数 `dst_port`，抓包流是单向的，DNS 服务器的应答
+  （`114.114.114.114:53 → 客户端:临时端口`，一客户端一条流、目的端口各不同）于是把**每台繁忙服务器
+  在每一段里都判成在扫描它自己服务的网**——改为按 `(probe, src, dst)` 建键、用
+  `traffic_scope.service_port()` 取服务侧端口；
+  `NET_RATE_001` 与遗留 `high_packet_rate` 原先都算 `packets / max(span, 0.001)`，**只有一个包的会话**
+  （跨度为 0）算出 **1000 pps**、直接越过 `packet_rate > 500`——改为共用
+  `traffic_scope.conversation_rate()`，跨度下限 0.05 秒（单包读 20 pps，1000 包/10 ms 仍读 20000 pps）。
+- **存量误报清理**：走 `POST /admin/findings/purge-false-positives`，只清本轮**改过口径**的三条规则
+  （`NETWORK_PORT_SCAN` / `NET_RATE_001` / `high_packet_rate`），先 dry-run 对齐再实删，共
+  **119 条 finding + 6 条级联告警**；`NET_SCAN_001` 的口径本轮没动，按行证据判定仍然成立，故保留。
+- **密码评估结果回到资产中心**：新增 `资产中心 → 密码评估`（`/data-assets?view=crypto`）。
+  检查任务的密码评估结果原先只在**任务中心详情抽屉**里能看到，运营侧看不到；新页面列出
+  `payload.crypto_assess` 且真正产出 `result.crypto_profiles` 的检查任务，复用既有
+  `CryptoAssessmentPanel` 与同一套评估逻辑（GB/T 39786 / GM/T），不新增第二套打分口径。
+  `GET /tasks` 不能按 payload/result 字段过滤，因此服务端分页、前端过滤，并保留服务端总数，
+  页面显示「共 N 条检查任务，其中 M 条含密码评估结果」。
+
+本版不含新增迁移、不改 API 路径与返回结构、不动探针版本。
+
 ## 2026-09-22 — v3.0.0：一键离线部署套件与平台 3.0.0
 
 平台版本自 2.14.0 升到 **3.0.0**（`backend/app/main.py`、`frontend/package.json` 与
