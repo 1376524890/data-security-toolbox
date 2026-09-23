@@ -18,6 +18,7 @@ import AssetChart from './components/AssetChart.vue'
 import ClosedLoop from './components/ClosedLoop.vue'
 import EngineStatus from './components/EngineStatus.vue'
 import EventStream from './components/EventStream.vue'
+import GeoMap from './components/GeoMap.vue'
 import MetricCards from './components/MetricCards.vue'
 import ProbeHealth from './components/ProbeHealth.vue'
 import RiskChart from './components/RiskChart.vue'
@@ -35,7 +36,7 @@ const system = useSystemStore()
 const { frameStyle } = useScreenScale()
 
 const {
-  loading, error, overview, traffic, risk, events, probes, loop, now,
+  loading, error, overview, traffic, geo, risk, events, probes, loop, now,
   riskSlices, assetSlices, nodes, detectionX, detectionValues, detectionLabel,
   detectionColor, flowX, engineRows, engineSummary, metric, updatedAt,
   refresh,
@@ -141,7 +142,10 @@ const sensitiveText = computed(() => {
           </TrendPanel>
         </div>
 
-        <TrafficMap :traffic="traffic" @select="openNode" />
+        <div class="ds-center">
+          <TrafficMap :traffic="traffic" @select="openNode" />
+          <GeoMap :geo="geo" />
+        </div>
 
         <div class="ds-column">
           <RiskChart :risk="risk" :slices="riskSlices" />
@@ -247,6 +251,11 @@ const sensitiveText = computed(() => {
 }
 .ds-column { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .ds-column > * { flex: 1; min-height: 0; }
+/* The centre column stacks the flow topology on top of the geographic map: both
+   are "where the data went", and half the height each keeps them both on screen
+   instead of hiding one behind a tab on a wall nobody can click. */
+.ds-center { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ds-center > * { flex: 1; min-height: 0; }
 .ds-bottom {
   height: 250px; flex-shrink: 0;
   display: grid; grid-template-columns: 1.25fr 0.95fr 0.9fr 1.5fr; gap: 10px;

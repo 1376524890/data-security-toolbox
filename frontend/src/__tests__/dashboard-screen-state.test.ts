@@ -4,7 +4,7 @@ import {
   engineCategory, engineState, levelBreakdown, shortDay, useDashboardScreen,
 } from '../modules/dashboard/composables/useDashboardScreen'
 import type { Alert } from '../types/alert'
-import type { DashboardOverview, RiskDistribution, TrafficFlow } from '../types/dashboard'
+import type { DashboardOverview, GeoDistribution, RiskDistribution, TrafficFlow } from '../types/dashboard'
 import type { IntegrationStatus } from '../types/integration'
 import type { Probe } from '../api/probes'
 import * as dashboard from '../api/dashboard'
@@ -13,7 +13,7 @@ import * as integrations from '../api/integrations'
 vi.mock('../api/dashboard', () => ({
   getDashboardOverview: vi.fn(), getTrafficFlow: vi.fn(), getRiskDistribution: vi.fn(),
   getDetectionTrend: vi.fn(), getRecentAlerts: vi.fn(), getProbeStatus: vi.fn(),
-  getDashboardEngines: vi.fn(),
+  getDashboardEngines: vi.fn(), getGeoMap: vi.fn(),
 }))
 vi.mock('../api/integrations', () => ({ listIntegrations: vi.fn() }))
 
@@ -63,6 +63,37 @@ const risk: RiskDistribution = {
   sensitivity: [],
   total_findings: 3313,
   total_assets: 7,
+}
+
+const geo: GeoDistribution = {
+  generated_at: '2026-09-22T12:00:00Z',
+  country_table_present: true,
+  unrated_label: '未评级',
+  levels: [
+    { key: 'L4', name: '核心/极高敏感' }, { key: 'L3', name: '高敏感个人信息' },
+    { key: 'L2', name: '一般个人信息/重要业务数据' }, { key: 'L1', name: '低敏感/公开' },
+  ],
+  regions: [
+    { key: 'internal', label: '内网', hosts: 3, sessions: 900, bytes: 50000,
+      level_counts: { L4: 3 } },
+    { key: 'domestic', label: '国内', hosts: 1, sessions: 120, bytes: 9000,
+      level_counts: { L2: 1 } },
+    { key: 'overseas', label: '境外', hosts: 2, sessions: 80, bytes: 4000,
+      level_counts: { L3: 2 } },
+    { key: 'unknown', label: '未评级', hosts: 1, sessions: 5, bytes: 100, level_counts: {} },
+  ],
+  points: [
+    { id: 'internal', region: 'internal', region_label: '内网', country: '', country_name: '内网',
+      sample_host: '10.0.0.9', hosts: 3, sessions: 900, bytes: 50000, packets: 3000,
+      level: 'L4', level_label: 'L4', level_counts: { L4: 3 }, lat: null, lon: null },
+    { id: 'CN', region: 'domestic', region_label: '国内', country: 'CN', country_name: '中国',
+      sample_host: '114.114.114.114', hosts: 1, sessions: 120, bytes: 9000, packets: 500,
+      level: 'L2', level_label: 'L2', level_counts: { L2: 1 }, lat: 35.0, lon: 105.0 },
+    { id: 'US', region: 'overseas', region_label: '境外', country: 'US', country_name: '美国',
+      sample_host: '185.199.110.133', hosts: 2, sessions: 80, bytes: 4000, packets: 200,
+      level: 'L3', level_label: 'L3', level_counts: { L3: 2 }, lat: 39.8, lon: -98.6 },
+  ],
+  totals: { sessions: 1105, bytes: 63100, packets: 3700, hosts: 7, level_counts: { L4: 3, L3: 2, L2: 1 } },
 }
 
 const integration = (overrides: Partial<IntegrationStatus>): IntegrationStatus => ({
@@ -124,6 +155,7 @@ beforeEach(() => {
   vi.mocked(dashboard.getDashboardEngines).mockResolvedValue({
     items: [{ engine: 'zeek', count: 5 }, { engine: 'suricata', count: 9 }, { engine: 'misp', count: 3 }],
   })
+  vi.mocked(dashboard.getGeoMap).mockResolvedValue(geo)
   vi.mocked(integrations.listIntegrations).mockResolvedValue([
     integration({ name: 'zeek', capabilities: ['conn', 'dns'] }),
     integration({ name: 'suricata', healthy: false, supported_types: ['pcap', 'alert'] }),
@@ -147,9 +179,21 @@ describe('数据安全态势大屏 state', () => {
     expect(state.events.value).toHaveLength(2)
     expect(state.probes.value[0].name).toBe('test123')
     expect(state.integrations.value).toHaveLength(4)
+    expect(state.geo.value?.points).toHaveLength(3)
+    expect(state.geo.value?.points[1].country_name).toBe('中国')
     expect(state.error.value).toBe('')
     expect(state.loading.value).toBe(false)
     expect(state.updatedAt.value).not.toBeNull()
+  })
+
+  it('loads the geo map alongside the other panels', async () => {
+    await mountScreen()
+    // The marker budget is the API's own default; the panel must not widen it.
+    expect(dashboard.getGeoMap).toHaveBeenCalledTimes(1)
+    expect(dashboard.getGeoMap).toHaveBeenCalledWith()
+    expect(state.geo.value?.totals.hosts).toBe(7)
+    expect(state.geo.value?.regions.map((region) => region.key))
+      .toEqual(['internal', 'domestic', 'overseas', 'unknown'])
   })
 
   it('asks the topology for exactly the links the card can draw', async () => {

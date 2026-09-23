@@ -1,5 +1,75 @@
 # 当前任务：资产与数据安全增强
 
+## 第四十四批：风险文件直读 + 大屏地理态势 + 密码评估回到扫描流程（2026-09-23）
+
+用户要求三件事：① 风险文件要能直接看到风险点，`浏览原始文件` 改为 `下载原始文件`，浏览默认走掩码、
+需要时才手动看全部；② 数据大屏用地图展示内网/国内/境外，中国地图 + 地球，颜色区分数据敏感等级；
+③ 把历史版本里的密码评估找回来，并放进扫描流程。三件都已落地，未提交。
+
+**① 风险文件（`api/data_catalog.py`）**
+
+- 新增 `GET /asset-instances/{id}/risk-points`：按实例聚合命中的检测行，返回每条风险点的
+  **命中字段/规则/等级/计数**，以及 `text`（命中的原文片段）——「能直接看到风险点」就是这一段，
+  列表行同时补 `risk_point_count` / `risk_hit_count` 两列，不点开也能看出这个文件有几处风险。
+- `GET /asset-instances/{id}/content` 默认 `mask=true`：命中值在服务端被替换成掩码（`services/masking.py`），
+  响应带 `masked` / `masked_values` 说明「这份内容是打过码的」；`mask=false` 才是显式的「看全部」。
+  掩码只作用于**规则真正命中过**的值，没命中过的内容不会被顺手抹掉（否则原文会失真）。
+- `GET /asset-instances/{id}/download`：整份文件回给浏览器（临时目录 + `FileResponse` +
+  `BackgroundTask(shutil.rmtree)` 兜底清理），前端 `浏览原始文件` 按钮随之改为 `下载原始文件`。
+  非 `file-source:` 归属的实例（探针上报的文件）没有可回读的本机路径，返回 409 `not_retrievable`
+  并说明原因，而不是给一个空文件。
+- 回归：`backend/tests/test_risk_files.py`（4 例：风险点带命中原文 + 列表计数、非可回读来源给 409、
+  浏览默认掩码直到显式要全部、下载回整份文件）；前端
+  `frontend/src/__tests__/risk-files-state.test.ts`（5 例）。实现拆在
+  `frontend/src/api/riskFiles.ts` + `modules/data-security/composables/useRiskFiles.ts`，
+  `evidence/RiskFiles.vue` 只留模板。
+
+**② 数据大屏地理态势（`GET /dashboard/geo-map`）**
+
+- 后端新增 `services/region_geo.py`：离线**国家表**（238 个 ISO 国家码 → 中文名 + 近似标签点）。
+  没有这张表就判定不出境外，响应里的 `country_table_present=false` 会如实说明，**不会**把未知说成境内。
+- `api/dashboard.py` 新增 `GET /dashboard/geo-map?limit=24`：按**目的地址**聚合已完成分析的会话，
+  经 `egress_regions.classify` 分成 `internal`（本企业私网）/ `domestic`（境内）/ `overseas`（境外）/
+  `unknown`（未命中地区表，单列为「未评级」，**不计入境外**）。每组的颜色是组内**最严重**的敏感等级
+  （`Detection.instance_id → AssetInstance.owner_key → Probe.ip_address` / `FileSource.host`），
+  主机数/字节数/会话数都是 `models.py` 的行实时聚合，无缓存、无采样。
+- 前端 `modules/dashboard/geoProjection.ts` 自带几何：中国轮廓（含海南、台湾）+ 点阵填充 +
+  等距圆柱投影；地球用正交投影（**背面返回 `visible:false`**，不折到正面）+ 经纬线框。
+  平台离线、拿不到 GeoJSON，所以形状是代码里的简化轮廓而不是下载的地图数据。
+  `components/GeoMap.vue` 左侧中国地图（内网画成示意枢纽 + 国内落国家标签点）、右侧地球（境外），
+  图例用 `chartTheme.sensitivityColors` 的 L1–L4 四色 + 未评级；组内没有任何已判定等级时标「未评级」。
+- 回归：`backend/tests/test_dashboard_screen_api.py` 增 3 例（分组与着色、打击伪造的地区表后能点名「美国」、
+  地区表缺失时如实降级）；`test_dashboard_boundaries.py` 的冻结路由表补
+  `("GET", "/dashboard/geo-map")`；前端 `frontend/src/__tests__/geo-projection.test.ts`（5 例几何）+
+  大屏两个用例更新。
+
+**③ 密码评估回到扫描流程**
+
+- `services/crypto_profile.py` 拆出 `profile_from_observations(services, handshakes)`：一次扫描里已经采到的
+  服务 banner / TLS 握手观测就地汇总成画像，不必再回查库。
+- `workers/analysis_tasks.py`：扫描过程为每台主机生成 `crypto_profiles[host]`（上限
+  `CRYPTO_PROFILE_HOST_LIMIT = 50`），**只有非空时**才写进 summary 的 `crypto_profiles` /
+  `crypto_profile_hosts`；新增 payload 开关 `crypto_assess`（默认 `True`），关掉时连这两个键都不出现，
+  元数据不残留。`ScanRequest.crypto_assess` 与 `api/network_scan.py` 把开关透传到任务。
+- 前端把 `api/crypto.ts`、`modules/tasks/assessment/cryptoAssessment.ts` 从历史版本取回，
+  新增 `assessment/composables/useCryptoAssessment.ts` 与 `assessment/CryptoAssessmentPanel.vue`：
+  任务详情里选「评估目标」→ 评该主机，另有合规/弱配置两个预置；**观测不足的主机会用内置默认值补齐**，
+  不会因为少几项就评出一个假的满分。`TaskCenter.vue` 增加密码评估分区，并把
+  `crypto_profiles` / `crypto_profile_hosts` 加进 `PRESENTED_KEYS`（不再在原始结果块里重复刷屏）；
+  向导第 6 步加 `密码评估` 开关（`useTaskWizard.ts` 的 `cryptoAssess`，随 `/scan` 下发、`reset()` 归位）。
+- 回归：`frontend/src/__tests__/crypto-assessment-state.test.ts`（8 例）+
+  `task-center-wizard.test.ts` 增 3 例（共 9 例）；后端 `test_crypto_profile.py`、
+  `test_network_scan_boundaries.py`、`test_task_boundaries.py`、`test_scan.py` 共 33 例通过。
+
+**验证**
+
+- 后端定向：`test_dashboard_screen_api.py` + `test_dashboard_boundaries.py` + `test_risk_files.py` 共 20 例通过；
+  crypto/scan/边界共 33 例通过。
+- 后端全量对照：与本批前的 `HEAD` 版本跑同一命令，失败集合**完全相同**（本容器环境固有的
+  packaging/shared/probe 类失败），本批**零回归**，另外把 9 例新功能用例从失败变为通过。
+- 前端：`vitest run` 21 文件 114 例全过；`vue-tsc --noEmit` 干净。
+- `ruff check`：本批新增/修改行 0 告警（存量 E501 未动）。
+
 ## 第四十三批：扫描临时文件清理 + 旧版本探针回收（2026-09-23）
 
 用户要求：每个文件整份下载 + 全量哈希，**分析完成后及时清理即可**；并**回收旧版本探针，确保没有

@@ -222,30 +222,43 @@ def _probe_tls_handshakes(db: Session, probe_id: int) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Public builder
+# Public builders
 # ---------------------------------------------------------------------------
 
+#: Services whose presence implies a TLS handshake even when none was decoded.
+_TLS_SERVICES = {"https", "ssl", "nginx", "apache", "iis", "tomcat"}
 
-def build_crypto_profile(db: Session, probe_id: int) -> dict[str, Any]:
-    probe = db.get(Probe, probe_id)
-    if not probe:
-        raise ValueError("probe not found")
 
-    # Services observed by the probe (assets are the persisted, classified form).
-    assets = db.scalars(select(Asset).where(Asset.probe_id == probe_id)).all()
-    services: list[dict[str, Any]] = []
-    for a in assets:
-        meta = a.extra or {}
-        services.append({
-            "port": a.port,
-            "service": a.service,
-            "banner": meta.get("banner", ""),
-            "ip": meta.get("ip", a.ip),
-        })
-    if not services:
-        services = (probe.extra or {}).get("services", [])
+def _absorb_handshake(cipher: str, version: str, *, ciphers: Counter[str],
+                      protos: Counter[str], algos: Counter[str]) -> None:
+    """Fold one TLS handshake (cipher ids and/or a version) into the counters."""
+    for named in _decode_cipher_suites(cipher):
+        ciphers[named] += 1
+        for algo in _algorithms_from_cipher(named):
+            algos[algo] += 1
+        proto = _protocol_from_cipher(named) or _protocol_from_version(version)
+        if proto:
+            protos[proto] += 1
+    if version:
+        proto = _protocol_from_version(version)
+        if proto:
+            protos[proto] += 1
 
-    handshakes = _probe_tls_handshakes(db, probe_id)
+
+def profile_from_observations(services: list[dict[str, Any]] | None = None,
+                              handshakes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """The assessment inputs built from observed services and TLS handshakes.
+
+    Two callers see these facts - the probe profile and the platform's own
+    network scan - and both must produce the same inputs, or the same host would
+    be scored differently depending on which path filled the form. The
+    aggregation therefore lives here once.
+
+    A service may carry its handshake inline (``tls: {version, cipher}``, which
+    is how the scanner reports it) or arrive as a separate handshake row.
+    """
+    services = list(services or [])
+    handshakes = list(handshakes or [])
 
     cipher_counter: Counter[str] = Counter()
     proto_counter: Counter[str] = Counter()
@@ -254,24 +267,17 @@ def build_crypto_profile(db: Session, probe_id: int) -> dict[str, Any]:
     password_types: list[str] = []
 
     for h in handshakes:
-        cipher = str(h.get("cipher") or h.get("cipher_suite") or "")
-        version = str(h.get("version") or "")
-        for named in _decode_cipher_suites(cipher):
-            cipher_counter[named] += 1
-            for algo in _algorithms_from_cipher(named):
-                algo_counter[algo] += 1
-            proto = _protocol_from_cipher(named) or _protocol_from_version(version)
-            if proto:
-                proto_counter[proto] += 1
-        if version:
-            proto = _protocol_from_version(version)
-            if proto:
-                proto_counter[proto] += 1
+        _absorb_handshake(str(h.get("cipher") or h.get("cipher_suite") or ""),
+                          str(h.get("version") or ""),
+                          ciphers=cipher_counter, protos=proto_counter, algos=algo_counter)
 
     for svc in services:
         service = str(svc.get("service", ""))
         banner = str(svc.get("banner", ""))
         port = int(svc.get("port", 0) or 0)
+        tls = svc.get("tls") if isinstance(svc.get("tls"), dict) else {}
+        _absorb_handshake(str(tls.get("cipher") or ""), str(tls.get("version") or ""),
+                          ciphers=cipher_counter, protos=proto_counter, algos=algo_counter)
         res = _banner_signals(service, banner, port)
         for algo in res["algorithms"]:
             algo_counter[algo] += 1
@@ -295,38 +301,63 @@ def build_crypto_profile(db: Session, probe_id: int) -> dict[str, Any]:
             key_set.add(256)
     key_lengths = sorted(key_set)
 
-    # If a probe observes TLS but no handshake was decoded, assume modern TLS so
-    # the UI has something to evaluate and the coverage marks it as inferred.
-    if not proto_counter and any(svc.get("service") in {"https", "ssl", "nginx", "apache", "iis", "tomcat"} for svc in services):
+    # If an endpoint serves TLS but no handshake was decoded, assume modern TLS
+    # so the UI has something to evaluate and the coverage marks it as inferred.
+    if not proto_counter and any(
+        str(svc.get("service", "")) in _TLS_SERVICES for svc in services
+    ):
         proto_counter["TLSv1.2"] += 1
         proto_counter["TLSv1.3"] += 1
 
-    config = {
-        "algorithms": [a for a, _ in algo_counter.most_common()],
-        "cipherSuites": [c for c, _ in cipher_counter.most_common()],
-        "protocols": [p for p, _ in proto_counter.most_common()],
-        "keyLengths": key_lengths,
-        "keyManagement": {"rotationDays": 60, "storage": "HSM", "useHardware": True},
-    }
-    coverage = {
-        "algorithms": "detected" if algo_counter else "default",
-        "cipherSuites": "detected" if cipher_counter else "default",
-        "protocols": "detected" if proto_counter else "default",
-        "keyLengths": "inferred" if key_lengths else "default",
-        "keyManagement": "default",
+    return {
+        "config": {
+            "algorithms": [a for a, _ in algo_counter.most_common()],
+            "cipherSuites": [c for c, _ in cipher_counter.most_common()],
+            "protocols": [p for p, _ in proto_counter.most_common()],
+            "keyLengths": key_lengths,
+            "keyManagement": {"rotationDays": 60, "storage": "HSM", "useHardware": True},
+        },
+        "passwordTypes": password_types,
+        "passwordSignals": signals,
+        "tlsHandshakeCount": len(handshakes) + sum(
+            1 for svc in services if isinstance(svc.get("tls"), dict) and svc["tls"]),
+        "serviceCount": len(services),
+        "coverage": {
+            "algorithms": "detected" if algo_counter else "default",
+            "cipherSuites": "detected" if cipher_counter else "default",
+            "protocols": "detected" if proto_counter else "default",
+            "keyLengths": "inferred" if key_lengths else "default",
+            "keyManagement": "default",
+        },
     }
 
+
+def build_crypto_profile(db: Session, probe_id: int) -> dict[str, Any]:
+    probe = db.get(Probe, probe_id)
+    if not probe:
+        raise ValueError("probe not found")
+
+    # Services observed by the probe (assets are the persisted, classified form).
+    assets = db.scalars(select(Asset).where(Asset.probe_id == probe_id)).all()
+    services: list[dict[str, Any]] = []
+    for a in assets:
+        meta = a.extra or {}
+        services.append({
+            "port": a.port,
+            "service": a.service,
+            "banner": meta.get("banner", ""),
+            "ip": meta.get("ip", a.ip),
+        })
+    if not services:
+        services = (probe.extra or {}).get("services", [])
+
+    handshakes = _probe_tls_handshakes(db, probe_id)
     return {
         "probe_id": probe_id,
         "probe_name": probe.name,
         "hostname": probe.hostname,
         "ip_address": probe.ip_address,
-        "config": config,
-        "passwordTypes": password_types,
-        "passwordSignals": signals,
-        "tlsHandshakeCount": len(handshakes),
-        "serviceCount": len(services),
-        "coverage": coverage,
+        **profile_from_observations(services=services, handshakes=handshakes),
         "sources": [
             "probe assets (service banners)",
             "TLS handshake metadata (PCAP)",

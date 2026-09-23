@@ -2,7 +2,7 @@ import { apiGet } from './client'
 import { listAlerts } from './alerts'
 import type {
   CockpitOverview, CockpitTrend, DashboardItems, DashboardOverview, DashboardSummary,
-  DetectionTrendPoint, RiskDistribution, RiskTrendResponse, TrafficFlow,
+  DetectionTrendPoint, GeoDistribution, RiskDistribution, RiskTrendResponse, TrafficFlow,
 } from '../types/dashboard'
 import type { Alert } from '../types/alert'
 import type { PageResult } from '../types/common'
@@ -64,6 +64,11 @@ export function getCockpitOverview(): Promise<CockpitOverview> {
 
 export function getTrafficFlow(params: { limit?: number; days?: number } = {}): Promise<TrafficFlow> {
   return apiGet('/dashboard/traffic-flow', { limit: 18, days: 7, ...params })
+}
+
+/** The 内网/国内/境外 map: destination groups with their worst detected level. */
+export function getGeoMap(params: { limit?: number } = {}): Promise<GeoDistribution> {
+  return apiGet('/dashboard/geo-map', { limit: 24, ...params })
 }
 
 export function getRiskDistribution(): Promise<RiskDistribution> {

@@ -73,6 +73,7 @@ def start_scan(payload: ScanRequest, db: Session = Depends(get_db)) -> dict[str,
             "nuclei": payload.nuclei,
             "nuclei_tags": payload.nuclei_tags,
             "nuclei_templates": payload.nuclei_templates,
+            "crypto_assess": payload.crypto_assess,
         },
     )
     dispatch_task(task.id, NETWORK_SCAN)

@@ -37,6 +37,7 @@ DASHBOARD_ROUTES = {
     ("GET", "/dashboard/incident-trend"),
     ("GET", "/dashboard/overview"),
     ("GET", "/dashboard/traffic-flow"),
+    ("GET", "/dashboard/geo-map"),
     ("GET", "/dashboard/risk-distribution"),
     ("GET", "/dashboard/detection-trend"),
     ("GET", "/dashboard/trend"),

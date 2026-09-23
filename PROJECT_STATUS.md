@@ -1,6 +1,30 @@
 # 项目状态
 
-2026-09-23 第四十三批（本轮）：**扫描临时文件崩溃路径清扫 + 旧版本探针回收**。
+2026-09-23 第四十四批（本轮）：**风险文件直读 + 大屏地理态势 + 密码评估回到扫描流程**。
+
+**风险文件**（`api/data_catalog.py`）：新增 `GET /asset-instances/{id}/risk-points`，把命中的规则、
+等级与**命中原文**直接给出来，列表行补 `risk_point_count`/`risk_hit_count`；浏览 `content` 默认
+`mask=true`（只掩码规则真正命中过的值，响应带 `masked`/`masked_values`），`mask=false` 才是显式看全部；
+新增 `GET /asset-instances/{id}/download` 整份下载（`BackgroundTask` 清理临时目录），非 `file-source:`
+来源返回 409 `not_retrievable`。前端按钮由 `浏览原始文件` 改为 `下载原始文件`（`api/riskFiles.ts` +
+`useRiskFiles.ts` + `evidence/RiskFiles.vue`）。
+
+**大屏地理态势**（`GET /dashboard/geo-map`）：新增离线国家表 `services/region_geo.py`（238 国中文名 +
+标签点），按目的地址把会话分成 内网/国内/境外/未评级 四类，颜色取组内**最严重**的敏感等级，数据全部
+实时聚合。前端 `geoProjection.ts` 自带中国轮廓 + 点阵 + 等距圆柱投影，地球用正交投影（背面不画），
+`components/GeoMap.vue` 左中国地图、右地球，图例 L1–L4。地区表缺失时 `country_table_present=false`，
+未命中的目的地址单列「未评级」而**不**计入境外。
+
+**密码评估回到扫描流程**：`crypto_profile.py` 拆出 `profile_from_observations`，扫描为每台主机生成
+`crypto_profiles`（上限 50，非空才写 summary），新增 `crypto_assess` 开关（默认开，关掉时不留任何键）。
+前端取回历史版本的 `api/crypto.ts` 与 `assessment/cryptoAssessment.ts`，新增 `useCryptoAssessment.ts`
+与 `CryptoAssessmentPanel.vue` 挂进任务详情，向导第 6 步加密码评估开关；观测不足的主机用内置默认值补齐，
+不会评出假满分。
+
+**验证**：后端定向 53 例通过；全量对照 `HEAD` 失败集合完全相同（零回归，另 9 例新用例由失败转通过）。
+前端 `vitest` 21 文件 114 例 + `vue-tsc --noEmit` 全过；`ruff check` 新增行 0 告警。详见 `TASK.md` 第四十四批。
+
+2026-09-23 第四十三批（上一批）：**扫描临时文件崩溃路径清扫 + 旧版本探针回收**。
 
 **扫描临时文件**：每个文件整份下载到 `/tmp/dst-file-scan-*`，跑完在 `finally` 里 `unlink`；新增
 `file_scan/scan.py::sweep_stale_temp_dirs()` 清扫 `SIGKILL`／容器停止留下的陈旧目录（年龄保护 6 小时，

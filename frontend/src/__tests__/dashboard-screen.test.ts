@@ -3,7 +3,7 @@ import { createApp, nextTick, type App } from 'vue'
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import DashboardScreen from '../modules/dashboard/DashboardScreen.vue'
-import type { DashboardOverview, RiskDistribution, TrafficFlow } from '../types/dashboard'
+import type { DashboardOverview, GeoDistribution, RiskDistribution, TrafficFlow } from '../types/dashboard'
 import type { IntegrationStatus } from '../types/integration'
 import type { Probe } from '../api/probes'
 import * as dashboard from '../api/dashboard'
@@ -21,7 +21,7 @@ vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../api/dashboard', () => ({
   getDashboardOverview: vi.fn(), getTrafficFlow: vi.fn(), getRiskDistribution: vi.fn(),
   getDetectionTrend: vi.fn(), getRecentAlerts: vi.fn(), getProbeStatus: vi.fn(),
-  getDashboardEngines: vi.fn(),
+  getDashboardEngines: vi.fn(), getGeoMap: vi.fn(),
 }))
 vi.mock('../api/integrations', () => ({ listIntegrations: vi.fn() }))
 
@@ -74,6 +74,34 @@ const risk: RiskDistribution = {
   total_assets: 7,
 }
 
+const geo: GeoDistribution = {
+  generated_at: '2026-09-22T12:00:00Z',
+  country_table_present: true,
+  unrated_label: '未评级',
+  levels: [
+    { key: 'L4', name: '核心/极高敏感' }, { key: 'L3', name: '高敏感个人信息' },
+    { key: 'L2', name: '一般个人信息/重要业务数据' }, { key: 'L1', name: '低敏感/公开' },
+  ],
+  regions: [
+    { key: 'internal', label: '内网', hosts: 3, sessions: 900, bytes: 50000, level_counts: { L4: 3 } },
+    { key: 'domestic', label: '国内', hosts: 1, sessions: 126, bytes: 90, level_counts: { L2: 1 } },
+    { key: 'overseas', label: '境外', hosts: 2, sessions: 80, bytes: 4000, level_counts: { L3: 2 } },
+    { key: 'unknown', label: '未评级', hosts: 1, sessions: 5, bytes: 100, level_counts: {} },
+  ],
+  points: [
+    { id: 'internal', region: 'internal', region_label: '内网', country: '', country_name: '内网',
+      sample_host: '10.0.0.9', hosts: 3, sessions: 900, bytes: 50000, packets: 3000,
+      level: 'L4', level_label: 'L4', level_counts: { L4: 3 }, lat: null, lon: null },
+    { id: 'CN', region: 'domestic', region_label: '国内', country: 'CN', country_name: '中国',
+      sample_host: '114.114.114.114', hosts: 1, sessions: 126, bytes: 90, packets: 60,
+      level: 'L2', level_label: 'L2', level_counts: { L2: 1 }, lat: 35.0, lon: 105.0 },
+    { id: 'US', region: 'overseas', region_label: '境外', country: 'US', country_name: '美国',
+      sample_host: '185.199.110.133', hosts: 2, sessions: 80, bytes: 4000, packets: 200,
+      level: 'L3', level_label: 'L3', level_counts: { L3: 2 }, lat: 39.8, lon: -98.6 },
+  ],
+  totals: { sessions: 1111, bytes: 54190, packets: 3260, hosts: 7, level_counts: { L4: 3, L3: 2, L2: 1 } },
+}
+
 const integration = (overrides: Partial<IntegrationStatus>): IntegrationStatus => ({
   name: 'zeek', adapter_version: '', version: '6.0', installed: true, enabled: true, healthy: true,
   runtime_version: '', supported_types: [], capabilities: [], last_check: '', status: '', message: '',
@@ -87,6 +115,11 @@ const probe: Probe = {
 
 let app: App
 let host: HTMLElement
+
+const stateGeoLevels = (node: HTMLElement) =>
+  Array.from(node.querySelectorAll('.ds-geo .ds-legend-item'))
+    .map((item) => item.textContent?.trim() || '')
+    .filter((text) => text.startsWith('L'))
 
 const flushing = async () => {
   for (let i = 0; i < 4; i += 1) {
@@ -123,6 +156,7 @@ beforeEach(() => {
     items: [probe], total: 1, page: 1, page_size: 100,
   })
   vi.mocked(dashboard.getDashboardEngines).mockResolvedValue({ items: [{ engine: 'zeek', count: 5 }] })
+  vi.mocked(dashboard.getGeoMap).mockResolvedValue(geo)
   vi.mocked(integrations.listIntegrations).mockResolvedValue([
     integration({ name: 'zeek', capabilities: ['conn'] }),
     integration({ name: 'suricata', healthy: false, supported_types: ['pcap'] }),
@@ -160,6 +194,16 @@ describe('数据安全态势大屏 view', () => {
     expect(text).toContain('终端探针')
     expect(text).toContain('数据更新于')
     expect(host.querySelector('.ds-overlay')).toBeNull()
+
+    // Geo map: the four sensitivity levels are named and 内网/国内/境外 appear.
+    expect(text).toContain('内网')
+    expect(text).toContain('国内')
+    expect(text).toContain('境外')
+    expect(host.querySelectorAll('.ds-geo .ds-legend-item').length).toBe(5)
+    expect(stateGeoLevels(host)).toEqual([
+      'L4 核心/极高敏感', 'L3 高敏感个人信息', 'L2 一般个人信息/重要业务数据', 'L1 低敏感/公开',
+    ])
+    expect(host.querySelectorAll('.ds-geo-marker').length).toBeGreaterThan(0)
   })
 
   it('says the posture is unavailable instead of drawing an empty wall', async () => {

@@ -15,7 +15,18 @@ from sqlalchemy import delete, func, select
 
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import Alert, Asset, DetectionFinding, Flow, Incident, PcapRecord
+from app.models import (
+    Alert,
+    Asset,
+    AssetInstance,
+    DataObject,
+    Detection,
+    DetectionFinding,
+    FileSource,
+    Flow,
+    Incident,
+    PcapRecord,
+)
 from app.services import egress_regions
 
 SEED = "DASHSCREEN_TEST"
@@ -128,7 +139,26 @@ def _cleanup() -> None:
         db.execute(delete(Alert).where(Alert.fingerprint == f"{SEED}_ALERT"))
         db.execute(delete(Incident).where(Incident.fingerprint == f"{SEED}_INCIDENT"))
         db.execute(delete(Asset).where(Asset.hostname.like(f"{SEED}%")))
+        _cleanup_geo(db)
         db.commit()
+
+
+def _cleanup_geo(db) -> None:  # type: ignore[no-untyped-def]
+    """Everything the geo-map tests seed, in FK order."""
+    source_ids = list(db.scalars(select(FileSource.id).where(FileSource.name.like(f"{SEED}%"))))
+    object_ids = list(
+        db.scalars(select(DataObject.id).where(DataObject.object_key.like(f"{SEED}%")))
+    )
+    instance_ids = list(
+        db.scalars(select(AssetInstance.id).where(AssetInstance.path.like(f"/{SEED}%")))
+    )
+    if instance_ids:
+        db.execute(delete(Detection).where(Detection.instance_id.in_(instance_ids)))
+        db.execute(delete(AssetInstance).where(AssetInstance.id.in_(instance_ids)))
+    if object_ids:
+        db.execute(delete(DataObject).where(DataObject.id.in_(object_ids)))
+    if source_ids:
+        db.execute(delete(FileSource).where(FileSource.id.in_(source_ids)))
 
 
 def test_overview_counts_match_the_stored_rows() -> None:
@@ -225,6 +255,136 @@ def test_a_proven_external_destination_is_the_only_red_line(monkeypatch) -> None
         assert link["bucket"] == "country"
         assert body["totals"]["external"] >= 1
         assert body["trend"][-1]["external"] >= 1
+    finally:
+        _cleanup()
+
+
+def _seed_geo_rows() -> dict[str, str]:
+    """Two internal destinations, one of which also holds a detected L3 file.
+
+    The second half is what the map colours by: the flow table only says where
+    the packets went, the object model says what was on that host.
+    """
+    now = datetime.now(UTC)
+    with SessionLocal() as db:
+        pcap = PcapRecord(
+            filename=f"{SEED}-geo.pcap", sha256=f"{SEED}geosha", size=1024,
+            packet_count=15, status="analyzed", created_at=now, updated_at=now,
+        )
+        db.add(pcap)
+        db.flush()
+        db.add_all([
+            Flow(pcap_id=pcap.id, src_ip="10.7.7.1", dst_ip="10.7.7.11",
+                 protocol="TCP", packets=10, bytes=1000),
+            Flow(pcap_id=pcap.id, src_ip="10.7.7.1", dst_ip="10.7.7.12",
+                 protocol="TCP", packets=5, bytes=500),
+        ])
+        source = FileSource(
+            name=f"{SEED}-geo-share", protocol="sftp", host="10.7.7.12", port=22,
+            root_path="/", created_at=now, updated_at=now,
+        )
+        db.add(source)
+        db.flush()
+        obj = DataObject(
+            object_key=f"{SEED}-geo-object", object_type="file", size=10,
+            categories=["phone"], sensitivity="High", created_at=now, updated_at=now,
+        )
+        db.add(obj)
+        db.flush()
+        instance = AssetInstance(
+            object_id=obj.id, owner_key=f"file-source:{source.id}", source_kind="file_share",
+            path=f"/{SEED}-geo/persons.csv", name="persons.csv", size=10,
+            status="ACTIVE", categories=["phone"], created_at=now, updated_at=now,
+        )
+        db.add(instance)
+        db.flush()
+        db.add(Detection(
+            object_id=obj.id, instance_id=instance.id, source_kind="file_share",
+            category="phone", sensitivity_level="L3", severity="High",
+            confidence=0.9, hit_count=3, first_seen_at=now, last_seen_at=now,
+        ))
+        db.commit()
+    return {"path": f"/{SEED}-geo/persons.csv", "host": "10.7.7.12"}
+
+
+def test_geo_map_groups_destinations_and_colours_them_by_detected_level() -> None:
+    _cleanup()
+    _seed_geo_rows()
+    try:
+        with TestClient(app) as client:
+            body = client.get("/api/v1/dashboard/geo-map").json()
+        internal = next(item for item in body["regions"] if item["key"] == "internal")
+        # Both seeded destinations are private addresses, so they are one 内网
+        # group with their flows added up, not two rows.
+        assert internal["hosts"] == 2
+        assert internal["sessions"] == 2
+        assert internal["bytes"] == 1500
+        assert internal["level_counts"]["L3"] == 1
+        assert internal["level_counts"][body["unrated_label"]] == 1
+
+        point = next(item for item in body["points"] if item["region"] == "internal")
+        assert point["hosts"] == 2
+        # The group takes the worst level any of its hosts carries: one host
+        # holding L3 data is the fact worth colouring.
+        assert point["level"] == "L3"
+        assert point["level_label"] == "L3"
+        assert point["country"] == ""
+        assert point["lat"] is None and point["lon"] is None
+        assert point["level_counts"] == {"L3": 1, body["unrated_label"]: 1}
+        # Nothing may claim egress while no region table is loaded.
+        assert all(item["region"] != "overseas" for item in body["points"])
+    finally:
+        _cleanup()
+
+
+def test_geo_map_places_a_classified_destination_and_names_it(monkeypatch) -> None:
+    """Fake the region verdict, as the topology test does: only then may a
+    destination be called 境外, and only then does the point get coordinates."""
+    _cleanup()
+    _pcap_id, ips = _seed_flow_rows()
+    real_classify = egress_regions.classify
+
+    def fake_classify(ip, *, blacklist, whitelist, internal):  # type: ignore[no-untyped-def]
+        if str(ip) == ips[2]:
+            return {"bucket": "country", "region": "US", "reason": "地区表命中 US"}
+        return real_classify(ip, blacklist=blacklist, whitelist=whitelist, internal=internal)
+
+    monkeypatch.setattr(egress_regions, "classify", fake_classify)
+    try:
+        with TestClient(app) as client:
+            body = client.get("/api/v1/dashboard/geo-map").json()
+        overseas = next(item for item in body["regions"] if item["key"] == "overseas")
+        assert overseas["hosts"] == 1
+        assert overseas["sessions"] == 1
+        point = next(item for item in body["points"] if item["region"] == "overseas")
+        assert point["country"] == "US"
+        assert point["country_name"] == "美国"
+        # A label point comes from the shared table, not from the request.
+        assert isinstance(point["lat"], float) and isinstance(point["lon"], float)
+        assert point["level"] == "" and point["level_label"] == body["unrated_label"]
+    finally:
+        _cleanup()
+
+
+def test_geo_map_never_reports_an_unresolved_destination_as_egress() -> None:
+    """The honest-degrade path: with no region table, nothing is 境外."""
+    _cleanup()
+    _pcap_id, _ips = _seed_flow_rows()
+    try:
+        with TestClient(app) as client:
+            body = client.get("/api/v1/dashboard/geo-map").json()
+        assert body["country_table_present"] == egress_regions.table_present()
+        if not egress_regions.table_present():
+            assert all(item["region"] != "overseas" for item in body["points"])
+        labels = {region["key"]: region["label"] for region in body["regions"]}
+        assert labels == {
+            "internal": "内网", "domestic": "国内", "overseas": "境外", "unknown": "未识别",
+        }
+        # Every drawn point is one of the four regions the panel can render, and
+        # the group sizes add back up to the flow rows that produced them.
+        assert {item["region"] for item in body["points"]} <= set(labels)
+        assert body["totals"]["sessions"] >= 3
+        assert body["totals"]["hosts"] == sum(region["hosts"] for region in body["regions"])
     finally:
         _cleanup()
 

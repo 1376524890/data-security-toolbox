@@ -101,6 +101,11 @@ export function useTaskWizard() {
   const policyGroupIds = ref<number[]>([])
   /** Inspection: how many of the most common ports the service check covers. */
   const topPorts = ref(200)
+  /** Inspection: whether the scan also runs the 商用密码应用安全性评估 on what
+   *  it observes. The profile is built from the banners and TLS handshakes the
+   *  service check already collected, so this adds no second sweep - it only
+   *  decides whether the per-host result is kept for the 任务详情 to assess. */
+  const cryptoAssess = ref(true)
   /** Monitoring: how often the probe re-inventories the ticked directories. */
   const intervalSeconds = ref(0)
   const busy = ref(false)
@@ -198,6 +203,7 @@ export function useTaskWizard() {
     await apiPost('/scan', {
       target: host.host.trim(), discovery: false, top_ports: topPorts.value, ports: [],
       nuclei: true, nuclei_tags: '', nuclei_templates: '', probe_id: null,
+      crypto_assess: cryptoAssess.value,
     })
     for (const path of host.selected) {
       const source = await saveFileSource(null, {
@@ -327,11 +333,12 @@ export function useTaskWizard() {
     hosts.value = [blankHost()]
     policyGroupIds.value = []
     topPorts.value = 200
+    cryptoAssess.value = true
     intervalSeconds.value = 0
   }
 
   return {
-    step, taskType, hosts, groups, policyGroupIds, topPorts, intervalSeconds, busy,
+    step, taskType, hosts, groups, policyGroupIds, topPorts, cryptoAssess, intervalSeconds, busy,
     blockReason, ready,
     addHost, removeHost, testHost, loadNode, onCheck, loadGroups, invalidate,
     submit, checkCallback, reset,

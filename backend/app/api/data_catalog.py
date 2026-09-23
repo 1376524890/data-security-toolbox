@@ -1,3 +1,5 @@
+# FastAPI dependency defaults are part of the existing HTTP contract.
+# ruff: noqa: B008
 """Read APIs for the data-type-centric view: types, objects, instances, detections.
 
 Everything here answers from the object model (``data_objects`` /
@@ -8,16 +10,27 @@ platform's existing ``paginate``/``page_response`` helpers.
 
 The evidence API exposes rule, recogniser, field, count and - by explicit
 operator requirement - the bounded matched原文 the probe returned for that hit
-(``extra['matches']``). No endpoint ever returns file content.
+(``extra['matches']``).
+
+File *bodies* are never stored: ``/asset-instances/{id}/content`` re-reads a
+bounded window from the collection source and masks the returned values by
+default, and ``/asset-instances/{id}/download`` streams the whole file back from
+that source. Only sources the platform can reach itself are retrievable, and an
+instance collected by a probe says so instead of pretending to be empty.
 """
 from __future__ import annotations
 
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from app.api.pagination import page_response, paginate
 from app.core.database import get_db
@@ -33,6 +46,7 @@ from app.models import (
 from app.services import sensitivity_map
 from app.services.audit_service import record_audit
 from app.services.data_objects import definitions, projection, queries
+from app.services.masking import masked
 
 router = APIRouter(prefix='/api/v1')
 
@@ -311,8 +325,27 @@ def list_asset_instances(probe_id: int | None = None, object_id: int | None = No
     result = paginate(db, query, page, page_size)
     probes = {item.id: item for item in db.scalars(select(Probe)).all()}
     mapping = sensitivity_map.overrides(db)
-    response = page_response([_instance_row(item, probes.get(item.probe_id), mapping)
-                              for item in result['items']], page, page_size, result['total'])
+    rows = [_instance_row(item, probes.get(item.probe_id), mapping) for item in result['items']]
+    # One extra grouped query for the whole page rather than one per row: the
+    # 风险文件 list has to answer "how much fired here" before a row is opened.
+    # Counted against the instance's *current* object only, so the number agrees
+    # with the risk-point drawer instead of adding up stale hits.
+    identities = {item['id']: item['object_id'] for item in rows}
+    if identities:
+        counts = db.execute(
+            select(Detection.instance_id, func.count(Detection.id),
+                   func.coalesce(func.sum(Detection.hit_count), 0))
+            .join(AssetInstance, AssetInstance.id == Detection.instance_id)
+            .where(Detection.instance_id.in_(list(identities)),
+                   Detection.object_id == AssetInstance.object_id)
+            .group_by(Detection.instance_id)
+        ).all()
+        by_instance = {row[0]: row for row in counts}
+        for item in rows:
+            entry = by_instance.get(item['id'])
+            item['risk_point_count'] = int(entry[1]) if entry else 0
+            item['risk_hit_count'] = int(entry[2]) if entry else 0
+    response = page_response(rows, page, page_size, result['total'])
     if association:
         response['association'] = association
     return response
@@ -339,14 +372,16 @@ def asset_instance_detail(instance_id: int, include_history: bool = False,
     return payload
 
 
-@router.get('/detections/{detection_id}/evidence')
-def detection_evidence(detection_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    detection = db.get(Detection, detection_id)
-    if detection is None:
-        raise HTTPException(404, 'detection not found')
+def _evidence_rows(db: Session, detection: Detection) -> list[dict[str, Any]]:
+    """One entry per stored evidence row, carrying the bounded matched原文.
+
+    A single implementation on purpose: the per-detection endpoint and the
+    风险文件 drawer answer the same question ("why did this fire"), and two
+    copies would drift on what counts as the evidence.
+    """
     rows = db.scalars(select(DetectionEvidence).where(
-        DetectionEvidence.detection_id == detection_id).order_by(DetectionEvidence.id)).all()
-    items = [
+        DetectionEvidence.detection_id == detection.id).order_by(DetectionEvidence.id)).all()
+    return [
         {
             'id': row.id, 'rule_id': row.rule_id, 'rule_name': row.rule_name,
             'rule_source': row.rule_source, 'recognizer': row.recognizer,
@@ -360,32 +395,75 @@ def detection_evidence(detection_id: int, db: Session = Depends(get_db)) -> dict
         }
         for row in rows
     ]
+
+
+def _evidence_payload(db: Session, detection: Detection) -> dict[str, Any]:
+    items = _evidence_rows(db, detection)
     return {
         'detection': _detection_row(detection),
         'items': items,
-        'count': len(rows),
+        'count': len(items),
         'matches_returned': sum(len(item['matches']) for item in items),
         'note': '证据含规则、识别器、字段与计数，并回传命中处原文（每命中最多 3 条，长度有上限）',
     }
 
 
-#: How much of a risky file is shown inline. Bounded on purpose: this is a
-#: preview, not a download, and the platform stays a read-only observer.
-PREVIEW_BYTES = 64 * 1024
+@router.get('/detections/{detection_id}/evidence')
+def detection_evidence(detection_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    detection = db.get(Detection, detection_id)
+    if detection is None:
+        raise HTTPException(404, 'detection not found')
+    return _evidence_payload(db, detection)
 
 
-@router.get('/asset-instances/{instance_id}/content')
-def asset_instance_content(instance_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Preview the file an instance points at, re-read from its source on demand.
+@router.get('/asset-instances/{instance_id}/risk-points')
+def asset_instance_risk_points(instance_id: int,
+                               db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Every risk point on one file, for the moment its row is opened.
 
-    A scan downloads to a temporary file and deletes it, so no file body is kept:
-    the preview goes back to the source, read-only and capped. Host files a probe
-    collected cannot be re-read this way - the probe owns that path - and that is
-    stated instead of being shown as an empty file.
+    The 风险文件 page has to show *what* matched without another click, so this
+    answers the whole file in one request: each detection that fired, with its
+    rules, counts and the bounded matched原文. Only the detections of the
+    instance's *current* object are returned - a previous object at this path is
+    history, and mixing the two would attribute stale hits to today's content.
     """
     instance = db.get(AssetInstance, instance_id)
     if instance is None:
         raise HTTPException(404, 'asset instance not found')
+    rows = db.scalars(
+        select(Detection)
+        .where(Detection.instance_id == instance_id, Detection.object_id == instance.object_id)
+        .order_by(Detection.sensitivity_level.desc(), Detection.hit_count.desc(), Detection.id)
+    ).all()
+    items = [{'detection': _detection_row(row), 'evidence': _evidence_rows(db, row)}
+             for row in rows]
+    return {
+        'instance_id': instance.id, 'object_id': instance.object_id,
+        'path': instance.path, 'name': instance.name,
+        'level': sensitivity_map.worst_level(instance.categories),
+        'items': items,
+        'detection_count': len(items),
+        'hit_count': sum(int(item['detection']['hit_count'] or 0) for item in items),
+        'matches_returned': sum(len(row['matches'])
+                                for item in items for row in item['evidence']),
+        'note': '风险点＝命中类别 + 规则 + 命中处原文；原文由采集端回传，长度有上限',
+    }
+
+
+#: How much of a risky file is shown inline. Bounded on purpose: browsing is a
+#: preview, not a download, and the platform stays a read-only observer.
+PREVIEW_BYTES = 64 * 1024
+
+
+def _retrievable_source(db: Session, instance: AssetInstance) -> FileSource:
+    """The file source an instance's content can be re-read from, or an error.
+
+    The platform keeps no file body, so reading a file again means going back to
+    the source. A host file a probe collected cannot be re-read this way - the
+    probe owns that path - and that is stated instead of being shown as an empty
+    file. Both the browse and the download path resolve the source here, so the
+    two can never disagree about which instances are retrievable.
+    """
     if instance.instance_type != 'file':
         raise HTTPException(400, 'only file instances have content to preview')
     owner = str(instance.owner_key or '')
@@ -396,13 +474,66 @@ def asset_instance_content(instance_id: int, db: Session = Depends(get_db)) -> d
     source = db.get(FileSource, int(owner.split(':', 1)[1]))
     if source is None:
         raise HTTPException(404, 'source not found')
+    return source
+
+
+def _source_config(source: FileSource) -> dict[str, Any]:
+    return {'protocol': source.protocol, 'host': source.host, 'port': source.port,
+            'username': source.username, 'host_key_sha256': source.host_key_sha256,
+            'root_path': source.root_path}
+
+
+def _matched_values(db: Session, instance: AssetInstance) -> list[str]:
+    """The原文 the rules returned for this instance's current object.
+
+    Masking uses exactly the strings the evidence already carries, longest
+    first: there is no second list of "sensitive values" that could drift from
+    what actually fired, and a value no rule returned cannot be masked.
+    """
+    rows = db.scalars(
+        select(DetectionEvidence)
+        .join(Detection, DetectionEvidence.detection_id == Detection.id)
+        .where(Detection.instance_id == instance.id,
+               Detection.object_id == instance.object_id)
+    ).all()
+    values = {
+        str(match['value'])
+        for row in rows
+        for match in ((row.extra or {}).get('matches') or [])
+        if isinstance(match, dict) and match.get('value')
+    }
+    return sorted(values, key=len, reverse=True)
+
+
+def _mask_values(text: str, values: list[str]) -> str:
+    """Replace every returned value with its masked form.
+
+    Longest first, so a value contained in a longer one is not half-replaced and
+    left readable in the remainder.
+    """
+    for value in values:
+        text = text.replace(value, masked(value))
+    return text
+
+
+@router.get('/asset-instances/{instance_id}/content')
+def asset_instance_content(instance_id: int, mask: bool = True,
+                           db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Browse the file an instance points at, re-read from its source on demand.
+
+    The default is masked: a browse view should not spill identity numbers or
+    credentials onto a screen just because someone clicked a row. The matched
+    values are replaced by their masked form, and ``mask=false`` is the explicit
+    "查看全部" that shows the file as it is on the host.
+    """
+    instance = db.get(AssetInstance, instance_id)
+    if instance is None:
+        raise HTTPException(404, 'asset instance not found')
+    source = _retrievable_source(db, instance)
     try:
         from app.services.file_scan import adapters, service
 
-        config = {'protocol': source.protocol, 'host': source.host, 'port': source.port,
-                  'username': source.username, 'host_key_sha256': source.host_key_sha256,
-                  'root_path': source.root_path}
-        with adapters.connect(config, service.password(source)) as remote:
+        with adapters.connect(_source_config(source), service.password(source)) as remote:
             payload = remote.preview(instance.path, PREVIEW_BYTES)
     except Exception as exc:  # noqa: BLE001 - reported as a read failure
         raise HTTPException(502, detail={'error': 'read_failed',
@@ -416,13 +547,49 @@ def asset_instance_content(instance_id: int, db: Session = Depends(get_db)) -> d
             break
         except UnicodeDecodeError:
             continue
+    values = _matched_values(db, instance)
+    if text is not None and mask and values:
+        text = _mask_values(text, values)
     return {
         'instance_id': instance.id, 'path': instance.path, 'name': instance.name,
         'source_name': source.name, 'size': int(instance.size or 0),
         'preview_bytes': len(payload), 'truncated': int(instance.size or 0) > len(payload),
-        'encoding': encoding or 'binary', 'text': text,
+        'encoding': encoding or 'binary', 'text': text, 'masked': bool(mask and values),
+        'masked_values': len(values),
         'hex': None if text is not None else payload[:4096].hex(),
     }
+
+
+@router.get('/asset-instances/{instance_id}/download')
+def asset_instance_download(instance_id: int,
+                            db: Session = Depends(get_db)) -> FileResponse:
+    """Send the whole file back from its source as an attachment.
+
+    No file body is kept anywhere, so this is a fresh read of the entire file -
+    the same copy the scan itself makes. It lands in a scratch file first because
+    neither the SFTP nor the FTP client hands back a seekable stream; the scratch
+    directory is removed once the response has been sent.
+    """
+    instance = db.get(AssetInstance, instance_id)
+    if instance is None:
+        raise HTTPException(404, 'asset instance not found')
+    source = _retrievable_source(db, instance)
+    scratch = Path(tempfile.mkdtemp(prefix='dst-file-download-'))
+    name = instance.name or Path(instance.path).name or f'instance-{instance.id}'
+    target = scratch / name
+    try:
+        from app.services.file_scan import adapters, service
+
+        with adapters.connect(_source_config(source), service.password(source)) as remote:
+            remote.download(instance.path, target, lambda _count: None)
+    except Exception as exc:  # noqa: BLE001 - reported as a read failure
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise HTTPException(502, detail={'error': 'read_failed',
+                                         'detail': type(exc).__name__}) from exc
+    return FileResponse(target, media_type='application/octet-stream', filename=name,
+                        headers={'X-Content-Type-Options': 'nosniff',
+                                 'Cache-Control': 'no-store'},
+                        background=BackgroundTask(shutil.rmtree, scratch, True))
 
 
 @router.get('/sensitivity-levels')

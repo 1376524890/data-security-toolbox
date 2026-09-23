@@ -131,6 +131,69 @@ export interface TrafficFlow {
   trend: FlowTrendPoint[]
 }
 
+// ---------------------------------------------------------------------------
+// 地理位置态势 (the wall's map)
+// ---------------------------------------------------------------------------
+
+/** The three regions the classifier can prove, plus the honest fourth. */
+export type GeoRegionKey = 'internal' | 'domestic' | 'overseas' | 'unknown'
+
+/**
+ * One region/country group. The classifier resolves a country, never a place
+ * inside it, so a group carries its country's label point (``lat``/``lon``) or
+ * ``null`` when the table has none - the panel says so instead of guessing.
+ */
+export interface GeoPoint {
+  id: string
+  region: GeoRegionKey
+  region_label: string
+  country: string
+  country_name: string
+  sample_host: string
+  hosts: number
+  sessions: number
+  bytes: number
+  packets: number
+  /** Worst detected level in the group; ``''`` when nothing was classified. */
+  level: string
+  level_label: string
+  level_counts: Record<string, number>
+  lat: number | null
+  lon: number | null
+}
+
+export interface GeoRegion {
+  key: GeoRegionKey
+  label: string
+  hosts: number
+  sessions: number
+  bytes: number
+  level_counts: Record<string, number>
+}
+
+export interface GeoLevel {
+  key: string
+  name: string
+}
+
+export interface GeoDistribution {
+  generated_at: string
+  /** False means no offline region table is loaded: nothing is 境外 yet. */
+  country_table_present: boolean
+  /** What an unclassified destination is called (never "L1"). */
+  unrated_label: string
+  levels: GeoLevel[]
+  regions: GeoRegion[]
+  points: GeoPoint[]
+  totals: {
+    sessions: number
+    bytes: number
+    packets: number
+    hosts: number
+    level_counts: Record<string, number>
+  }
+}
+
 export interface RiskDistribution {
   risk_levels: Array<{ level: string; count: number }>
   severity: Array<{ severity: string; count: number }>

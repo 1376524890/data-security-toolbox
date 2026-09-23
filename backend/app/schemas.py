@@ -53,6 +53,13 @@ class ScanRequest(BaseModel):
     nuclei_tags: str = ""
     nuclei_templates: str = ""
     probe_id: int | None = Field(default=None, ge=1, description="使用该探针就近扫描（留空则从平台/worker 扫描）")
+    crypto_assess: bool = Field(
+        default=True,
+        description=(
+            "是否随扫描记录每台主机的密码评估观测结果（服务 banner + TLS 握手），"
+            "供任务详情做商用密码应用安全性评估"
+        ),
+    )
 
     @field_validator("ports")
     @classmethod

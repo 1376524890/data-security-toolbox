@@ -26,6 +26,15 @@ vi.mock('../api/fileSources', () => ({
 vi.mock('../api/policyGroups', () => ({ listPolicyGroups: mocks.listPolicyGroups }))
 vi.mock('../api/probes', () => ({ deleteProbe: mocks.deleteProbe }))
 
+// The 密码评估 panel draws a gauge; jsdom has no canvas, so echarts is stubbed
+// the way the big-screen test stubs it - the panel's own numbers are asserted
+// through the state test, not through a canvas.
+vi.mock('echarts', () => {
+  const chart = { setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() }
+  class LinearGradient { constructor(..._args: unknown[]) {} }
+  return { init: () => chart, graphic: { LinearGradient } }
+})
+
 import TaskCenter from '../modules/tasks/TaskCenter.vue'
 
 let app: App
@@ -141,6 +150,31 @@ describe('task wizard: ticking a directory reaches the wizard', () => {
     expect(mocks.createDeployment).not.toHaveBeenCalled()
   })
 
+  it('carries the password assessment into the scan, and lets the operator drop it', async () => {
+    await reachScopeStep()
+    host.querySelector<HTMLInputElement>('.el-tree-node__content input[type="checkbox"]')!.click()
+    await flush()
+    click('下一步')                       // 任务属性
+    await flush()
+    expect(host.textContent).toContain('密码评估')
+    mocks.saveFileSource.mockResolvedValue({ id: 11 })
+    mocks.runFileSource.mockResolvedValue({ id: 11 })
+
+    click('下发任务')
+    await flush()
+    expect(mocks.post).toHaveBeenCalledWith('/scan', expect.objectContaining({ crypto_assess: true }))
+
+    // The switch is a real choice: turning it off keeps the scan but drops the
+    // per-host observation it would otherwise carry.
+    mocks.post.mockClear()
+    const toggle = host.querySelector<HTMLElement>('.el-dialog .el-switch')!
+    toggle.click()
+    await flush()
+    click('下发任务')
+    await flush()
+    expect(mocks.post).toHaveBeenCalledWith('/scan', expect.objectContaining({ crypto_assess: false }))
+  })
+
   it('clears the checkboxes together with the stored keys', async () => {
     await reachScopeStep()
     host.querySelector<HTMLInputElement>('.el-tree-node__content input[type="checkbox"]')!.click()
@@ -160,6 +194,57 @@ const monitorRow = (overrides: Record<string, unknown> = {}) => ({
   current_stage: '持续监测中 · 共 218 段（已分析 13，进行中 200，失败 5）',
   log: '', payload: { probe_id: 1 }, result: {}, error: '',
   created_at: '2026-09-22T09:22:33Z', started_at: null, finished_at: null, ...overrides,
+})
+
+/** A finished platform scan: the row the 密码评估 section hangs off. */
+const scanRow = (overrides: Record<string, unknown> = {}) => ({
+  id: 7, kind: 'scan', status: 'Success', progress: 100, current_stage: '扫描完成',
+  log: '', payload: { target: '10.0.0.9' }, error: '',
+  result: {
+    target: '10.0.0.9', hosts: ['10.0.0.9'], alive_hosts: 1, assets: 2, findings: 1,
+    crypto_profile_hosts: 1,
+    crypto_profiles: {
+      '10.0.0.9': {
+        config: { algorithms: ['SHA1', 'SM4'], cipherSuites: ['TLS_RSA_WITH_3DES_EDE_CBC_SHA'],
+          protocols: ['TLSv1.0'], keyLengths: [1024],
+          keyManagement: { rotationDays: 365, storage: 'file', useHardware: false } },
+        passwordSignals: [], passwordTypes: ['明文口令'],
+        tlsHandshakeCount: 2, serviceCount: 5,
+      },
+    },
+  },
+  created_at: '2026-09-22T09:22:33Z', started_at: null, finished_at: null, ...overrides,
+})
+
+describe('task centre: the password assessment rides on the scan', () => {
+  it('offers the assessment for the hosts the scan observed', async () => {
+    const row = scanRow()
+    mocks.listTasks.mockResolvedValue({ items: [row], total: 1, page: 1, page_size: 50 })
+    mocks.getTask.mockResolvedValue(row)
+    click('刷新')
+    await flush()
+    host.querySelector<HTMLElement>('.el-table__row')!.click()
+    await flush()
+
+    expect(mocks.getTask).toHaveBeenCalledWith(7)
+    expect(host.textContent).toContain('密码评估')
+    expect(host.textContent).toContain('评估该主机')
+    // The observed host is what the operator picks from, and the raw result
+    // block must not also dump the whole profile as one opaque row.
+    expect(host.textContent).toContain('10.0.0.9')
+    expect(host.textContent).not.toContain('crypto_profiles')
+  })
+
+  it('stays out of the way for a task that carries no observation', async () => {
+    const row = scanRow({ result: { target: '10.0.0.9', hosts: [], assets: 0, findings: 0 } })
+    mocks.listTasks.mockResolvedValue({ items: [row], total: 1, page: 1, page_size: 50 })
+    mocks.getTask.mockResolvedValue(row)
+    click('刷新')
+    await flush()
+    host.querySelector<HTMLElement>('.el-table__row')!.click()
+    await flush()
+    expect(host.textContent).not.toContain('评估该主机')
+  })
 })
 
 describe('task centre: a monitoring task can be stopped and its probe retired', () => {

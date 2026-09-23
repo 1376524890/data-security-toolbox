@@ -11,14 +11,15 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
-  getDashboardEngines, getDashboardOverview, getDetectionTrend, getProbeStatus,
+  getDashboardEngines, getDashboardOverview, getDetectionTrend, getGeoMap, getProbeStatus,
   getRecentAlerts, getRiskDistribution, getTrafficFlow,
 } from '../../../api/dashboard'
 import { listIntegrations } from '../../../api/integrations'
 import type { Probe } from '../../../api/probes'
 import type { Alert } from '../../../types/alert'
 import type {
-  DashboardOverview, DetectionTrendPoint, FlowLink, FlowNode, RiskDistribution, TrafficFlow,
+  DashboardOverview, DetectionTrendPoint, FlowLink, FlowNode, GeoDistribution, RiskDistribution,
+  TrafficFlow,
 } from '../../../types/dashboard'
 import type { IntegrationStatus } from '../../../types/integration'
 import { assetTypeLabels, severityLabels, severityOrder, severityTagColors } from '../../../utils/mapping'
@@ -146,6 +147,7 @@ export function useDashboardScreen(options: UseDashboardScreenOptions = {}) {
   const error = ref('')
   const overview = ref<DashboardOverview | null>(null)
   const traffic = ref<TrafficFlow | null>(null)
+  const geo = ref<GeoDistribution | null>(null)
   const risk = ref<RiskDistribution | null>(null)
   const detectionTrend = ref<DetectionTrendPoint[]>([])
   const events = ref<Alert[]>([])
@@ -202,11 +204,12 @@ export function useDashboardScreen(options: UseDashboardScreenOptions = {}) {
     error.value = ''
     try {
       const [
-        overviewResult, trafficResult, riskResult, trendResult,
+        overviewResult, trafficResult, geoResult, riskResult, trendResult,
         eventResult, probeResult, integrationResult, engineResult,
       ] = await Promise.all([
         getDashboardOverview(),
         getTrafficFlow({ limit: topologyLimit, days: 7 }),
+        getGeoMap(),
         getRiskDistribution(),
         getDetectionTrend('7d'),
         getRecentAlerts(20),
@@ -216,6 +219,7 @@ export function useDashboardScreen(options: UseDashboardScreenOptions = {}) {
       ])
       overview.value = overviewResult
       traffic.value = trafficResult
+      geo.value = geoResult
       risk.value = riskResult
       detectionTrend.value = trendResult.items
       events.value = eventResult
@@ -251,7 +255,7 @@ export function useDashboardScreen(options: UseDashboardScreenOptions = {}) {
   })
 
   return {
-    loading, error, overview, traffic, risk, detectionTrend, events, probes, integrations,
+    loading, error, overview, traffic, geo, risk, detectionTrend, events, probes, integrations,
     engineFindings, metric, updatedAt, now,
     riskSlices, assetSlices, nodes, links, loop,
     detectionX, detectionValues, detectionLabel, detectionColor, flowX,

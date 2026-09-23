@@ -38,6 +38,25 @@ export const directionColors: Record<FlowDirection, string> = {
   unknown: screenColors.yellow,
 }
 
+/**
+ * Data-classification levels L1..L4 as the wall colours them.
+ *
+ * The console labels the same four levels through ``severityTagColors`` (L4 red
+ * → L1 blue); repeating the hues here keeps the big screen's own dark palette
+ * literal like the rest of this module, without the map and the console's tags
+ * drifting into two colour languages for one vocabulary.
+ *
+ * ``unknown`` is the fifth swatch on purpose: a destination nobody classified
+ * is not "low sensitivity", so it must not borrow L1's colour.
+ */
+export const sensitivityColors: Record<string, string> = {
+  L4: '#ff4d5e',
+  L3: '#f5b638',
+  L2: '#22d3ee',
+  L1: '#35a0ff',
+  unknown: '#5b7799',
+}
+
 /** Palette for the asset-type donut; slices past the end cycle the same hues. */
 export const donutPalette = [
   screenColors.blue, screenColors.cyan, screenColors.purple, screenColors.yellow,

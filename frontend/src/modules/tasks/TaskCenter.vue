@@ -10,6 +10,8 @@ import { canStop } from '../../api/taskKinds'
 import { deleteProbe } from '../../api/probes'
 import type { Task } from '../../types/task'
 import { formatCoverageLimit, formatDateTime, formatTerminationReason } from '../../utils/format'
+import CryptoAssessmentPanel from './assessment/CryptoAssessmentPanel.vue'
+import type { CryptoProfileLike } from './assessment/composables/useCryptoAssessment'
 import { TASK_TYPES, useTaskWizard } from './composables/useTaskWizard'
 
 // 任务中心: the task list (progress + health, expandable to a detail and a short
@@ -121,6 +123,8 @@ function coverageValue(key: string, value: unknown): string {
 const PRESENTED_KEYS = new Set([
   ...COVERAGE_LABELS.map(([key]) => key),
   'unreadable', 'sampled', 'unreadable_count', 'sampled_count',
+  // Rendered by the 密码评估 section instead of as one opaque row.
+  'crypto_profiles', 'crypto_profile_hosts',
 ])
 
 function remainingResult(task: Task): [string, unknown][] {
@@ -166,6 +170,20 @@ function scanConfig(task: Task): { label: string; value: string }[] {
     rows.push({ label, value: formatCoverageLimit(limits[key]) })
   }
   return rows
+}
+
+/** The per-host crypto profiles a scan recorded, keyed by host address.
+ *
+ * The scan writes them as it fingerprints each host's services, so the 密码评估
+ * panel can assess a host from facts it already collected. ``null`` means the
+ * task carries none (a non-scan kind, or a scan run with the assessment off),
+ * and the section stays hidden rather than opening an empty form. */
+function cryptoProfiles(task: Task): Record<string, CryptoProfileLike> | null {
+  const profiles = ((task.result || {}) as Record<string, unknown>).crypto_profiles
+  if (!profiles || typeof profiles !== 'object') return null
+  return Object.keys(profiles as Record<string, unknown>).length
+    ? (profiles as Record<string, CryptoProfileLike>)
+    : null
 }
 
 function duration(task: Task): string {
@@ -321,6 +339,11 @@ onMounted(load)
             <span class="wrap">{{ fact.value }}</span>
           </el-descriptions-item>
         </el-descriptions>
+        <template v-if="cryptoProfiles(detail)">
+          <div class="section-title">密码评估</div>
+          <CryptoAssessmentPanel :profiles="cryptoProfiles(detail) || {}"
+                                 :title="`任务 #${detail.id} 网络扫描观测结果（商用密码应用安全性评估，GB/T 39786 / GM/T）`" />
+        </template>
         <template v-if="problemPaths(detail).length">
           <div class="section-title">未能读取 / 仅采样</div>
           <div v-for="group in problemPaths(detail)" :key="group.label" class="path-group">
@@ -475,6 +498,12 @@ onMounted(load)
                          :key="item.v" :label="item.l" :value="item.v" />
             </el-select>
             <span class="muted" style="margin-left: 10px">对目标网络服务做指纹识别与漏洞库匹配（nuclei 模板）</span>
+          </el-form-item>
+          <el-form-item v-if="wizard.taskType.value === 'inspection'" label="密码评估">
+            <el-switch v-model="wizard.cryptoAssess.value" />
+            <span class="muted" style="margin-left: 10px">
+              用扫描已采集的服务 banner 与 TLS 握手，对每台主机做商用密码应用安全性评估（GB/T 39786 / GM/T），结果在任务详情里查看
+            </span>
           </el-form-item>
           <el-form-item v-else label="数据采集间隔">
             <el-select v-model="wizard.intervalSeconds.value" style="width: 220px">

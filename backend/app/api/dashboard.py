@@ -34,10 +34,13 @@ from app.models import (
     Alert,
     Anomaly,
     Asset,
+    AssetInstance,
     DataAsset,
     DataObject,
+    Detection,
     DetectionFinding,
     FileRecord,
+    FileSource,
     Flow,
     GraphRelation,
     Incident,
@@ -47,7 +50,7 @@ from app.models import (
     Report,
     Task,
 )
-from app.services import cockpit_service, egress_regions
+from app.services import cockpit_service, egress_regions, region_geo, sensitivity_map
 from app.services.probe_task_service import (
     default_task_filter,
     expire_probe_tasks,
@@ -839,6 +842,217 @@ def dashboard_traffic_flow(
             for (src, dst), value in ranked
         ],
         "trend": [{"time": key, **value} for key, value in trend.items()],
+    }
+
+
+#: How many destination *groups* the geo map draws. The panel groups by region
+#: and country rather than by host on purpose: the classifier knows a country,
+#: not a place inside it, and a hundred markers stacked on one capital would be
+#: a picture of nothing. The cap keeps a segment with dozens of countries from
+#: filling the wall with unreadable labels.
+GEO_POINT_LIMIT = 24
+
+#: The three regions the classifier can prove, plus the honest fourth: a
+#: destination the region table could not resolve is 未识别, never 境外.
+GEO_REGIONS: tuple[tuple[str, str], ...] = (
+    ("internal", "内网"),
+    ("domestic", "国内"),
+    ("overseas", "境外"),
+    ("unknown", "未识别"),
+)
+
+#: What a destination with no detected data is called. Deliberately not L1: L1
+#: means "low sensitivity", and nothing was classified here at all.
+GEO_UNRATED = "未评级"
+
+
+def _level_rank(value: str) -> int:
+    """Sensitivity order for a level name; 未评级 sorts below L1."""
+    return sensitivity_map.LEVELS.index(value) if value in sensitivity_map.LEVELS else -1
+
+
+def _geo_region(bucket: str, country: str) -> str:
+    """Classifier bucket + country code → the region the map draws."""
+    if bucket == "internal":
+        return "internal"
+    if bucket == "country":
+        return "domestic" if country == "CN" else "overseas"
+    if bucket == "blacklist":
+        # A blacklist hit is a range the enterprise explicitly does not want to
+        # reach. It carries no country, so it joins 境外 instead of being
+        # reported as an internal address.
+        return "overseas"
+    return "unknown"
+
+
+def _host_sensitivity(db: Session) -> dict[str, str]:
+    """Worst detected data level per host address, from the object model.
+
+    The link is the instance's owner: ``probe:<id>`` resolves through the probe's
+    address and ``file-source:<id>`` through the file source's host, which is the
+    same identity the asset pages use. A database-sourced instance has no host
+    address at all and is skipped rather than attributed to a host it never had.
+
+    A host with detections nowhere is left out of the map, and the map says
+    未评级 for it - calling it L1 would turn "we never looked" into "low
+    sensitivity", which is the one thing this screen must not do.
+    """
+    grouped = db.execute(
+        select(Detection.instance_id, func.max(Detection.sensitivity_level))
+        .group_by(Detection.instance_id)
+    ).all()
+    if not grouped:
+        return {}
+    # ``func.max`` is a string max; it is correct here because the level
+    # vocabulary is exactly L1..L4, where the lexicographic order is the
+    # sensitivity order.
+    owners = dict(db.execute(select(AssetInstance.id, AssetInstance.owner_key)).all())
+    probe_hosts = dict(db.execute(select(Probe.id, Probe.ip_address)).all())
+    source_hosts = dict(db.execute(select(FileSource.id, FileSource.host)).all())
+    worst: dict[str, str] = {}
+    for instance_id, level in grouped:
+        # ``owner_key`` is ``<kind>:<id>``; splitting on the first colon keeps
+        # the prefix length out of the arithmetic (an off-by-one here would
+        # silently resolve no host at all).
+        kind, _, ref = str(owners.get(instance_id) or "").partition(":")
+        host = ""
+        if kind == "probe":
+            host = str(probe_hosts.get(_as_int(ref)) or "")
+        elif kind == "file-source":
+            host = str(source_hosts.get(_as_int(ref)) or "")
+        if not host or not level:
+            continue
+        current = worst.get(host)
+        if current is None or _level_rank(str(level)) > _level_rank(current):
+            worst[host] = str(level)
+    return worst
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return -1
+
+
+@router.get("/dashboard/geo-map")
+def dashboard_geo_map(
+    limit: int = Query(GEO_POINT_LIMIT, ge=2, le=60),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Where the observed destinations are, coloured by how sensitive their data is.
+
+    Destinations are grouped by region and country: 内网 is the enterprise's own
+    address space, 国内 and 境外 are what the offline region table resolved, and
+    a destination it could not resolve stays 未识别 instead of being called
+    egress. Each group carries the highest data-classification level detected on
+    any of its hosts, so the colour is a fact about the data, not a guess about
+    the link.
+
+    Nothing here is cached and nothing is sampled: every figure is counted from
+    the flow table as it stands, and a group with no hosts is simply absent.
+    """
+    policy = egress_regions.policy(db)
+    level_of_host = _host_sensitivity(db)
+    memo: dict[str, dict[str, str]] = {}
+
+    def verdict_of(ip: str) -> dict[str, str]:
+        if ip not in memo:
+            memo[ip] = egress_regions.classify(
+                ip,
+                blacklist=policy["blacklist"],
+                whitelist=policy["whitelist"],
+                internal=policy["internal_cidrs"],
+            )
+        return memo[ip]
+
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    totals = {"sessions": 0, "bytes": 0, "packets": 0}
+    level_totals: Counter[str] = Counter()
+    for dst, sessions, size, packets in db.execute(
+        select(
+            Flow.dst_ip,
+            func.count(Flow.id),
+            func.coalesce(func.sum(Flow.bytes), 0),
+            func.coalesce(func.sum(Flow.packets), 0),
+        ).group_by(Flow.dst_ip)
+    ):
+        address = str(dst or "")
+        verdict = verdict_of(address)
+        region = _geo_region(verdict["bucket"], verdict["region"])
+        country = verdict["region"] if region in ("domestic", "overseas") else ""
+        entry = groups.setdefault(
+            (region, country),
+            {"region": region, "country": country, "hosts": 0, "sessions": 0, "bytes": 0,
+             "packets": 0, "level_counts": Counter(), "sample_host": address},
+        )
+        entry["hosts"] += 1
+        entry["sessions"] += int(sessions or 0)
+        entry["bytes"] += int(size or 0)
+        entry["packets"] += int(packets or 0)
+        level = str(level_of_host.get(address) or GEO_UNRATED)
+        entry["level_counts"][level] += 1
+        totals["sessions"] += int(sessions or 0)
+        totals["bytes"] += int(size or 0)
+        totals["packets"] += int(packets or 0)
+        level_totals[level] += 1
+
+    region_labels = dict(GEO_REGIONS)
+    ranked = sorted(groups.values(), key=lambda item: item["bytes"], reverse=True)[:limit]
+    points = []
+    for entry in ranked:
+        # The group's colour is the *worst* level any of its hosts carries:
+        # one host holding L4 data is what matters about that destination, and
+        # averaging it away would hide exactly the finding worth seeing.
+        worst = max(entry["level_counts"], key=_level_rank)
+        latitude, longitude = (
+            region_geo.country_point(entry["country"]) if entry["country"] else (None, None)
+        )
+        points.append({
+            "id": f"{entry['region']}:{entry['country'] or entry['sample_host']}",
+            "region": entry["region"],
+            "region_label": region_labels[entry["region"]],
+            "country": entry["country"],
+            "country_name": region_geo.country_name(entry["country"]) if entry["country"] else "",
+            "sample_host": entry["sample_host"],
+            "hosts": entry["hosts"],
+            "sessions": entry["sessions"],
+            "bytes": entry["bytes"],
+            "packets": entry["packets"],
+            "level": worst if worst != GEO_UNRATED else "",
+            "level_label": worst,
+            "level_counts": dict(entry["level_counts"]),
+            "lat": latitude,
+            "lon": longitude,
+        })
+
+    regions = []
+    for key, label in GEO_REGIONS:
+        bucket = [entry for entry in groups.values() if entry["region"] == key]
+        counts: Counter[str] = Counter()
+        for entry in bucket:
+            counts.update(entry["level_counts"])
+        regions.append({
+            "key": key,
+            "label": label,
+            "hosts": sum(entry["hosts"] for entry in bucket),
+            "sessions": sum(entry["sessions"] for entry in bucket),
+            "bytes": sum(entry["bytes"] for entry in bucket),
+            "level_counts": dict(counts),
+        })
+
+    return {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "country_table_present": egress_regions.table_present(),
+        "unrated_label": GEO_UNRATED,
+        "levels": [
+            {"key": level, "name": sensitivity_map.LEVEL_META[level]["name"]}
+            for level in sensitivity_map.LEVELS
+        ],
+        "regions": regions,
+        "points": points,
+        "totals": {**totals, "hosts": sum(entry["hosts"] for entry in groups.values()),
+                   "level_counts": dict(level_totals)},
     }
 
 

@@ -42,6 +42,7 @@ from app.services.alert_service import (
     publish_alert,
 )
 from app.services.asset_service import classify_assets
+from app.services.crypto_profile import profile_from_observations
 from app.services.database_scan.adapters import DatabaseError
 from app.services.database_scan.scan import run_scan
 from app.services.metadata_service import extract_metadata
@@ -449,6 +450,12 @@ def _nuclei_to_detection(item: dict[str, Any]) -> DetectionResult:
     ).normalize()
 
 
+#: How many hosts a subnet scan writes a 密码评估 profile for. One host per
+#: sweep is enough for the console (it reviews a host at a time) and keeps the
+#: task row from carrying hundreds of profiles.
+CRYPTO_PROFILE_HOST_LIMIT = 50
+
+
 @celery_app.task(name=NETWORK_SCAN)
 @task_guard
 def network_scan_task(task_id: int) -> dict[str, Any]:
@@ -478,6 +485,9 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
         top_ports = int(payload.get("top_ports") or 200)
         ports = [int(item) for item in (payload.get("ports") or []) if str(item).strip().isdigit()]
         public_exposed = bool(payload.get("public_exposed", False))
+        # 密码评估 rides on this scan; the switch only decides whether the
+        # per-host observation is kept for the task detail to assess.
+        crypto_assess = bool(payload.get("crypto_assess", True))
         nuclei = bool(payload.get("nuclei", False))
         nuclei_tags = str(payload.get("nuclei_tags") or "")
         nuclei_tpl = str(payload.get("nuclei_templates") or "")
@@ -528,6 +538,12 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
         total_assets = 0
         total_findings = 0
         engines: set[str] = set()
+        # 密码评估 rides along with the scan: the banners and TLS handshakes that
+        # classified the service are exactly what the GB/T 39786 assessment needs,
+        # so the profile is built from what this scan already saw. Bounded by
+        # host count - a /24 would otherwise put hundreds of profiles in one task
+        # row, and the console reads one host at a time anyway.
+        crypto_profiles: dict[str, dict[str, Any]] = {} if crypto_assess else None
         # Bounded parallelism: nmap is invoked per host, so scanning a segment
         # four hosts at a time keeps a /24 practical while staying gentle.
         scan_concurrency = max(1, min(int(payload.get("concurrency") or 4), 8))
@@ -552,6 +568,8 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
                 if any(str(item.get("product", "")).strip() for item in services)
                 else "python-tcp"
             )
+            if crypto_profiles is not None and len(crypto_profiles) < CRYPTO_PROFILE_HOST_LIMIT:
+                crypto_profiles[host] = profile_from_observations(services=services)
             # Keep re-scans current: drop stale platform assets for this host.
             try:
                 db.execute(
@@ -650,6 +668,10 @@ def network_scan_task(task_id: int) -> dict[str, Any]:
             "top_ports": top_ports,
             "engine": "+".join(sorted(engines)) or ("nmap" if nmap_available() else "python-tcp"),
         }
+        if crypto_profiles:
+            # What the scan observed, in the shape the 密码评估 panel evaluates.
+            summary["crypto_profiles"] = crypto_profiles
+            summary["crypto_profile_hosts"] = len(crypto_profiles)
         if warning:
             summary["warning"] = warning
         db.add(
