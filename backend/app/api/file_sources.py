@@ -25,6 +25,15 @@ class SourcePayload(BaseModel):
     host_key_sha256: str = Field(default='', max_length=128)
     enabled: bool = True
     limits: dict[str, int] = Field(default_factory=dict)
+    #: Subdirectories the walk skips. A bare name (``node_modules``) excludes that
+    #: directory anywhere below the root; an absolute path excludes one subtree.
+    #: An empty list means the platform default set (see
+    #: ``services.file_scan.service.DEFAULT_EXCLUDES``): dependency and VCS stores
+    #: are not the checked organisation's own data and produced most of this
+    #: platform's false positives in practice. ``GET /file-sources`` returns
+    #: ``effective_exclude_paths`` so the console can show what will really be
+    #: skipped instead of an empty list that looks like "nothing is excluded".
+    exclude_paths: list[str] = Field(default_factory=list, max_length=64)
     interval_minutes: int = Field(default=0, ge=0, le=43200)
 
 

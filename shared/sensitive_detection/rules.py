@@ -117,10 +117,13 @@ BUILTIN_RULES: list[dict[str, Any]] = [
         "entity": CREDENTIAL,
         "pattern": r"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|private[_-]?key)\b\s*[:=]\s*\S{6,}",
         "confidence": 0.85,
-        "validator": "",
+        # The pattern cannot tell an assignment from a parameter list, so the
+        # value has to: ``password: bytes,`` / ``password = str(password)`` are
+        # source code and were being raised at L4/Critical. See the validator.
+        "validator": "secret_value",
         "field_hints": ["password", "passwd", "secret", "credential", "口令", "密码"],
         "keywords": ["password=", "passwd=", "secret="],
-        "description": "赋值形态的口令字段；只上报字段与计数，不上报取值。",
+        "description": "赋值形态的口令字段；取值经 secret_value 校验，代码形态的赋值不计为凭据。",
     },
     {
         "rule_id": "SD_NAME_001",

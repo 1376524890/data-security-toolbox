@@ -126,6 +126,9 @@ ca_file = "/etc/data-security-toolbox/ca.pem"
 interface = "eth0"
 segment_seconds = 30
 segment_max_mb = 64
+# BPF expression applied at capture time; empty captures everything. A push
+# deployment fills this in with the platform's own address.
+filter = ""
 enabled = true
 
 [spool]

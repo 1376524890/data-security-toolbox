@@ -5,9 +5,16 @@ ca_file = "/etc/data-security-toolbox/ca.pem"
 
 [capture]
 # any: all NICs on Linux, including NICs added later. Also accepts ["eth0", "eth1"].
-interface = "any"
+# Name the NIC under test when this host also runs the platform: "any" includes
+# the container bridge the probe's own upload leaves by, so the sensor would
+# spend its budget recording itself.
+interface = "eth0"
 segment_seconds = 30
 segment_max_mb = 64
+# BPF expression applied at capture time (empty = capture everything). The
+# platform fills in the backend's own address so the probe never records its own
+# management channel; see the [server] url above.
+filter = ""
 enabled = true
 
 [spool]

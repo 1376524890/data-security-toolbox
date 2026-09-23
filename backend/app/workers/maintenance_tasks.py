@@ -9,7 +9,6 @@ analysis queue registrations.
 import json
 import subprocess
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import and_, or_, select
@@ -25,10 +24,9 @@ from app.engine.risk_engine.engine import RiskEngine
 from app.models import (
     Alert,
     DetectionFinding,
-    Incident,
-    PcapRecord,
     Task,
 )
+from app.services import pcap_storage
 from app.services.alert_service import (
     EVENT_CREATED,
     EVENT_UPDATED,
@@ -39,6 +37,7 @@ from app.services.alert_service import (
 from app.workers.celery_app import celery_app
 from app.workers.task_names import (
     CLEANUP_PCAP_RETENTION,
+    ENFORCE_PCAP_STORAGE_CAP,
     EXPIRE_PROBE_TASKS,
     SYNC_WAZUH_ALERTS,
     WORKER_CAPABILITY_HEARTBEAT,
@@ -133,43 +132,27 @@ def worker_capability_heartbeat() -> dict[str, Any]:
 @celery_app.task(name=CLEANUP_PCAP_RETENTION)
 @task_guard
 def cleanup_pcap_retention_task() -> dict[str, int]:
-    removed = 0
+    """Age sweep: retire segments older than the retention window.
+
+    The eviction itself lives in :mod:`app.services.pcap_storage` so this sweep
+    and the space sweep cannot disagree about which segment may be dropped.
+    """
     with SessionLocal() as db:
         cutoff = datetime.now(UTC) - timedelta(days=settings.pcap_retention_days)
-        rows = db.scalars(
-            select(PcapRecord).where(
-                PcapRecord.created_at < cutoff, PcapRecord.retention_status == "active"
-            )
-        ).all()
-        for record in rows:
-            open_alert = db.scalar(
-                select(Alert.id)
-                .where(
-                    Alert.status.in_(["new", "acknowledged"]),
-                    Alert.finding_id.in_(
-                        select(DetectionFinding.id).where(
-                            DetectionFinding.target_type == "pcap",
-                            DetectionFinding.target_id == str(record.id),
-                        )
-                    ),
-                )
-                .limit(1)
-            )
-            open_incident = any(
-                str((item.evidence or {}).get("pcap_id", "")) == str(record.id)
-                for item in db.scalars(select(Incident).where(Incident.status == "open")).all()
-            )
-            if open_alert or open_incident:
-                record.retention_status = "extended"
-                continue
-            path = Path(record.storage_path)
-            if path.exists():
-                path.unlink()
-            record.retention_status = "retained_analysis"
-            record.status = "retained_analysis"
-            removed += 1
-        db.commit()
-    return {"removed": removed}
+        return pcap_storage.cleanup_expired(db, cutoff)
+
+
+@celery_app.task(name=ENFORCE_PCAP_STORAGE_CAP)
+@task_guard
+def enforce_pcap_storage_cap_task() -> dict[str, int | str]:
+    """Space sweep: hold the data partition under its cap and above its floor.
+
+    An hourly age sweep is far too slow to bound a probe that uploads a segment
+    every few seconds - a full disk takes Postgres with it - so the cap gets its
+    own short beat and acts on size rather than age.
+    """
+    with SessionLocal() as db:
+        return pcap_storage.enforce_cap(db)
 
 
 @celery_app.task(name=SYNC_WAZUH_ALERTS)

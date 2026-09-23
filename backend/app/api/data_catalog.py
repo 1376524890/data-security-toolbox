@@ -629,4 +629,39 @@ def backfill(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     return result
 
 
+class PurgeFalsePositives(BaseModel):
+    """Re-derive stored findings after a rule or scope fix; never invent data.
+
+    ``dry_run`` defaults to true so the first call always reports what a real one
+    would remove. ``addresses`` is the one operator-supplied input: it names the
+    addresses a capture should never have described (the platform's own container
+    bridge, a loopback range), because that evidence cannot be recognised from
+    the row alone without guessing.
+    """
+
+    dry_run: bool = True
+    revalidate: bool = True
+    exclude_owned_paths: bool = True
+    addresses: list[str] = Field(default_factory=list, max_length=32)
+
+
+@router.post('/admin/findings/purge-false-positives')
+def purge_false_positives(payload: PurgeFalsePositives, request: Request,
+                          db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Remove findings and detections the current rules and scope contradict."""
+    from app.services import finding_hygiene
+
+    result = finding_hygiene.purge(
+        db,
+        revalidate=payload.revalidate,
+        exclude_owned_paths=payload.exclude_owned_paths,
+        addresses=payload.addresses,
+        dry_run=payload.dry_run,
+    )
+    record_audit(db, request, action='findings.purge_false_positives', target='findings',
+                 details=result)
+    db.commit()
+    return result
+
+
 __all__ = ['router']

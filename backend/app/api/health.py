@@ -25,6 +25,7 @@ from app.api.runtime_status import engine_rule_counts, merge_capability, read_wo
 from app.core.config import settings
 from app.core.database import get_db
 from app.models import Probe, Task
+from app.services import storage_guard
 from app.services.task_dispatch import queue_depth
 
 router = APIRouter()
@@ -50,11 +51,34 @@ def _storage_usage_bytes() -> int:
         now = time.monotonic()
         if stamp and now - stamp < _STORAGE_TTL_SECONDS:
             return size
-        size = sum(
-            path.stat().st_size for path in settings.storage_dir.rglob("*") if path.is_file()
-        )
+        size = storage_guard.dir_bytes(settings.storage_dir)
         _storage_cache = (now, size)
     return size
+
+
+def _storage_report(used_bytes: int) -> dict[str, Any]:
+    """Storage telemetry that includes the *backing partition*, not just our files.
+
+    ``storage_usage_bytes`` alone answers "how much have we stored", which was
+    the only question the console could ask - and it said nothing about how close
+    the disk was to full. The platform's data is a bind mount, so its partition
+    is usually not ``/``; reporting the partition's own free space is what makes
+    the difference between "we hold 39 GB" and "the disk holding those 39 GB has
+    19 GB left".
+    """
+    verdict = storage_guard.pressure()
+    return {
+        "used_bytes": used_bytes,
+        "limit_bytes": verdict["limit_bytes"],
+        "path": verdict["path"],
+        "partition_total_bytes": verdict["total_bytes"],
+        "partition_used_bytes": verdict["used_bytes"],
+        "partition_free_bytes": verdict["free_bytes"],
+        "partition_used_percent": verdict["used_percent"],
+        "floor_bytes": verdict["floor_bytes"],
+        "state": verdict["state"],
+        "ingest_blocked": verdict["state"] == "critical",
+    }
 
 
 @router.get("/health")
@@ -132,6 +156,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "engine_rule_counts": engine_rule_counts(),
         "storage_usage_bytes": storage_bytes,
         "storage_max_bytes": settings.pcap_storage_max_gb * 1024 * 1024 * 1024,
+        "storage": _storage_report(storage_bytes),
         "queue": {
             "pending": pending,
             "running": running,

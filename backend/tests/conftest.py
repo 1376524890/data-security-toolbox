@@ -20,6 +20,14 @@ os.environ["OFFLINE_DIR"] = str(_TEST_ROOT / "offline")
 # the test environment, which is exactly the degradation path we want covered.
 os.environ["ADMIN_PASSWORD"] = "test-admin-password"
 
+# The free-space floor is a property of the machine running the tests, not of
+# the code: without this pin, a host whose data partition happens to be nearly
+# full would refuse every upload, so the ingest tests would fail on disk state
+# instead of exercising the path they are about. The guard has its own tests
+# that drive ``partition_usage`` directly.
+os.environ["PCAP_STORAGE_MIN_FREE_GB"] = "0"
+os.environ["PCAP_STORAGE_MIN_FREE_PERCENT"] = "0"
+
 Path("./data").mkdir(parents=True, exist_ok=True)
 Path("./data/test.db").unlink(missing_ok=True)
 

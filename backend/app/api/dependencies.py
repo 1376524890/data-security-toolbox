@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import get_session_user, require_probe_headers
 from app.models import Task
+from app.services import storage_guard
 from app.services.task_dispatch import dispatch_task_row
 
 
@@ -47,7 +48,21 @@ def dispatch_task(task_id: int, task_name: str, *args: Any) -> None:
 
 
 def enforce_queue_backpressure(db: Session) -> None:
-    """Refuse a new upload while the analysis queue is already saturated."""
+    """Refuse a new upload while the platform cannot absorb it.
+
+    Two independent reasons to say no, checked cheapest first: the data
+    partition is nearly full (a full disk takes Postgres down, so ingest has to
+    stop *before* it is full) and the analysis queue is already saturated.
+    """
+    # The disk floor is checked before the development shortcut, and therefore in
+    # every environment: it is a data-safety limit, not a queue-tuning
+    # convenience, and a guard that only ever runs in production is a guard that
+    # is first exercised on the day it matters.
+    blocked = storage_guard.ingest_blocked()
+    if blocked:
+        raise HTTPException(
+            429, blocked, headers={"Retry-After": str(storage_guard.RETRY_AFTER_SECONDS)}
+        )
     if settings.app_env == "development":
         return
     pending = db.scalar(select(func.count(Task.id)).where(Task.status == "Pending")) or 0

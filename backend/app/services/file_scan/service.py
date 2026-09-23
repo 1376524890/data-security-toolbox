@@ -25,9 +25,92 @@ DEFAULT_LIMITS = {'max_files': 0, 'max_depth': 0, 'max_bytes': 0,
 CEILINGS = {'max_files': 100000, 'max_depth': 64, 'max_bytes': 100 * 1024 ** 3,
             'max_file_bytes': 10 * 1024 ** 3, 'max_seconds': 31536000}
 
+#: Where the exclusion list is kept inside the ``limits`` JSON column. It lives
+#: there rather than in a column of its own because the shape is per-source
+#: configuration exactly like the numeric limits, and adding a column would need
+#: a migration for a list nobody queries in SQL.
+EXCLUDE_KEY = 'exclude_paths'
+
+#: Directories whose contents are *third-party code*, never the checked
+#: organisation's own data. Scanning them produced most of this platform's false
+#: positives in practice: of 954 sensitive-data detections on one host, 403 came
+#: from ``node_modules`` and ``site-packages`` - a password parameter name in a
+#: pip wheel, an 11-digit codepoint array in ``idnadata.py`` counted as a phone
+#: number, a Luhn-passing constant in a minified JS file counted as a bank card.
+#:
+#: Only unambiguous dependency and cache stores are listed. Generic build output
+#: (``dist``/``build``/``bin``/``target``/``obj``) is deliberately *not* excluded
+#: by default: those names are common in an organisation's own tree and may hold
+#: real configuration, so dropping them silently would trade a false positive for
+#: a missed one. An operator adds them per source when they want that.
+DEFAULT_EXCLUDES = (
+    '.git', '.hg', '.svn',
+    'node_modules', 'bower_components', '.next', '.nuxt', '.angular', '.vite',
+    '__pycache__', 'site-packages', 'dist-packages', '.venv', 'venv', 'virtualenv',
+    '.tox', '.eggs', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.ipynb_checkpoints',
+    '.cargo', '.rustup', '.npm', '.yarn', '.gradle', '.m2', '.conda', '.pyenv', '.nvm',
+)
+
+
+def _normalize_excludes(values):
+    """Paths/names that may be excluded, refusing anything that walks upwards."""
+    cleaned = []
+    for value in values or []:
+        item = str(value).strip()
+        if not item or len(item) > 512 or '\x00' in item:
+            continue
+        # A leading ``/`` is what makes an entry name one subtree instead of any
+        # directory with that name, so it has to survive normalization; the
+        # trailing separators carry no meaning and are dropped.
+        absolute = item.startswith('/')
+        item = item.strip('/')
+        if not item:
+            continue
+        if '..' in item.split('/'):
+            continue
+        if absolute:
+            item = '/' + item
+        if item not in cleaned:
+            cleaned.append(item)
+    return cleaned
+
+
+def excludes_for(row) -> list[str]:
+    """The exclusion list a scan of this source will actually use.
+
+    An empty stored list means "the platform default", which keeps a source
+    created before this option existed on the safe side of the trade-off without
+    rewriting anyone's configuration. An operator who really wants a dependency
+    tree scanned sets the list to exactly that.
+    """
+    stored = _normalize_excludes((row.limits or {}).get(EXCLUDE_KEY))
+    return stored if stored else list(DEFAULT_EXCLUDES)
+
+
+def path_excluded(path: str, excludes: list[str]) -> bool:
+    """A bare name excludes that directory anywhere; an absolute path one subtree."""
+    for entry in excludes:
+        if entry.startswith('/'):
+            if path == entry:
+                return True
+        elif path.rsplit('/', 1)[-1] == entry:
+            return True
+    return False
+
 
 def serialize(row):
-    return {'id': row.id, **{key: getattr(row, key) for key in FIELDS},
+    """One source as the console reads it.
+
+    ``limits`` stays a flat numeric map - the console formats every entry as a
+    coverage limit - so the exclusion list is lifted out of that column and
+    returned as its own field, next to the list the walk will really apply.
+    """
+    limits = row.limits or {}
+    stored_excludes = _normalize_excludes(limits.get(EXCLUDE_KEY))
+    numeric = {key: value for key, value in limits.items() if key != EXCLUDE_KEY}
+    return {'id': row.id, **{key: getattr(row, key) for key in FIELDS if key != 'limits'},
+            'limits': numeric, 'exclude_paths': stored_excludes,
+            'effective_exclude_paths': excludes_for(row),
             'password_set': bool(row.password_ciphertext), 'last_status': row.last_status,
             'last_error': row.last_error, 'last_scan_at': row.last_scan_at,
             'next_scan_at': row.next_scan_at}
@@ -60,6 +143,14 @@ def save(db, data, row=None):
     # non-zero value is clamped to its ceiling.
     data['limits'] = {k: max(0, min(int((data.get('limits') or {}).get(k, v)), CEILINGS[k]))
                       for k, v in DEFAULT_LIMITS.items()}
+    # Exclusions ride in the same JSON column the numeric limits use, because
+    # they are per-source scan configuration and do not deserve a migration.
+    # Only a non-empty list is written: an absent key and an empty one both mean
+    # "use the platform default" (see ``excludes_for``), and storing ``[]`` would
+    # rewrite the limits of every existing source for no gain.
+    excludes = _normalize_excludes(data.get('exclude_paths'))
+    if excludes:
+        data['limits'][EXCLUDE_KEY] = excludes
     existing = db.scalar(select(FileSource).where(FileSource.name == data['name']))
     if existing and (row is None or existing.id != row.id):
         raise SourceError('name_already_exists')
@@ -108,6 +199,9 @@ def queue(db, row, operation='scan'):
     if active(db, row.id):
         raise SourceError('source_busy')
     config = {key: getattr(row, key) for key in FIELDS}
+    # Freeze the effective list into the task, so a later edit of the source
+    # cannot change what a queued scan was told to skip.
+    config['limits'] = {**(config.get('limits') or {}), EXCLUDE_KEY: excludes_for(row)}
     task = Task(kind='file_source_scan', payload={'source_id': row.id,
                 'operation': operation, 'config': config}, status='Pending')
     db.add(task)

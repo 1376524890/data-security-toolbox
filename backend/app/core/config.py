@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     pcap_index_limit: int = 10000
     pcap_retention_days: int = 7
     pcap_storage_max_gb: int = 100
+    #: Ingest is stopped before the data partition fills, because a full disk
+    #: takes Postgres (and therefore the whole console) down with it. The floor
+    #: is the larger of the absolute and the percentage value, so a small data
+    #: disk is still protected by the percentage and a huge one by the absolute
+    #: number. ``warning_multiplier`` only drives the console's colour: nothing
+    #: is refused until the floor itself is crossed.
+    pcap_storage_min_free_gb: int = 5
+    pcap_storage_min_free_percent: float = 10.0
+    pcap_storage_warning_free_multiplier: float = 2.0
     #: Capture segments are the one producer that can flood the queue (a probe
     #: in monitoring mode uploads a segment every few seconds), so they get a
     #: worker of their own: a segment backlog can no longer starve scans,

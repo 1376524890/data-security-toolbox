@@ -182,11 +182,33 @@ class ProbeDeploymentPreflightRequest(BaseModel):
     data_max_files: int = Field(default=0, ge=0, le=100000)
     data_max_depth: int = Field(default=0, ge=0, le=64)
     data_include_databases: bool = True
+    #: Capture scope. An empty interface means "let the platform choose": the
+    #: first real NIC the target host reports, never a container bridge. On a
+    #: host that also runs the platform, ``any`` records the probe's own uploads
+    #: and the probe ends up feeding on its own traffic.
+    capture_interface: str = Field(default="", max_length=128)
+    #: Segment size is the capture/analysis balance point: small segments bound
+    #: the latency of one analysis and the size of the queue, large ones keep
+    #: whole sessions inside a single file for the flow engines. 30 s / 64 MiB
+    #: is the measured default; both are operator-tunable per deployment.
+    capture_segment_seconds: int = Field(default=30, ge=5, le=3600)
+    capture_segment_max_mb: int = Field(default=64, ge=1, le=4096)
     #: Keep the SSH credential encrypted until the owning task ends, so the
     #: platform can uninstall this task-dedicated probe itself. Off by default:
     #: an operator-dispatched deployment still has its credential destroyed the
     #: moment the install finishes.
     retain_credential: bool = False
+
+    @field_validator("capture_interface")
+    @classmethod
+    def capture_interface_valid(cls, value: str) -> str:
+        # The value reaches a generated TOML file on the target host verbatim, so
+        # anything that could end the string or the line is rejected here rather
+        # than escaped there.
+        item = str(value or "").strip()
+        if any(char in item for char in '\r\n"\x00\\'):
+            raise ValueError('capture_interface 不能包含引号、反斜杠或换行')
+        return item
 
     @field_validator("data_paths")
     @classmethod

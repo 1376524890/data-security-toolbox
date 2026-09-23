@@ -133,6 +133,63 @@ def validate_email(value: str) -> ValidatorOutcome:
     return ValidatorOutcome.reject("email_shape", "not_an_address")
 
 
+#: Punctuation that only appears in source code, never inside a configured
+#: secret: a parameter list, an index, a type annotation, a struct/JSON literal.
+_CODE_PUNCTUATION = re.compile(r"[()\[\]{}<>,;]|->|=>|::")
+#: A bare identifier: a parameter name, a type name, a language keyword.
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: The rule matches ``keyword <sep> value`` and the engine hands the validator
+#: that whole match, so the keyword and separator have to come off before the
+#: value is judged. The keywords (``password``/``api_key``/...) contain no ``:``
+#: or ``=``, so the first one is always the separator.
+_ASSIGNMENT_HEAD = re.compile(r"^[^:=]*[:=]\s*")
+
+#: The rule's own floor (``\S{6,}``); anything shorter never reaches here anyway.
+MIN_SECRET_CHARS = 6
+#: Word-like values at or above this length are kept as evidence rather than
+#: discarded: a long single word is as likely a passphrase as a type name.
+WORD_SECRET_CHARS = 12
+
+
+def validate_secret_value(value: str) -> ValidatorOutcome:
+    """Tell a configured secret from an expression that merely mentions one.
+
+    The rule matches ``password <sep> <value>``, which in source code is as often
+    a parameter list as it is a credential: ``password: bytes,``,
+    ``password = str(password)``, ``password = self.keyring.get_password(url,``
+    and ``password: _PasswordType | None = None`` all matched, and every one of
+    them was raised at L4/Critical. None of them is a secret, so code punctuation
+    rejects outright.
+
+    What survives is judged on shape, and shape is never conclusive: a word-like
+    value with no digit in it (``HiddenText``) is a type or parameter name, not a
+    credential, so it stays *evidence* at reduced confidence - the same treatment
+    a Luhn-failing card number gets. A value that mixes letters and digits, or
+    carries symbols, is what a configured secret looks like and is confirmed.
+    """
+    text = _ASSIGNMENT_HEAD.sub("", str(value or "").strip(), count=1).strip().strip('"\'`')
+    if not text:
+        return ValidatorOutcome.reject("secret_value", "empty")
+    if _CODE_PUNCTUATION.search(text):
+        return ValidatorOutcome.reject("secret_value", "code_punctuation")
+    if len(text) < MIN_SECRET_CHARS:
+        return ValidatorOutcome.reject("secret_value", "too_short")
+    if text.isdigit():
+        # A pure number after ``password=`` is as likely to be a status code or an
+        # id as a password; keep it as evidence, never as a confirmed credential.
+        return ValidatorOutcome(accepted=True, confidence=0.5,
+                                facts={"secret_shape": "digits"}, name="secret_value")
+    if _IDENTIFIER.fullmatch(text) and not any(char.isdigit() for char in text):
+        # No digit and no symbol, so the value is a bare word: the shape of a type
+        # annotation far more often than the shape of a secret. Length is all the
+        # evidence there is, and it only buys a place in the evidence list.
+        confidence = 0.55 if len(text) >= WORD_SECRET_CHARS else 0.4
+        return ValidatorOutcome(accepted=True, confidence=confidence,
+                                facts={"secret_shape": "word"}, name="secret_value")
+    return ValidatorOutcome(accepted=True, confidence=0.9,
+                            facts={"secret_shape": "value"}, name="secret_value")
+
+
 def validate_phone(value: str) -> ValidatorOutcome:
     digits = digits_only(value)
     return ValidatorOutcome(accepted=len(digits) == 11 and digits.startswith("1"),
@@ -141,6 +198,7 @@ def validate_phone(value: str) -> ValidatorOutcome:
 
 # Rule-referenced validator names must come from this table.
 BUILTIN_VALIDATORS: dict[str, Callable[[str], ValidatorOutcome]] = {
+    "secret_value": validate_secret_value,
     "cn_id_card": validate_cn_id_card,
     "luhn": validate_bank_card,
     "bank_card": validate_bank_card,

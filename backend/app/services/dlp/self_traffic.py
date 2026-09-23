@@ -73,7 +73,10 @@ def endpoint_is_self(ip, port, parsed):
     except ValueError:
         return False
     for network, host, entry_port in parsed:
-        if entry_port is not None and int(port) != entry_port:
+        # A flow that carries no port at all - a traffic summary row, or a capture
+        # where only addresses were recorded - cannot satisfy a port-scoped entry.
+        # Letting it through would hide a real transfer, so the entry is skipped.
+        if entry_port is not None and (port is None or int(port) != entry_port):
             continue
         if not host and network is None:
             return True          # port-only entry matched above

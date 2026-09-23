@@ -15,6 +15,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -77,7 +78,11 @@ def _scan_budget_defaults() -> dict[str, Any]:
 AGENT_VERSION = "3.7.0"
 DEFAULT_CONFIG = {
     "server": {"url": "http://localhost:8000", "verify_tls": True, "ca_file": ""},
-    "capture": {"interface": "any", "segment_seconds": 30, "segment_max_mb": 64, "enabled": True},
+    "capture": {"interface": "any", "segment_seconds": 30, "segment_max_mb": 64,
+                # BPF expression applied at capture time. Empty means "capture
+                # everything"; the platform sets it so a probe never records its
+                # own management channel (see capture_command).
+                "filter": "", "enabled": True},
     "spool": {"path": "/var/lib/data-security-toolbox/spool", "max_mb": 2048, "retention_seconds": 86400},
     "agent": {
         "heartbeat_seconds": 30,
@@ -490,20 +495,33 @@ def detect_capture_tool(config: Config) -> tuple[str, str]:
     return "", ""
 
 
+def capture_filter_args(config: Config) -> list[str]:
+    """The BPF expression as argv, so a filter never goes through a shell."""
+    expression = str(config.capture.get("filter") or "").strip()
+    return shlex.split(expression) if expression else []
+
+
 def capture_command(config: Config, partial: Path) -> tuple[str, str, list[str]]:
-    """Return (tool, extension, command). dumpcap -> pcapng, tcpdump -> pcap."""
+    """Return (tool, extension, command). dumpcap -> pcapng, tcpdump -> pcap.
+
+    The filter is applied by the capture tool rather than dropped after the
+    fact: a segment that is never written costs no disk, no upload and no
+    analysis, which is the only kind of exclusion that helps a loaded probe.
+    """
     interfaces = capture_interfaces(config.capture['interface'])
     duration = int(config.capture["segment_seconds"])
     max_mb = int(config.capture["segment_max_mb"])
+    expression = str(config.capture.get("filter") or "").strip()
     dumpcap = shutil.which("dumpcap")
     if dumpcap:
         args = [arg for interface in interfaces for arg in ('-i', interface)]
-        return "dumpcap", ".pcapng", [dumpcap, *args, "-a", f"duration:{duration}", "-a", f"filesize:{max_mb * 1024}", "-w", str(partial), "-q"]
+        filter_args = ["-f", expression] if expression else []
+        return "dumpcap", ".pcapng", [dumpcap, *args, *filter_args, "-a", f"duration:{duration}", "-a", f"filesize:{max_mb * 1024}", "-w", str(partial), "-q"]
     tcpdump = shutil.which("tcpdump")
     if tcpdump:
         if len(interfaces) > 1:
             raise ValueError('Multiple selected interfaces require dumpcap; use any on Linux for tcpdump')
-        return "tcpdump", ".pcap", [tcpdump, "-i", interfaces[0], "-w", str(partial), "-U"]
+        return "tcpdump", ".pcap", [tcpdump, "-i", interfaces[0], "-w", str(partial), "-U", *capture_filter_args(config)]
     return "", "", []
 
 
@@ -582,6 +600,7 @@ def capture_once(config: Config, sequence: int) -> dict[str, Any] | None:
             "segment_uuid": uuid.uuid4().hex,
             "sequence": sequence,
             "interface": config.capture["interface"],
+            "capture_filter": str(config.capture.get("filter") or ""),
             "capture_format": ext.lstrip("."),
             "capture_tool": tool,
             "capture_tool_version": tool_version(tool),

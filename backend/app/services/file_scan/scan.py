@@ -79,12 +79,20 @@ def run(db, task_id):
     db.commit()
     config = task.payload['config']
     limits = config['limits']
+    # The effective list is frozen into the task when it is queued, so editing
+    # the source later cannot change what a running scan was told to skip. A task
+    # queued before this option existed falls back to the platform default.
+    excludes = list(limits.get(service.EXCLUDE_KEY) or service.DEFAULT_EXCLUDES)
     start = time.monotonic()
     last_check = 0.0
     ids, errors, seen = [], [], set()
     # Directories and files that could not be read are listed explicitly: a scan
     # that silently dropped them would look clean while having skipped content.
     unreadable: list[dict[str, str]] = []
+    # Directories the scope deliberately leaves out, with the rule that matched.
+    # Reported, not silent: an operator reading a coverage number has to be able
+    # to tell "there was nothing there" from "we never looked".
+    excluded: list[dict[str, str]] = []
     #: Files that were listed and stored, but whose *content* was only sampled or
     #: not decoded at all (binaries). Sampling is a detection strategy, not a hole
     #: in the walk, so it is reported separately instead of making the whole scope
@@ -149,6 +157,15 @@ def run(db, task_id):
                         for path, kind, size in entries:
                             check()
                             if kind == 'dir':
+                                # Dependency and VCS stores are not the checked
+                                # organisation's data (see service.DEFAULT_EXCLUDES).
+                                # Skipping one is a scope decision, not a coverage
+                                # gap, so it is recorded separately and never marks
+                                # the run partial.
+                                if service.path_excluded(path, excludes):
+                                    excluded.append({'path': path,
+                                                     'reason': 'excluded_path'})
+                                    continue
                                 # 0 = walk the whole tree; an explicit depth is the
                                 # operator's own cap and is reported when it bites.
                                 if not limits['max_depth'] or depth < limits['max_depth']:
@@ -258,6 +275,7 @@ def run(db, task_id):
                    # Never cut the list: an operator chasing a coverage gap needs
                    # every path that was not read, not the first 200.
                    'unreadable': unreadable, 'unreadable_count': len(unreadable),
+                   'excluded_paths': excluded, 'excluded_count': len(excluded),
                    # Each of these is a separate, named answer: the tree was walked
                    # in full (enumeration), only some file *contents* were sampled,
                    # and some files were inventoried without decoding.

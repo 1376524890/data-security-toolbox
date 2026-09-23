@@ -9,6 +9,7 @@ from app.rules.interpreter import interpret_rules
 from app.rules.library import rule_params
 from app.services.traffic_service import detect_anomalies
 from app.core.config import settings
+from app.services.traffic_scope import filter_flows, filter_packets
 from app.services.traffic_state import rolling_traffic_state
 
 
@@ -33,7 +34,12 @@ class TrafficEngine(DetectionEngine):
         probe = str(context.data.get("probe_id") or context.data.get("probe_name") or "global")
         window = int(context.data.get("port_scan_window_seconds") or settings.port_scan_window_seconds)
         threshold = int(context.data.get("port_scan_ports_threshold") or settings.port_scan_ports_threshold)
-        rolling_traffic_state.observe(probe, context.flows)
+        # Loopback and the platform's own management channel are not the network
+        # under test; the metrics filter them too, and the rolling state has to
+        # see the same traffic or a cross-segment scan could be raised on a host
+        # the per-segment pass had already refused to describe.
+        flows, _ = filter_flows(context.flows)
+        rolling_traffic_state.observe(probe, flows)
         builtin_anomalies = detect_anomalies(context.flows, context.packets)
         for item in builtin_anomalies:
             src = str(item.get("evidence", {}).get("src") or item.get("evidence", {}).get("src_ip") or "")
@@ -50,7 +56,7 @@ class TrafficEngine(DetectionEngine):
         # Cross-segment rolling detection: use the strict sliding-window snapshot.
         # A single segment below the threshold can accumulate across segments and
         # only fire here once the rolling unique-port count reaches the threshold.
-        srcs = {str(flow.get("src_ip") or "") for flow in context.flows if flow.get("src_ip")}
+        srcs = {str(flow.get("src_ip") or "") for flow in flows if flow.get("src_ip")}
         for src in sorted(srcs):
             snap = rolling_traffic_state.snapshot(probe, src, window)
             if len(snap["dst_ports"]) < threshold:
@@ -93,7 +99,10 @@ class TrafficEngine(DetectionEngine):
         min_interval = float(rule.get("min_interval_seconds") or BEACON_DEFAULTS["min_interval_seconds"])
         max_cv = float(rule.get("max_interval_cv") or BEACON_DEFAULTS["max_interval_cv"])
         groups: dict[tuple, list[float]] = defaultdict(list)
-        for packet in context.packets:
+        # A beacon check against our own platform's heartbeat/upload would fire on
+        # every probe; see traffic_scope.
+        packets, _ = filter_packets(context.packets)
+        for packet in packets:
             key = (packet.get("src_ip"), packet.get("src_port"), packet.get("dst_ip"), packet.get("dst_port"))
             groups[key].append(float(packet.get("timestamp", 0)))
         findings = []

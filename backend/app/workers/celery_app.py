@@ -49,6 +49,14 @@ celery_app.conf.update(
             "task": "security_toolbox.cleanup_pcap_retention",
             "schedule": 3600.0,
         },
+        # The age sweep above is hourly, which is far too slow to bound a probe
+        # uploading a segment every few seconds: one hour of ingest is tens of
+        # gigabytes. The size sweep runs on a short beat so the disk cap is
+        # enforced while there is still room to act.
+        "enforce-pcap-storage-cap": {
+            "task": "security_toolbox.enforce_pcap_storage_cap",
+            "schedule": 60.0,
+        },
         "worker-capability-heartbeat": {
             "task": "security_toolbox.worker_capability_heartbeat",
             "schedule": 30.0,

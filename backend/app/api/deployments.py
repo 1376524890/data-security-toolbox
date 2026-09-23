@@ -155,6 +155,12 @@ def create_deployment(payload: ProbeDeploymentCreate, request: Request, db: Sess
             "max_files": payload.data_max_files,
             "max_depth": payload.data_max_depth,
             "include_databases": payload.data_include_databases,
+            # Capture scope travels in the same snapshot as everything else the
+            # installer needs, so a retry reproduces the exact segment size the
+            # operator chose instead of falling back to a default.
+            "capture_interface": payload.capture_interface,
+            "segment_seconds": payload.capture_segment_seconds,
+            "segment_max_mb": payload.capture_segment_max_mb,
             # Marks a task-dedicated probe whose credential is kept (encrypted)
             # until the owning task ends, so the platform can retire it itself.
             "retain_credential": payload.retain_credential,

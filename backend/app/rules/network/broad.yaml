@@ -2,6 +2,10 @@ rule_id: NET_BROAD_001
 title: 大范围横向通信
 severity: Medium
 confidence: 0.75
-condition: dst_count > 10 and total_bytes > 10000000
+# `dst_bytes` is the traffic moved by the same host `dst_count` counted, so the
+# rule means "one host contacted many destinations *and* moved real data doing
+# it". It used to compare against `total_bytes`, which is the whole segment: a
+# 64 MiB capture always carries more than 10 MB, so the second half of the
+# condition was always true and the rule fired on destination count alone.
+condition: dst_count > 10 and dst_bytes > 10000000
 recommendation: 检查主机是否进行异常批量通信，确认是否存在数据外传或横向扩散。
-

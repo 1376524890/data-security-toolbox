@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import shlex
+import socket
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
@@ -55,7 +58,75 @@ def open_ssh(deployment: ProbeDeployment, verify_host_key: bool | None = None) -
     return ssh
 
 
-def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file: str | None, interface: str = "any") -> str:
+#: Capture-time defaults, kept in one place so the code, the manual-install TOML
+#: and a console cannot drift. 30 s / 64 MiB is the balance point measured on a
+#: loaded host: a segment is small enough that analysing one finishes well inside
+#: the time the next takes to fill, so a backlog drains instead of building,
+#: while a segment is still large enough to hold whole sessions (a 30 s window)
+#: for the flow and timeline engines.
+DEFAULT_SEGMENT_SECONDS = 30
+DEFAULT_SEGMENT_MAX_MB = 64
+
+#: NIC name prefixes that are container/bridge devices rather than the network
+#: under test. A probe deployed onto the platform's own host used to capture on
+#: ``any``, which includes the docker bridge its own uploads leave by - so each
+#: segment recorded the upload of the previous one and the probe sustained
+#: itself with no real traffic at all (96% of a measured capture was this loop).
+VIRTUAL_INTERFACE_PREFIXES = ("docker", "br-", "veth", "virbr", "tun", "tap", "lo")
+
+
+def capture_interface_for(data_config: dict[str, Any] | None, candidates: list[str]) -> str:
+    """Pick the capture NIC: the operator's choice, else the first real one.
+
+    ``candidates`` comes from the target host's preflight, so the decision uses
+    what that host actually has rather than a name guessed on the platform.
+    """
+    chosen = str((data_config or {}).get("capture_interface") or "").strip()
+    if chosen:
+        return chosen
+    usable = [str(item) for item in candidates or [] if str(item).strip()]
+    real = [name for name in usable if not name.startswith(VIRTUAL_INTERFACE_PREFIXES)]
+    return (real or usable or ["any"])[0]
+
+
+def capture_self_filter(backend_url: str) -> str:
+    """BPF expression that keeps the platform's own management channel out.
+
+    The probe's own upload is the single largest flow a freshly deployed probe
+    sees, and it is never the data under test - the DLP engine already treats it
+    as own traffic after the fact. Dropping it at capture time is the difference
+    between a usable sensor and one that spends its whole budget recording
+    itself.
+
+    Only the exact ``host and port`` pair is excluded: a filter on the port alone
+    would hide genuine application traffic that happens to share it, and one on
+    the host alone would hide every other service on the platform's host.
+    """
+    text = str(backend_url or "").strip()
+    if not text:
+        return ""
+    parts = urlsplit(text if "//" in text else f"//{text}")
+    host = parts.hostname
+    if not host:
+        return ""
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        addresses = [str(ipaddress.ip_address(host))]
+    except ValueError:
+        try:
+            addresses = sorted(
+                {info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
+            )
+        except OSError:
+            # An unresolvable host is not a reason to fail a deployment; it only
+            # means this layer cannot help and the interface choice stands alone.
+            return ""
+    return " and ".join(f"not (host {address} and port {port})" for address in addresses)
+
+
+def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file: str | None,
+                     interface: str = "", segment_seconds: int | None = None,
+                     segment_max_mb: int | None = None) -> str:
     """Generate the probe TOML for the target host (no secrets beyond enrollment)."""
     verify_tls = "true" if ca_file else "false"
     ca_line = 'ca_file = "/etc/data-security-toolbox/ca.pem"' if ca_file else ""
@@ -82,6 +153,14 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
     data_max_files = int(data_config.get("max_files") or 0)
     data_max_depth = int(data_config.get("max_depth") or 0)
     data_databases = "true" if data_config.get("include_databases", True) else "false"
+    capture_interface = str(data_config.get("capture_interface") or interface or "any")
+    capture_segment_seconds = int(
+        segment_seconds or data_config.get("segment_seconds") or DEFAULT_SEGMENT_SECONDS
+    )
+    capture_segment_max_mb = int(
+        segment_max_mb or data_config.get("segment_max_mb") or DEFAULT_SEGMENT_MAX_MB
+    )
+    self_filter = capture_self_filter(deployment.backend_url)
     return "\n".join(
         [
             "[server]",
@@ -90,9 +169,10 @@ def build_probe_toml(deployment: ProbeDeployment, enrollment_token: str, ca_file
             ca_line,
             "",
             "[capture]",
-            f'interface = "{interface}"',
-            "segment_seconds = 30",
-            "segment_max_mb = 64",
+            f'interface = "{capture_interface}"',
+            f"segment_seconds = {capture_segment_seconds}",
+            f"segment_max_mb = {capture_segment_max_mb}",
+            f"filter = {json.dumps(self_filter)}",
             f"enabled = {capture_enabled}",
             "",
             "[spool]",
@@ -228,7 +308,14 @@ class DeploymentService(DeploymentRecord):
             self._advance(deployment, "INSTALLING", 60, "installing probe and systemd unit")
             token = create_enrollment(self.db, deployment)
             ca_file = settings.deployment_ca_file or None
-            interface = 'any'
+            # The interface is chosen from what the target host reported, not
+            # hardcoded to 'any': see capture_interface_for for why 'any' on a
+            # shared host is a self-sustaining capture loop.
+            interface = capture_interface_for(
+                deployment.data_config, list(preflight.get("interfaces") or [])
+            )
+            deployment.preflight_result = {**preflight, "capture_interface": interface}
+            self.db.commit()
             toml = build_probe_toml(deployment, token, ca_file, interface=interface)
             ca_remote = self._upload_config(ssh, toml, remote_dir, ca_file)
             self._install(ssh, pkg, remote_dir, ca_remote)

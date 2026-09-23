@@ -42,46 +42,88 @@ def load_rules(path: Path) -> list[Rule]:
 
 
 def _metrics(context: DetectionContext) -> dict[str, Any]:
+    """Metrics a network rule may name, each describing what its rule claims.
+
+    Two families live here and they are not interchangeable:
+
+    * per-host / per-conversation - ``port_count``, ``dst_count``, ``dst_bytes``,
+      ``packet_rate``. These answer "did one host do something abnormal", which
+      is what every rule in ``rules/network`` asks. They are maxima over hosts or
+      conversations, never sums.
+    * whole-capture aggregates - ``capture_*``. A rule that uses one of these is
+      saying "this segment carried X", which is not evidence of an attack: a
+      64 MiB segment from a busy link always carries tens of megabytes and
+      thousands of packets, so a capture-wide threshold fires on every segment.
+    """
     from app.core.config import settings
+    from app.services.traffic_scope import filter_flows, filter_packets
     from app.services.traffic_service import _busiest_port_window
 
-    flows = context.flows or []
-    packets = context.packets or []
+    flows, _ignored_flows = filter_flows(context.flows or [])
+    packets, _ignored_packets = filter_packets(context.packets or [])
     window = int(context.data.get("port_scan_window_seconds") or settings.port_scan_window_seconds)
     by_src: dict[str, dict[str, Any]] = {}
+    by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for flow in flows:
         src = flow.get("src_ip", "")
-        stats = by_src.setdefault(src, {"flows": [], "dst_ports": set(), "dst_ips": set(), "bytes": 0, "packets": 0})
+        dst = flow.get("dst_ip", "")
+        stats = by_src.setdefault(
+            src, {"flows": [], "dst_ports": set(), "dst_ips": set(), "bytes": 0, "packets": 0}
+        )
         stats["flows"].append(flow)
         stats["dst_ports"].add(flow.get("dst_port", 0))
-        stats["dst_ips"].add(flow.get("dst_ip", ""))
+        stats["dst_ips"].add(dst)
         stats["bytes"] += int(flow.get("bytes", 0))
         stats["packets"] += int(flow.get("packets", 0))
+        by_pair.setdefault((src, dst), []).append(flow)
+
     duration = 0.0
     if packets:
         duration = float(packets[-1].get("timestamp", 0)) - float(packets[0].get("timestamp", 0))
+
+    def _conversation_rate(flow: dict[str, Any]) -> float:
+        span = float(flow.get("end_time") or 0) - float(flow.get("start_time") or 0)
+        return int(flow.get("packets", 0)) / max(span, 0.001)
+
+    busiest_rate = max((_conversation_rate(flow) for flow in flows), default=0.0)
+    # "How far did one host spread": the source with the most distinct
+    # destinations, and what that same source moved while doing it. Keeping the
+    # pair together is what makes "broad communication" mean one host with real
+    # traffic behind it, rather than a busy segment.
+    spread_src = max(by_src.values(), key=lambda item: len(item["dst_ips"]), default=None)
     metrics: dict[str, Any] = {
         "flow_count": len(flows),
         "packet_count": len(packets),
-        "packet_rate": len(packets) / max(duration, 0.001),
+        # Per conversation: the rate a single flow sustained. See the docstring.
+        "packet_rate": busiest_rate,
+        "capture_packet_rate": len(packets) / max(duration, 0.001),
         "total_bytes": sum(int(flow.get("bytes", 0)) for flow in flows),
-        # Whole-capture aggregate, available to reports that really mean it.
-        "capture_port_count": len({flow.get("dst_port", 0) for flow in flows}),
-        # The single-host question a scan rule asks: the most ports any one
-        # source touched within a real time window. Summing every host's ports
-        # together is what made 21 hosts x 1 port look like a port scan.
+        # The single-host questions a scan/横向 rule asks. Summing every host's
+        # ports together is what made 21 hosts x 1 port look like a port scan,
+        # and counting a server's replies (one flow per client, each with a
+        # different ephemeral destination port) is what made every DNS server
+        # look like one too - so the count is per (source, destination) pair and
+        # uses the service side of the conversation.
         "port_count": 0,
-        "dst_count": len({flow.get("dst_ip", "") for flow in flows}),
-        "src_count": len({flow.get("src_ip", "") for flow in flows}),
+        "dst_count": len(spread_src["dst_ips"]) if spread_src else 0,
+        "dst_bytes": int(spread_src["bytes"]) if spread_src else 0,
+        "capture_port_count": len({flow.get("dst_port", 0) for flow in flows}),
+        "capture_dst_count": len({flow.get("dst_ip", "") for flow in flows}),
+        "src_count": len(by_src),
     }
+    for pair_flows in by_pair.values():
+        windowed, _, _ = _busiest_port_window(pair_flows, window)
+        metrics["port_count"] = max(metrics["port_count"], len(windowed))
     for src, stats in by_src.items():
-        windowed, _, _ = _busiest_port_window(stats["flows"], window)
-        metrics[f"src:{src}:ports"] = len(windowed)
+        metrics[f"src:{src}:ports"] = max(
+            (len(_busiest_port_window(pair_flows, window)[0])
+             for (pair_src, _dst), pair_flows in by_pair.items() if pair_src == src),
+            default=0,
+        )
         metrics[f"src:{src}:ports_total"] = len(stats["dst_ports"])
         metrics[f"src:{src}:dsts"] = len(stats["dst_ips"])
         metrics[f"src:{src}:bytes"] = stats["bytes"]
         metrics[f"src:{src}:packets"] = stats["packets"]
-        metrics["port_count"] = max(metrics["port_count"], len(windowed))
     return metrics
 
 
@@ -141,4 +183,3 @@ def interpret_rules(context: DetectionContext, rule_dir: Path,
                 recommendation=rule.recommendation,
             ).normalize())
     return results
-

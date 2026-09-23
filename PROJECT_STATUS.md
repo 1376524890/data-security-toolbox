@@ -1,6 +1,59 @@
 # 项目状态
 
-2026-09-23 第四十四批（本轮）：**风险文件直读 + 大屏地理态势 + 密码评估回到扫描流程**。
+2026-09-23 第四十六批（本轮）：**存储护栏落地 + 抓包平衡点 + 历史误报清理**。第四十五批诊断出的三个问题
+本轮都改到了代码上（该批只诊断、未改码）。
+
+**存储不再能把自己写满**：新增 `services/storage_guard.py`（分区水位）与 `services/pcap_storage.py`（腾空间），
+`/health` 暴露 `storage` 块（实测容器 `/app/data/storage` → 宿主 `/home` 296 G）；两道界 =
+`PCAP_STORAGE_MAX_GB` 硬上限 + 保留下限 `max(5 GiB, 10%)`；低于下限时 `pcaps/upload` 与 `files/upload`
+**都**返回 `429`（走同一个 `enforce_queue_backpressure`，且该磁盘检查刻意放在 development 短路之前）；
+腾空间只删**文件**、保留行（`retained_analysis`），持有未关闭告警/事件的分段排最后、只在越过下限时才动；
+新增 60 秒 beat `enforce-pcap-storage-cap`。真机起效前 `critical`（可用 18.09 GiB < 下限 29.58 GiB）上传被拒，
+一次 sweep 后 `/home` 19 G → **31 G 可用**（释放 12.46 GiB），上传恢复 200，
+**102 段持有未关闭事件的分段全部保留**、750 行一条未删。顺带修掉一个性能坑：sweep 原先每条分段全表扫
+incident，452 段要 ~5 分钟（beat 才 60 秒），改为批量取开案集合 + 累计释放字节后实测 **~1 秒**。
+
+**抓包平衡点**：`interface` 不再写死 `any`（按 preflight 选第一个非虚拟网卡，排除 docker0/veth/br- 等），
+新增采集期 BPF 排除平台自身管理端点（探针 `capture.filter` → `dumpcap -f`，`shlex` 传 argv 不过 shell）；
+保留 30 秒 / 64 MiB。渲染实测 `interface="eth0"` + `filter="not (host 192.168.110.168 and port 8000)"`；
+preflight 新增 `capture_interface` / 段时长 / 段大小三个可覆盖项。
+
+**误报治理（根因 + 存量）**：抓包流是单向的，按“源地址不同目的端口数”统计把每台繁忙服务器（DNS 应答、
+docker 网桥、回环）都判成端口扫描——179 条 `NETWORK_PORT_SCAN` 与 485 条 `NET_BROAD_001` 源于此，
+现按 `(源,目的)` 对 + **服务侧端口**计数，特殊用途网段与平台自身端点先过滤（`172.16/12` 是合法私网，
+不默认丢，需运维显式配）；非人工的**纯数字规则**精度上限 0.5（低于 0.6 告警线，`se_organisationsnummer`
+命中 shell-history 时间戳曾产出 331 条检测/3194 次命中）；新增 `validate_secret_value` 拒绝源码形态的口令赋值
+（`password: bytes,` 等此前按 L4/Critical 上报），并修掉“引擎把整段匹配交给 validator”导致裸词误判的真 bug；
+文件采集默认排除 `node_modules`/`site-packages`/`.git` 等第三方代码（954 条检测里 403 条来自第三方），
+**刻意不排除** `dist`/`build`/`bin`/`target`/`obj`。存量清理走新增
+`POST /admin/findings/purge-false-positives`（默认 dry-run、写审计、只按行自身证据判定、不做推断）：
+真机 dry-run 待清 **635 条检测**（validator 6 / 低于告警线 218 / 采集范围外 411）+ **866 条 finding**，
+**尚未执行**（不可逆，等确认）。
+
+测试：新增 29 项用例全过，全量后端 **34 FAILED 与 HEAD 基线逐条一致**（另 2 个既有 collection ERROR 同样复现），
+新代码 ruff 0 违规。改动未提交。详见 `TASK.md` 第四十六批。
+
+2026-09-23 第四十五批（上一批）：**本机装探针做全链路实测，发现同机抓包自持回路会把数据盘写满**。
+
+用最新镜像起栈（含此前漏重建的 `pcap-worker`），并走平台自己的下发流程在本机（`192.168.110.168`）
+装了探针：preflight 全过 → 10 秒 `ONLINE` → 首段 pcap **7.5 秒**分析完并产出告警，采集/上传/分析/发现/告警
+全链路正常；三处新功能也用真实数据复核通过（风险点直读、默认掩码浏览+显式看全部、整份下载 sha256 一致、
+大屏 geo-map 分组正确）。
+
+**但抓包确实远快于分析，且本机是特例**：15 分钟采集 321 段 / 20 GB（约 22 MB/s，全部顶到 64 MiB 大小上限），
+其中 **96 % 是探针抓自己的上传流量**（`192.168.110.168 → 172.23.0.7`）——部署写死 `interface="any"`，
+探针与平台同机、上传走 docker 网桥，导致每段 pcap 被录进下一段，形成真实流量为零也停不下来的自持回路。
+分析侧（2 并发，平均 5.8 s/段）与之基本持平但方差大，积压涨到平台阈值 200 后被 `enforce_queue_backpressure`
+拒收，**这层保护有效**；真正的卡死点是磁盘：`PCAP_STORAGE_MAX_GB` 只在 `/health` 展示、无处执行，
+唯一清理是 7 天保留（有未关闭告警的行还会标 `extended` 永不删），而平台数据在 **`/home`（296 G / 已用 280 G）**
+而非根分区，实测被写到 **0 字节可用**。已按平台流程回收探针并清掉本批 321 段 pcap 文件（行保留、
+`retained_analysis`，23 段有未关闭告警的按语义保留），释放 18.2 GB，`/home` 恢复到 19 GB，平台 `/health` 正常。
+
+**建议（未改代码）**：平台主机不要用 `any` 抓包（改抓物理网卡 / 加排除平台端点的 BPF / 用 `profile=lite`）；
+`PCAP_STORAGE_MAX_GB` 要么真正执行要么明确为展示值（7 天 × 22 MB/s ≈ 13 TB，与 296 GB 差两个数量级）；
+容量监控必须盯存放真实数据的分区。详见 `TASK.md` 第四十五批。
+
+2026-09-23 第四十四批（上一批）：**风险文件直读 + 大屏地理态势 + 密码评估回到扫描流程**。
 
 **风险文件**（`api/data_catalog.py`）：新增 `GET /asset-instances/{id}/risk-points`，把命中的规则、
 等级与**命中原文**直接给出来，列表行补 `risk_point_count`/`risk_hit_count`；浏览 `content` 默认

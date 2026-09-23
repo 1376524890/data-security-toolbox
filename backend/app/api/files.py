@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.data_assets import _serialize_data_asset as _serialize_data_asset
-from app.api.dependencies import upload_probe_id
+from app.api.dependencies import enforce_queue_backpressure, upload_probe_id
 from app.api.finding_presenter import _serialize_detection as _serialize_detection
 from app.api.pagination import page_response, paginate
 from app.api.task_presenter import serialize_task
@@ -93,6 +93,12 @@ async def upload_file(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     probe_id = upload_probe_id(request, db, probe_id)
+    # An upload writes into the same data partition the capture segments do, so
+    # it has to respect the same floor: a full disk takes Postgres (and the whole
+    # console) down, and the check has to happen *before* the bytes land. The
+    # queue half of the same guard applies here as well - this endpoint creates
+    # an analysis task just like the capture path does.
+    enforce_queue_backpressure(db)
     try:
         stored = await stream_to_storage(
             file,

@@ -16,6 +16,9 @@ FILE_SOURCE_SCAN = "security_toolbox.file_source_scan"
 FILE_SOURCE_SCHEDULE = "security_toolbox.file_source_schedule"
 DATABASE_SCAN = "security_toolbox.database_scan"
 CLEANUP_PCAP_RETENTION = "security_toolbox.cleanup_pcap_retention"
+#: Runs on a short beat: ingest outruns the hourly retention sweep by orders
+#: of magnitude, so the disk cap has to be checked while there is still time.
+ENFORCE_PCAP_STORAGE_CAP = "security_toolbox.enforce_pcap_storage_cap"
 SYNC_WAZUH_ALERTS = "security_toolbox.sync_wazuh_alerts"
 EXPIRE_PROBE_TASKS = "security_toolbox.expire_probe_tasks"
 RUN_PROBE_DEPLOYMENT = "security_toolbox.run_probe_deployment"

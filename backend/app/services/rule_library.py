@@ -36,6 +36,40 @@ DEFAULT_CONFIDENCE = MANUAL_CONFIDENCE
 # A hit below this precision is recorded as evidence but never raises an alert.
 MIN_ALERT_CONFIDENCE = .6
 
+#: A rule that can only match a run of digits cannot tell an identity number from
+#: a counter, a timestamp or an internal request id. Imported packs are full of
+#: them - ``\b\d{6}[-]?\d{4}\b`` (a Swedish organisation number) matched the
+#: ``: 1784680825:0;`` prefix of a shell-history entry, a JSON mtime and a CGI
+#: request id, and produced 331 detections / 3194 hits of pure noise on one host.
+#: Such a rule is kept, because it is still useful evidence, but it can never
+#: confirm on its own. An analyst-written rule is exempt: those are deliberate,
+#: and the console's rule editor is where a human takes that responsibility.
+DIGIT_ONLY_CONFIDENCE = .5
+#: Regex escapes that still leave a pattern able to match only digits.
+_DIGIT_ONLY_ESCAPES = ('\\d', '\\b', '\\s')
+#: What may remain once digits and separators are all that is left: quantifiers,
+#: groups, anchors, alternation and the separators themselves.
+_DIGIT_ONLY_SYNTAX = re.compile(r"[\d\s\-.,:;_+|(){}\[\]?*^$=!<>]*")
+
+
+def digit_only_pattern(pattern) -> bool:
+    """True when a pattern can only ever match digits and their separators."""
+    text = str(pattern or '')
+    if not text or '[^' in text:
+        # A negated class can match anything, which is the opposite of a pattern
+        # that is certain to be looking at a number.
+        return False
+    for escape in _DIGIT_ONLY_ESCAPES:
+        text = text.replace(escape, '')
+    # Escapes left over are escaped punctuation (``\+``, ``\.``); dropping the
+    # backslash keeps them subject to the same "no letters" test below.
+    text = text.replace('\\', '')
+    # Any letter can introduce a non-digit into the match (a literal, a class,
+    # ``\w``, ``\S``), which is exactly the evidence a bare number lacks.
+    if re.search(r'[A-Za-z]', text):
+        return False
+    return bool(_DIGIT_ONLY_SYNTAX.fullmatch(text))
+
 
 def _plausible_email(value):
     """Reject loose ``user@host`` matches such as ``security@172.18.0.2``.
@@ -51,7 +85,14 @@ MATCH_VALIDATORS = {'EMAIL_ADDRESS': _plausible_email}
 
 
 def rule_confidence(rule):
-    """Precision of one rule in ``0..1``; missing upstream scores stay conservative."""
+    """Precision of one rule in ``0..1``; missing upstream scores stay conservative.
+
+    A non-analyst rule whose pattern can only match digits is capped at
+    :data:`DIGIT_ONLY_CONFIDENCE`, below the alert threshold: no score a pack
+    reports can make a bare number conclusive, so the cap is applied here rather
+    than trusted to the pack. The rule stays in the store and still contributes
+    evidence; it just cannot raise a finding by itself.
+    """
     value = rule.get('confidence', rule.get('score'))
     if isinstance(value, bool):
         value = None
@@ -61,7 +102,10 @@ def rule_confidence(rule):
         name = str(rule.get('name', '')).casefold()
         fallback = MANUAL_CONFIDENCE if str(rule.get('source') or 'manual') == 'manual' else IMPORTED_CONFIDENCE
         confidence = next((score for marker, score in WEAK_MARKERS if marker in name), fallback)
-    return round(min(1.0, max(0.0, confidence)), 4)
+    confidence = min(1.0, max(0.0, confidence))
+    if str(rule.get('source') or 'manual') != 'manual' and digit_only_pattern(rule.get('pattern')):
+        confidence = min(confidence, DIGIT_ONLY_CONFIDENCE)
+    return round(confidence, 4)
 
 
 def sensitive_entity(rule):
