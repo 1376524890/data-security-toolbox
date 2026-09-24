@@ -1,5 +1,64 @@
 # 项目状态
 
+2026-09-24 第五十二批（本轮）：**把三条采集的覆盖率口径做实**。分支 `feat/coverage-accountability`（自 `develop` 切出）。本轮**不改库结构**。
+
+三件事：**统一覆盖率词汇**、**未覆盖项可列明细**、**汇入报告且可复核**。走查时发现并修掉三个真缺陷（都不是本轮新写的代码，是走查暴露的）。
+
+**① 统一词汇 `shared/coverage.py`**（新文件，探针/后端/模板共用，不 import `app`）。此前三条采集路径各造各的词：
+文件扫描有 `coverage` + `budget` 的终止码，数据库直连把 `covered` 布尔压成 `complete`/`partial`，
+两列从来不需要互相自洽。线上 11 000+ 行里就有两处脏值：`partial` + `complete`（17 条，
+`complete` 既是状态又是原因字段的默认哨兵）、`failed` + `SSHException`（1 条，三方库异常类名
+进了面向客户的原因列）。两条硬规则：**没读到的一律不算干净**（`unsupported`/`unavailable`
+列而未读，单独计，不并入百分比）；**未知原因原样透出**（唯一例外是异常类名，中和为「读取来源出错」）。
+百分比只算「完整读取」——`partial` 不计入，否则一份 6 项全 partial 的来源会报 100%。
+
+**② 写入层收敛**。`file_scan/adapters.py::category()` 的兜底从 `type(exc).__name__` 改为固定码
+（该函数注释本来就说"不回显服务端原文"）；`ocr.py` 同理；`file_scan/ingest.py` 落库前
+`normalize_reason(coverage, reason)`，状态与原因必须自洽。**存量脏值未回填**（不手改线上库；
+方案见下）。
+
+**③ 报告新增「检查覆盖」段**。控制台能看到每个对象的覆盖率，交付出去的报告看不到——
+最需要这句话的读者恰恰是拿到报告的人。按来源一张表（已登记/完整读取/部分读取/未读取/完整读取率）、
+未完整读取的原因分布、举例对象（带采集来源）、网络轴单列一段。数字是一次
+`GROUP BY source_kind, coverage, termination_reason` 读出来的（11 组代表 15 000 实例），
+报告生成不加载整个资产清单；**网络轴与资产轴并列不并入**同一个百分比（被动采集、不解密 TLS，
+加密流条数是能力边界不是事件）。
+
+**④ 报告说「完整清单见控制台」，但控制台当时筛不出来**。`/asset-instances` 的 `coverage`
+只在排序白名单里，15143 个实例只能靠翻页找。已加 `coverage` 过滤参数（除五种状态外多一个
+`incomplete`＝「其余全部」，只有 `complete` 代表读全了），风险文件页加「覆盖率」下拉，
+报告措辞改成可执行的指路并**如实写出该页边界**（只列已命中敏感规则的实例）。
+
+**走查暴露并修掉的三个真缺陷**（本批最值钱的部分）：
+
+1. **`merge()` 按 code 拆分导致重复计数**：`row_limit`（单文件上限）与 `row_budget`（整轮上限）
+   中文同名，报表按标签归并成一行是对的，但合并时把同一批对象**计入每个 code**——
+   2 条 row_limit + 3 条 row_budget 会报成 600（实为 5）。现在按标签计一次、保留 `codes` 供控制台区分。
+2. **presidio 静默下载 587MB 模型**（`app/core/nlp.py`）：presidio 的 `SpacyNlpEngine.load()`
+   发现配置里的模型没装就调 `spacy.cli.download`，而 `AnalyzerEngine()` 的默认配置指向
+   `en_core_web_lg`。**跑全量 pytest 会卡死在这里**（实测进程树：pytest 是 `pip install
+   https://github.com/explosion/spacy-models/.../en_core_web_lg-3.8.0-...whl` 的父进程）。
+   这不只是测试问题：交付环境离线，同一条路径只会失败——即这条代码只在"恰好有外网"的机器上成立；
+   wheel 落进**容器层**，`storage_guard` 按 `STORAGE_DIR` 分区测量**量不到它**，重建镜像又没了；
+   平台在客户网络里拉走 587MB，事后没有审计能指认。现在模型名由 `settings.presidio_model`
+   指定（默认小体积多语种 `xx_ent_wiki_sm`），先查 `spacy.util.is_package` 再交给 presidio，
+   缺失就记 `model_missing:<name>` 让报告能说"没查"，下载改为显式开关
+   `PRESIDIO_ALLOW_MODEL_DOWNLOAD`（默认关）。**模型仍不进镜像**，属待办。
+3. **`category()` 把自己抛的 `SourceError` 里的具体码压平**：`connect`/`entries` 已经算出
+   `auth_error`/`path_error`/`dns_error`/`timeout` 并包进 `SourceError(category(exc))`，
+   但记录前又调一次 `category()`，它当时只认第三方异常类型，认不出自己的异常，
+   于是**所有**文件来源失败都落库成同一个 `source_error`——运维分不清「密码错」和「目录不存在」。
+   现在先认自己的 `SourceError`（消息是 lower_snake 码就原样返回），仍然不回显异常类名与服务端原文。
+
+**验证**：后端全量 **1064 项 / 11 失败**，与 `develop` 基线（`PRESIDIO_ENABLED=false` 绕开上述卡死）
+**逐条一致，本分支未引入新失败**，并修绿了 1 项（`test_file_sources.py` 那条断言原本固化的就是
+被压平的旧行为）。前端 **148 项 + `vue-tsc` 通过**。报告用真实库渲染过一次：
+15198 项 / 完整 11376（74.9%）/ 部分 993 / 未读 2829；探针数据资产盘点 55、文件来源扫描 15143。
+新增测试：`tests/shared/test_coverage_vocabulary.py`（12 项，含**两端标签表一致性守卫**——
+仓库在盘时逐码比对控制台表，缺码即失败）、`tests/test_nlp_model_guard.py`（5 项）、
+`tests/test_risk_files.py::test_the_list_can_be_asked_for_what_was_not_read_in_full`、
+前端 `risk-files-state.test.ts` 1 项。
+
 2026-09-24 第五十一批（本轮）：**AGENTS.md 对齐真实代码 + 释放本机存储**。本轮不改代码、不改 API、不改库结构。
 
 **AGENTS.md 重写（639 → 344 行）**。原文件是 40 多个批次笔记的堆叠，其中十余个「域路由入口」与「页状态边界」

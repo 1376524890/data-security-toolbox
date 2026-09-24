@@ -1,5 +1,62 @@
 # 当前任务：资产与数据安全增强
 
+## 第五十二批：把三条采集的覆盖率口径做实（2026-09-24，分支 `feat/coverage-accountability`）
+
+用户要求：把前一版提出的三条口径**做实**——统一覆盖率词汇、未覆盖项可列明细、汇入报告且可复核。
+本轮不改库结构，无新增 Alembic 迁移。
+
+### 一、词汇表收敛到一份
+
+`shared/coverage.py`（新文件，探针/后端/报告模板共用，**不 import `app`**）。三条采集路径原先各造各的词，
+`asset_instances` 的 `coverage` 与 `termination_reason` 两列从来不需要互相自洽，线上 11 000+ 行里就有
+`partial` + `complete`（17 条；`complete` 既是状态又是原因默认哨兵）和 `failed` + `SSHException`
+（1 条；三方库类名进了面向客户的原因列）。
+
+两条硬规则：**没读到的一律不算干净**（`unsupported`/`unavailable` 是「列而未读」，单独计，
+不并入百分比）；**未知原因原样透出**，唯一例外是异常类名（中和为「读取来源出错」）。
+百分比只算「完整读取」——`partial` 不计入（一份 6 项全 partial 的来源曾报 100%）。
+
+### 二、写入层收敛
+
+- `services/file_scan/adapters.py::category()` 兜底由 `type(exc).__name__` 改为固定码 `source_error`；
+- `shared/scanning/ocr.py` 兜底改 `ocr_error`；
+- `services/file_scan/ingest.py` 落库前走 `normalize_reason(coverage, reason)`。
+
+**存量脏值未回填**：修复只对新扫描生效。回填方案见下（需用户确认，属改线上数据）。
+
+### 三、报告新增「检查覆盖」段
+
+`report.html.j2` + `services/coverage_service.py` + `api/reports.py`。一次
+`GROUP BY source_kind, coverage, termination_reason` 出数（11 组代表 15 000 实例），
+只有有界的「漏了什么」样例按行读；**网络轴与资产轴并列不并入**（被动采集、不解密 TLS，
+加密流条数是能力边界不是事件）。原因表只列未完整读取的原因（`miss_reasons`）——
+复用全部原因会让「未完整读取的原因」下面出现「正常完成 11376」，表头和自己列的内容互相打架。
+
+### 四、报告承诺的入口要真的存在
+
+报告写「完整清单见控制台」，而 `/asset-instances` 的 `coverage` 原先只在排序白名单里——
+15143 个实例只能翻页找。已加 `coverage` 过滤（多一个 `incomplete`＝「其余全部」），
+风险文件页加「覆盖率」下拉，报告措辞改为可执行指路并写出该页边界（只列已命中敏感规则的实例）。
+
+### 走查暴露的三个真缺陷（本批最值钱的部分）
+
+1. **`shared/coverage.merge()` 重复计数**：按 label 归并成一行是对的，但合并时把同一批对象
+   计入每个 code——2 条 `row_limit` + 3 条 `row_budget` 报成 600（实为 5）。改为按标签计一次并保留 `codes`。
+2. **presidio 静默下载 587MB**：`AnalyzerEngine()` 默认配置指向 `en_core_web_lg`，
+   presidio 发现模型缺失会 `spacy.cli.download`。**全量 pytest 卡死在这里**；离线交付环境同一条路径只会失败；
+   wheel 落进容器层，`storage_guard` 量不到。新增 `app/core/nlp.py` 统一把门：模型名可配、先查
+   `spacy.util.is_package`、缺失记 `model_missing:<name>`、下载走显式开关（默认关）。
+3. **`category()` 压平自己的码**：`auth_error`/`path_error`/`dns_error`/`timeout` 全部落库成 `source_error`。
+   改为先认自己的 `SourceError`，仍不回显异常类名与服务端原文。
+
+### 验证
+
+- 后端全量 1064 项 / 11 失败，与 `develop` 基线（`PRESIDIO_ENABLED=false` 绕开卡死）**逐条一致**，
+  本分支未引入新失败，并修绿 1 项。前端 148 项 + `vue-tsc` 通过。
+- 真实库渲染报告：15198 项 / 完整 11376（74.9%）/ 部分 993 / 未读 2829。
+- 新增 `tests/shared/test_coverage_vocabulary.py`（12 项，含控制台标签表一致性守卫）、
+  `tests/test_nlp_model_guard.py`（5 项）等。
+
 ## 第五十批：页面自动刷新、列表筛选与排序、OCR 红头/涉密判定、平台更名（2026-09-24）
 
 用户要求：① 所有页面加间隔合理的自动刷新；② 列表加筛选与点击列标题升降序排序；
