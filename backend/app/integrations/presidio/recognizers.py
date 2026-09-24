@@ -86,27 +86,30 @@ def presidio_scan(text: str, language: str = "zh") -> list[dict[str, str]]:
     text. ``presidio_status()`` reports why the runtime path was skipped.
     """
     from app.core.config import settings
+    from app.core.nlp import build_analyzer
 
     if not settings.presidio_enabled:
         _record_status(False, False, "disabled_by_settings")
         return fallback_scan(text)
-    try:
-        from presidio_analyzer import AnalyzerEngine
-        from presidio_analyzer.nlp_engine import NlpEngineProvider
-    except Exception as exc:
-        _record_status(False, True, f"dependency_missing:{type(exc).__name__}")
+    # The engine is bound to ``settings.presidio_model`` and the model is never
+    # fetched here. This used to fall back to a bare ``AnalyzerEngine()``, whose
+    # default model is a 587 MB English wheel presidio installs on first use.
+    analyzer, reason = build_analyzer(
+        settings.presidio_model,
+        allow_download=settings.presidio_allow_model_download,
+        language=language,
+        registry_configuration={"recognizers": build_recognizers()},
+    )
+    if analyzer is None:
+        _record_status(False, True, reason)
         return fallback_scan(text)
     try:
-        provider = NlpEngineProvider(nlp_configuration={"nlp_engine_name": "spacy", "models": [{"lang_code": language, "model_name": "xx_ent_wiki_sm"}]})
-        analyzer = AnalyzerEngine(registry_configuration={"recognizers": build_recognizers()}, nlp_engine=provider.create_engine())
         results = analyzer.analyze(text=text, language=language)
-    except Exception:
-        try:
-            analyzer = AnalyzerEngine(registry_configuration={"recognizers": build_recognizers()})
-            results = analyzer.analyze(text=text, language="en")
-        except Exception as exc:
-            _record_status(False, True, f"analyzer_failed:{type(exc).__name__}")
-            return fallback_scan(text)
+    except Exception as exc:
+        # A language the pinned model cannot serve: the static pack still can,
+        # and it still says which of the two produced the record.
+        _record_status(False, True, f"analyzer_failed:{type(exc).__name__}")
+        return fallback_scan(text)
     _record_status(True, True, "")
     return [
         {

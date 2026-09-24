@@ -90,7 +90,19 @@ class Settings(BaseSettings):
     #: worker of their own: a segment backlog can no longer starve scans,
     #: collections or the capability heartbeat behind it.
     pcap_worker_queue: str = "pcap"
+    #: Runtime NLP recognizers. The model is pinned to a small multilingual one
+    #: on purpose: presidio's own default (``en_core_web_lg``) is a 587 MB
+    #: English-only wheel, and whichever model is named here is what presidio
+    #: installs behind the operator's back when it is missing (see
+    #: ``app/core/nlp.py``).
     presidio_enabled: bool = True
+    presidio_model: str = "xx_ent_wiki_sm"
+    #: Off by default. The delivery environment is offline, and a 587 MB pull
+    #: from GitHub in the middle of an analysis is neither an offline capability
+    #: nor something an audit can point at afterwards: it lands in the container
+    #: layer, where the storage guard does not measure it. Turn this on only for
+    #: a deliberate, attended model install.
+    presidio_allow_model_download: bool = False
     dlp_ignore_own_traffic: bool = True
     dlp_self_endpoints: str = ""
     alert_suppress_window_seconds: int = 300

@@ -338,17 +338,22 @@ def presidio_scan(text: str) -> list[dict[str, Any]]:
     tagged ``rule_source=presidio_runtime``; they never carry matched text.
     """
     from app.core.config import settings
+    from app.core.nlp import build_analyzer
 
     if not settings.presidio_enabled:
         _PRESIDIO_STATUS.update(available=False, enabled=False, reason="disabled_by_settings")
         return []
-    try:
-        from presidio_analyzer import AnalyzerEngine
-    except ImportError as exc:
-        _PRESIDIO_STATUS.update(available=False, enabled=True, reason=f"dependency_missing:{type(exc).__name__}")
+    # Never ``AnalyzerEngine()`` on its own: that constructor falls back to
+    # presidio's default model and downloads it when it is missing.
+    analyzer, reason = build_analyzer(
+        settings.presidio_model,
+        allow_download=settings.presidio_allow_model_download,
+        language="en",
+    )
+    if analyzer is None:
+        _PRESIDIO_STATUS.update(available=False, enabled=True, reason=reason)
         return []
     try:
-        analyzer = AnalyzerEngine()
         results = analyzer.analyze(text=text, language="en")
     except Exception as exc:
         _PRESIDIO_STATUS.update(available=False, enabled=True, reason=f"analyzer_failed:{type(exc).__name__}")
