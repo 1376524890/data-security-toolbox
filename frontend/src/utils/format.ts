@@ -68,11 +68,25 @@ const TERMINATION_LABELS: Record<string, string> = {
   unreadable: '内容无法读取',
   unconfigured: '未配置扫描范围',
   file_changed_during_read: '读取期间文件发生变化',
+  partial_scan: '未读完（达到扫描上限）',
+  row_budget_exceeded: '达到行数上限',
+  source_error: '读取来源出错',
+  unspecified: '未记录具体原因',
   // Content-level reasons a single file can carry (parsers and the sampler).
   sampled: '按头/中/尾采样',
   row_limit: '达到行数上限',
   line_truncated: '行内容被截断',
   binary_metadata_only: '二进制文件仅登记元数据',
+  unsupported_format: '格式不支持解析',
+  file_too_large: '文件超过解析上限',
+  scoped: '仅按范围指纹识别',
+  // OCR: a scanned document is either read by the toolchain, or the toolchain
+  // is missing, or it raised - three different answers an operator must tell
+  // apart, because only the first one means the content was looked at.
+  ocr_read: '经 OCR 补读（原无文本层）',
+  ocr_unavailable: 'OCR 工具链缺失',
+  ocr_error: 'OCR 识别出错',
+  render_failed: '页面渲染失败',
 }
 
 /** The per-file coverage verdict that sits next to the reason above. */
@@ -80,6 +94,7 @@ const COVERAGE_LABELS: Record<string, string> = {
   complete: '内容完整',
   partial: '部分内容',
   unsupported: '未解析内容',
+  unavailable: '缺少工具链',
   failed: '读取失败',
 }
 
