@@ -44,6 +44,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.list_sort import resolve_order
 from app.api.pagination import page_response
 from app.api.runtime_status import engine_rule_counts, merge_capability, read_worker_capabilities
 from app.application.analysis import upsert_incident
@@ -55,6 +56,7 @@ from app.engine.risk_engine.engine import RiskEngine
 from app.incident_engine.engine import IncidentEngine
 from app.integrations import integration_registry
 from app.integrations.offline_manager import (
+    LOCAL_CVE_SORTABLE,
     import_offline_path,
     import_uploaded_offline,
     list_local_cves,
@@ -202,20 +204,32 @@ def offline_resources(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
 @router.get("/offline/cves")
 def offline_cves(
     search: str | None = None,
+    severity: str | None = None,
+    source: str | None = None,
+    order_by: str | None = None,
     limit: int = Query(100, ge=1, le=1000),
     page: int | None = Query(None, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> Any:
+    if order_by:
+        resolve_order(order_by, LOCAL_CVE_SORTABLE, default="cvss_score")
     # Keep the legacy array contract for existing integrations.
     if page is None:
-        return list_local_cves(db, search or "", limit)
+        return list_local_cves(db, search or "", limit, severity=severity, source=source,
+                               order_by=order_by)
     query = select(func.count()).select_from(LocalCve)
     if search:
         query = query.where(LocalCve.cve_id.ilike(f"%{search}%"))
+    if severity:
+        query = query.where(LocalCve.severity == severity)
+    if source:
+        query = query.where(LocalCve.source == source)
     total = db.scalar(query) or 0
     return page_response(
-        list_local_cves(db, search or "", page_size, (page - 1) * page_size), page, page_size, total
+        list_local_cves(db, search or "", page_size, (page - 1) * page_size,
+                        severity=severity, source=source, order_by=order_by),
+        page, page_size, total,
     )
 
 

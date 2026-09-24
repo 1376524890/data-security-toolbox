@@ -8,7 +8,7 @@
 
 ## 项目名称
 
-数据安全工具箱（Data Security Toolbox）。完整仓库在 `00-数据安全工具箱/source/`，git 仓库根目录就是 `source/`。
+数据安全监测检测工具箱（原名 Data Security Toolbox）。完整仓库在 `00-数据安全工具箱/source/`，git 仓库根目录就是 `source/`。
 本文档及 `TASK.md` / `PROJECT_STATUS.md` 中的相对路径均相对 `source/`。
 
 ## 项目用途

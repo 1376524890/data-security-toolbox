@@ -11,7 +11,7 @@ import { useNetworkAssets } from './composables/useNetworkAssets'
 // answer) lives in the composable.
 const {
   loading, error, items, summary, total, page, pageSize, filters, drawer, selected,
-  cves, emptyCveReason, load, search, setPage, open,
+  cves, emptyCveReason, load, search, setPage, open, onSortChange,
 } = useNetworkAssets()
 
 function confirmedLabel(row: { confirmed: boolean }): string {
@@ -50,21 +50,21 @@ function confirmedLabel(row: { confirmed: boolean }): string {
 
       <div class="soc-card" style="margin-top: 12px">
         <div class="soc-card-title"><span class="dot danger" />端口扫描与漏洞匹配</div>
-        <el-table :data="items" size="small" @row-click="open">
-          <el-table-column prop="ip" label="IP" width="140" />
-          <el-table-column prop="port" label="端口" width="80" />
-          <el-table-column prop="service" label="服务" width="110" />
+        <el-table :data="items" size="small" @row-click="open" @sort-change="onSortChange">
+          <el-table-column prop="ip" label="IP" width="140" sortable="custom" />
+          <el-table-column prop="port" label="端口" width="90" sortable="custom" />
+          <el-table-column prop="service" label="服务" width="110" sortable="custom" />
           <el-table-column label="指纹（产品 / 版本）" min-width="220">
             <template #default="{ row }">
               <span v-if="row.product || row.version">{{ row.product || '-' }} {{ row.version }}</span>
               <span v-else class="muted">未识别</span>
             </template>
           </el-table-column>
-          <el-table-column prop="source" label="来源" width="130" />
-          <el-table-column label="端口风险" width="100">
+          <el-table-column prop="source" label="来源" width="130" sortable="custom" />
+          <el-table-column label="端口风险" width="100" sortable="custom" prop="risk_level">
             <template #default="{ row }"><RiskBadge :level="row.risk_level" /></template>
           </el-table-column>
-          <el-table-column label="CVE 命中" min-width="280">
+          <el-table-column prop="cve_count" label="CVE 命中" min-width="280" sortable="custom">
             <template #default="{ row }">
               <el-tag v-for="cve in row.cves.slice(0, 4)" :key="cve.rule_id" size="small"
                       :type="cve.confirmed ? 'danger' : 'info'" style="margin: 2px">
@@ -74,7 +74,7 @@ function confirmedLabel(row: { confirmed: boolean }): string {
               <span v-else-if="!row.cve_count" class="muted">未命中</span>
             </template>
           </el-table-column>
-          <el-table-column prop="last_seen" label="最近发现" width="160">
+          <el-table-column prop="last_seen" label="最近发现" width="170" sortable="custom">
             <template #default="{ row }">{{ formatDateTime(row.last_seen) }}</template>
           </el-table-column>
         </el-table>

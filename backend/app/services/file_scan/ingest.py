@@ -1,12 +1,13 @@
 """Persist remote files and bounded evidence with the shared data-object writer."""
 import hashlib
+from typing import Any
 from sqlalchemy import select
 from app.models import AssetInstance, DataObject
 from app.services import sensitive_engine, sensitivity_map
 from app.services import fingerprint_candidates
 from app.services.data_objects.evidence import _evidence_rows, _merge_detection
 from app.services.data_objects.persistence import _get_or_create, recount_object
-from shared.scanning import magic
+from shared.scanning import document_types, magic, ocr
 from shared.scanning.budget import ScanBudget
 from shared.scanning.parsers import parse_file
 
@@ -29,6 +30,22 @@ def analyze(path, limits=None):
     blocks = [(parsed.text, '', '')] if parsed.text else []
     for sheet in parsed.sheets:
         blocks.extend((column.sample_text(), column.name, sheet.name) for column in sheet.columns)
+    # A scanned PDF or a photographed 公文 reaches this point as "binary": there
+    # is no text layer for the parser to read, so it used to be listed and never
+    # examined. OCR is what turns "listed but uninspected" into an inspected
+    # document; its text then goes through the same sensitive scan as any other
+    # block, and the document type rides along for the asset row.
+    ocr_status: dict[str, Any] = {}
+    document_signals: list[dict[str, Any]] = []
+    if kind.kind == magic.KIND_BINARY:
+        result = ocr.extract(path, budget=budget)
+        ocr_status = {'coverage': result.coverage, 'pages': result.pages, 'reason': result.reason}
+        if result.text:
+            blocks.append((result.text, '', ''))
+        if result.text or result.layout:
+            document_signals = [
+                item.to_dict() for item in document_types.classify(result.text, result.layout)
+            ]
     hits, counts = [], {}
     for text, field, sheet in blocks:
         for hit in sensitive_engine.scan_engine().scan(sensitive_engine.SensitiveDetectionContext(
@@ -42,9 +59,12 @@ def analyze(path, limits=None):
                          'matches': [dict(item) for item in hit.matches],
                          'evidence': [item.to_dict() for item in hit.evidence][:32]})
     coverage = parsed.coverage if kind.kind != magic.KIND_BINARY else 'unsupported'
-    return {'hits': hits, 'counts': counts, 'coverage': coverage,
-            'reason': parsed.termination_reason if coverage != 'unsupported' else 'binary_metadata_only',
-            'rows': parsed.rows_read}
+    reason = parsed.termination_reason if coverage != 'unsupported' else 'binary_metadata_only'
+    if ocr_status.get('coverage') in {'complete', 'partial'}:
+        # The document was read after all, through OCR.
+        coverage, reason = 'partial', 'ocr_read'
+    return {'hits': hits, 'counts': counts, 'coverage': coverage, 'reason': reason,
+            'rows': parsed.rows_read, 'ocr': ocr_status, 'document_signals': document_signals}
 
 
 def store(db, source, task, remote_path, size, scan, now):
@@ -79,9 +99,15 @@ def store(db, source, task, remote_path, size, scan, now):
         db, sha256=digest, path=remote_path, name=instance.name, source_name=source.name,
         level=sensitivity_map.worst_level(instance.categories), severity=instance.sensitivity,
         task_id=task.id)
-    instance.extra = {**(instance.extra or {}), 'source_name': source.name, 'host': source.host,
-                      'source_id': source.id, 'protocol': source.protocol,
-                      'last_change': 'new' if created else 'changed' if previous and digest and previous != digest else 'unchanged'}
+    extra = {**(instance.extra or {}), 'source_name': source.name, 'host': source.host,
+             'source_id': source.id, 'protocol': source.protocol,
+             'last_change': 'new' if created else 'changed' if previous and digest and previous != digest else 'unchanged'}
+    if scan.get('ocr') or scan.get('document_signals'):
+        # The recognised text is already inside the sensitive scan; only the
+        # coverage and the document type are stored, never the text itself.
+        extra['ocr'] = scan.get('ocr') or {}
+        extra['document_signals'] = scan.get('document_signals') or []
+    instance.extra = extra
     db.flush()
     rows = _evidence_rows({'evidence': {'hits': scan['hits']}})
     for category in categories:

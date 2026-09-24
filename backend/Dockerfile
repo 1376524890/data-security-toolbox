@@ -6,10 +6,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Debian 13 (trixie) renamed libpcap0.8 -> libpcap0.8t64, so use the new name.
 # libpangoft2 / harfbuzz / fontconfig are runtime deps of WeasyPrint.
+# tesseract + poppler are the OCR stack (shared/scanning/ocr.py): a scanned PDF
+# or a photographed 公文 is rasterised with pdftoppm and read with chi_sim, which
+# is the only way the data engine can inspect a document that has no text layer.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libpcap0.8t64 libxml2-dev libxslt1-dev libcairo2 libpango-1.0-0 libpangocairo-1.0-0 \
-    libpangoft2-1.0-0 libgdk-pixbuf-2.0-0 libharfbuzz0b libfontconfig1 fonts-noto-cjk tshark && \
+    libpangoft2-1.0-0 libgdk-pixbuf-2.0-0 libharfbuzz0b libfontconfig1 fonts-noto-cjk tshark \
+    tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng poppler-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # The build context is the repository root so the shared detection package

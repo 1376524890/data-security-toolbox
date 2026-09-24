@@ -13,9 +13,9 @@ import { useEgressDetail } from './composables/useEgressDetail'
 // packets behind it. All state (including the packet paging of the selected
 // flow) lives in the composable.
 const {
-  loading, error, data, transfers, buckets, regions, rules, policy, sensitiveCount,
-  selected, drawer, packets, packetTotal, packetsLoading, packetsNote, detail,
-  load, open, loadPackets, openPacket, matchedValues,
+  loading, error, data, transfers, visibleTransfers, filters, buckets, regions, rules, policy,
+  sensitiveCount, selected, drawer, packets, packetTotal, packetsLoading, packetsNote, detail,
+  load, open, loadPackets, openPacket, matchedValues, onSortChange,
 } = useEgressDetail()
 
 const bucketLabels: Record<string, string> = {
@@ -69,9 +69,15 @@ function flowText(row: { src_ip: string; src_port: number; dst_ip: string; dst_p
           共 {{ transfers.length }} 个对象，其中 {{ sensitiveCount }} 个命中敏感规则，
           {{ outgoing.length }} 个为可判定外发；点击行可查看具体流量、报文与命中的规则原文。
         </div>
-        <el-table :data="transfers" size="small" max-height="440" @row-click="open">
-          <el-table-column prop="pcap_id" label="抓包" width="80" />
-          <el-table-column prop="filename" label="对象" min-width="150" show-overflow-tooltip />
+        <div class="toolbar">
+          <el-input v-model="filters.search" clearable placeholder="对象 / IP / 类型 / 地区" style="width: 220px" />
+          <el-checkbox v-model="filters.sensitive_only">只看命中的</el-checkbox>
+          <el-checkbox v-model="filters.outgoing_only">只看外发</el-checkbox>
+          <span class="muted">当前显示 {{ visibleTransfers.length }} / {{ transfers.length }} 个对象</span>
+        </div>
+        <el-table :data="visibleTransfers" size="small" max-height="440" @row-click="open" @sort-change="onSortChange">
+          <el-table-column prop="pcap_id" label="抓包" width="90" sortable="custom" />
+          <el-table-column prop="filename" label="对象" min-width="150" show-overflow-tooltip sortable="custom" />
           <el-table-column label="流量" min-width="230">
             <template #default="{ row }"><span class="mono">{{ flowText(row) }}</span></template>
           </el-table-column>
@@ -97,7 +103,7 @@ function flowText(row: { src_ip: string; src_port: number; dst_ip: string; dst_p
               <span v-if="!row.rule_ids.length" class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column prop="size" label="字节" width="90" />
+          <el-table-column prop="size" label="字节" width="100" sortable="custom" />
           <el-table-column label="对应文件" min-width="160">
             <template #default="{ row }">
               <el-tag v-if="row.file_bound" size="small" type="success">

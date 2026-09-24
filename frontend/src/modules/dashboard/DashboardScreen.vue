@@ -56,7 +56,7 @@ const drawerOpen = ref(false)
 // The tab title is chrome a projector still shows, and index.html carries the
 // console's generic one. Set it here so leaving the screen restores it.
 const consoleTitle = document.title
-onMounted(() => { document.title = '数据安全态势大屏 · 数据安全工具箱' })
+onMounted(() => { document.title = '数据安全态势大屏 · 数据安全监测检测工具箱' })
 onBeforeUnmount(() => { document.title = consoleTitle })
 
 const flowSeries = computed(() => (['internal', 'external', 'unknown'] as const).map((key) => ({
@@ -181,7 +181,7 @@ const sensitiveText = computed(() => {
       </div>
 
       <footer class="ds-footer">
-        <span>数据安全工具箱 · 让数据更安全 · 让业务更可信</span>
+        <span>数据安全监测检测工具箱 · 让数据更安全 · 让业务更可信</span>
         <span v-if="loading" class="ds-foot-note">数据加载中…</span>
         <span v-else-if="staleError" class="ds-foot-note bad">刷新失败：{{ staleError }}</span>
         <span v-else class="ds-foot-note">数据更新于 {{ updatedText }} · 每 30 秒自动刷新</span>

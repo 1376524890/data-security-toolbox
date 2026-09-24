@@ -152,7 +152,7 @@ onBeforeUnmount(() => {
         <div class="brand">
           <div class="brand-logo">D</div>
           <div v-if="!collapsed">
-            <div class="brand-name">Data Security Toolbox</div>
+            <div class="brand-name">数据安全监测检测工具箱</div>
             <div class="brand-sub">SOC · NDR · 数据安全</div>
           </div>
         </div>

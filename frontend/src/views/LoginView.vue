@@ -32,7 +32,7 @@ async function submit(): Promise<void> {
       <div class="brand">
         <div class="brand-logo">D</div>
         <div>
-          <div class="brand-name">Data Security Toolbox</div>
+          <div class="brand-name">数据安全监测检测工具箱</div>
           <div class="brand-sub">SOC · NDR · DATA SECURITY</div>
         </div>
       </div>

@@ -27,7 +27,7 @@ const {
   evidenceDialog, alertEvidence, streamDialog, streamData, streamLoading, packetLayers, packetHex,
   packetText, extractionLimited, selectedTcpStream, applicationProtocols, dnsColumns, httpColumns,
   tlsColumns, load, openPcap, runAnalyze, handleUpload, selectPacket, loadPackets, showFile,
-  followStream, reset, back, closeFileDialog,
+  followStream, reset, back, closeFileDialog, onSortChange,
 } = usePcapWorkbench()
 </script>
 
@@ -46,13 +46,13 @@ const {
         <span class="text-muted">共 {{ total }} 个 PCAP</span>
       </div>
       <StateBox :loading="loading" :error="error" :empty="!items.length" @retry="load">
-        <el-table :data="items" size="small" @row-click="openPcap">
-          <el-table-column prop="filename" label="文件" min-width="200" show-overflow-tooltip />
-          <el-table-column label="大小" width="100"><template #default="{ row }">{{ formatBytes(row.size) }}</template></el-table-column>
-          <el-table-column label="包数" width="90"><template #default="{ row }">{{ row.total_packet_count ?? row.packet_count }}</template></el-table-column>
-          <el-table-column label="时长" width="90"><template #default="{ row }">{{ formatDuration(row.duration) }}</template></el-table-column>
-          <el-table-column label="捕获时间" width="160"><template #default="{ row }">{{ formatDateTime(row.capture_start) }}</template></el-table-column>
-          <el-table-column prop="status" label="状态" width="110" />
+        <el-table :data="items" size="small" @row-click="openPcap" @sort-change="onSortChange">
+          <el-table-column prop="filename" label="文件" min-width="200" show-overflow-tooltip sortable="custom" />
+          <el-table-column prop="size" label="大小" width="110" sortable="custom"><template #default="{ row }">{{ formatBytes(row.size) }}</template></el-table-column>
+          <el-table-column prop="total_packet_count" label="包数" width="100" sortable="custom"><template #default="{ row }">{{ row.total_packet_count ?? row.packet_count }}</template></el-table-column>
+          <el-table-column prop="duration" label="时长" width="100" sortable="custom"><template #default="{ row }">{{ formatDuration(row.duration) }}</template></el-table-column>
+          <el-table-column prop="capture_start" label="捕获时间" width="170" sortable="custom"><template #default="{ row }">{{ formatDateTime(row.capture_start) }}</template></el-table-column>
+          <el-table-column prop="status" label="状态" width="120" sortable="custom" />
           <el-table-column label="操作" width="140"><template #default="{ row }"><el-button size="small" @click.stop="runAnalyze(row)">分析</el-button><el-button size="small" type="primary" @click.stop="openPcap(row)">打开</el-button></template></el-table-column>
         </el-table>
         <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="filters.page_size" :current-page="filters.page" @current-change="(p: number) => { filters.page = p; load() }" />

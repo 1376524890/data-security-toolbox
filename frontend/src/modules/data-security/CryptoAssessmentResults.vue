@@ -8,6 +8,11 @@
  * asset side — before, it could only be read by opening the task's drawer in
  * 任务中心, which is not where an operator looks for an assessment result.
  *
+ * 资产常驻 is the primary table: one row per host, folded across every loaded
+ * task, so an operator reads each asset's standing verdict instead of having to
+ * remember which 检查任务 observed it. The task table below stays as the record
+ * of how the facts were collected.
+ *
  * All state lives in ``composables/useCryptoAssessmentResults``; this view keeps
  * the layout, the Element Plus bindings and the time formatting.
  */
@@ -18,8 +23,18 @@ import { useCryptoAssessmentResults } from './composables/useCryptoAssessmentRes
 
 const {
   rows, taskTotal, page, pageSize, loading, error, selectedId, selected, selectedProfiles,
-  load, setPage,
+  assets, visibleAssets, assetTotal, assetFilters, assetTable, selectedHost, selectAsset,
+  panelProfiles, panelTitle,
+  load, setPage, onSortChange,
 } = useCryptoAssessmentResults()
+
+/** A level is a verdict, not a severity: colour it by the verdict it states. */
+function levelTone(level: string): 'success' | 'info' | 'warning' | 'danger' {
+  if (level === '合规') return 'success'
+  if (level === '基本合规') return 'info'
+  if (level === '部分合规') return 'warning'
+  return 'danger'
+}
 
 function formatDateTime(value: string): string {
   if (!value) return '—'
@@ -27,8 +42,15 @@ function formatDateTime(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
+function onAssetRowClick(row: { host: string }): void {
+  selectAsset(row.host)
+}
+
+// The reverse of `selectAsset`: opening a run's hosts drops the asset pick, so
+// the single panel below always belongs to the row the operator last clicked.
 function onRowClick(row: { id: number }): void {
   selectedId.value = row.id
+  selectedHost.value = ''
 }
 
 onMounted(load)
@@ -43,23 +65,50 @@ onMounted(load)
         <div>
           <strong>密码评估</strong>
           <div class="muted">
-            共 {{ taskTotal }} 条检查任务，其中 {{ rows.length }} 条在当前页含密码评估结果。
+            当前页 {{ assets.length }} 个资产有常驻评估结果（来源 {{ rows.length }} 条含密码评估的检查任务，
+            服务端共 {{ taskTotal }} 条检查任务）。同一主机被多次观测时取最新一次，
             评估在浏览器内按 GB/T 39786 / GM/T 系列执行，服务端只保存扫描观测到的算法、套件、协议与密钥事实。
           </div>
         </div>
       </div>
 
-      <div class="section-title">已有密码评估的检查任务</div>
+      <div class="section-title">按资产常驻结果（{{ assetTotal }} 个资产）</div>
+      <div class="toolbar" style="margin-bottom: 10px">
+        <el-input v-model="assetFilters.search" clearable placeholder="主机 / 目标 / 结论" style="width: 240px" />
+        <span class="muted">显示 {{ visibleAssets.length }} / {{ assetTotal }} 个资产</span>
+      </div>
+      <el-table :data="visibleAssets" size="small" highlight-current-row
+                :current-row-key="selectedHost || undefined" row-key="host"
+                @row-click="onAssetRowClick"
+                @sort-change="assetTable.onSortChange">
+        <el-table-column prop="host" label="资产 / 主机" min-width="160" show-overflow-tooltip sortable="custom" />
+        <el-table-column prop="target" label="扫描目标" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="level" label="结论" width="110" sortable="custom">
+          <template #default="{ row }">
+            <el-tag size="small" :type="levelTone(row.level)">{{ row.level }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="overallScore" label="总分" width="90" sortable="custom" />
+        <el-table-column prop="violations" label="不符合项" width="100" sortable="custom" />
+        <el-table-column prop="taskId" label="来源任务" width="100">
+          <template #default="{ row }">#{{ row.taskId }}</template>
+        </el-table-column>
+        <el-table-column prop="observedAt" label="最近观测" width="180">
+          <template #default="{ row }">{{ formatDateTime(row.observedAt) }}</template>
+        </el-table-column>
+      </el-table>
+
+      <div class="section-title">已有密码评估的检查任务（观测来源）</div>
       <el-table :data="rows" size="small" highlight-current-row
                 :current-row-key="selectedId ?? undefined" row-key="id"
-                @row-click="onRowClick">
-        <el-table-column prop="id" label="任务" width="90" />
+                @row-click="onRowClick" @sort-change="onSortChange">
+        <el-table-column prop="id" label="任务" width="100" sortable="custom" />
         <el-table-column prop="target" label="目标" min-width="160" show-overflow-tooltip />
         <el-table-column label="评估主机" width="100">
           <template #default="{ row }">{{ row.hostCount }}</template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="110" />
-        <el-table-column label="完成时间" width="180">
+        <el-table-column prop="status" label="状态" width="120" sortable="custom" />
+        <el-table-column prop="finished_at" label="完成时间" width="180" sortable="custom">
           <template #default="{ row }">{{ formatDateTime(row.finishedAt) }}</template>
         </el-table-column>
       </el-table>
@@ -72,11 +121,9 @@ onMounted(load)
         <el-button size="small" @click="load">刷新</el-button>
       </div>
 
-      <template v-if="selected">
-        <div class="section-title">任务 #{{ selected.id }} 观测结果</div>
-        <CryptoAssessmentPanel
-          :profiles="selectedProfiles"
-          :title="`${selected.target || '#' + selected.id} 网络扫描观测结果（商用密码应用安全性评估，GB/T 39786 / GM/T）`" />
+      <template v-if="panelTitle">
+        <div class="section-title">评估结果</div>
+        <CryptoAssessmentPanel :profiles="panelProfiles" :title="panelTitle" />
       </template>
     </StateBox>
   </div>

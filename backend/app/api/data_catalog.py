@@ -28,7 +28,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
@@ -57,8 +57,23 @@ OBJECT_SORTABLE = {'id': DataObject.id, 'size': DataObject.size,
                    'instance_count': DataObject.instance_count,
                    'last_seen_at': DataObject.last_seen_at,
                    'identity_confidence': DataObject.identity_confidence}
+#: Severity is stored as a word, so an alphabetical sort would put Critical
+#: below Low. This ranks the four published levels so "highest risk first" is a
+#: real order rather than a spelling order.
+SEVERITY_RANK = case(
+    (AssetInstance.sensitivity == 'Critical', 4),
+    (AssetInstance.sensitivity == 'High', 3),
+    (AssetInstance.sensitivity == 'Medium', 2),
+    else_=1,
+)
 INSTANCE_SORTABLE = {'id': AssetInstance.id, 'size': AssetInstance.size,
-                     'path': AssetInstance.path, 'last_seen_at': AssetInstance.last_seen_at,
+                     'path': AssetInstance.path, 'name': AssetInstance.name,
+                     'last_seen_at': AssetInstance.last_seen_at,
+                     'first_seen_at': AssetInstance.first_seen_at,
+                     'sensitivity': AssetInstance.sensitivity,
+                     'severity': SEVERITY_RANK, 'coverage': AssetInstance.coverage,
+                     'source_kind': AssetInstance.source_kind,
+                     'instance_type': AssetInstance.instance_type,
                      'status': AssetInstance.status}
 DETECTION_SORTABLE = {'id': Detection.id, 'confidence': Detection.confidence,
                       'hit_count': Detection.hit_count, 'last_seen_at': Detection.last_seen_at,
@@ -271,7 +286,7 @@ def data_object_detections(object_id: int, page: int = Query(1, ge=1),
 def list_asset_instances(probe_id: int | None = None, object_id: int | None = None,
                          status: str | None = None, category: str | None = None,
                          instance_type: str | None = None, search: str | None = None,
-                         source_kind: str | None = None,
+                         source_kind: str | None = None, severity: str | None = None,
                          task_id: int | None = None,
                          owner_key: str | None = None, sensitive_only: bool = False,
                          order_by: str | None = None, page: int = Query(1, ge=1),
@@ -317,6 +332,8 @@ def list_asset_instances(probe_id: int | None = None, object_id: int | None = No
         query = query.where(AssetInstance.instance_type == instance_type)
     if source_kind:
         query = query.where(AssetInstance.source_kind == str(source_kind).lower())
+    if severity:
+        query = query.where(AssetInstance.sensitivity == severity)
     if category:
         query = query.where(AssetInstance.categories.contains([str(category).lower()]))
     if search:

@@ -22,9 +22,9 @@ function onChange(name: string): void {
 }
 
 const {
-  loading, error, transfers, coverage, enabled, busy, selected, drawer, binary, binaryError,
-  binaryLoading, riskyCount, fileBoundCount, matchedText, alertable, load, toggleRuleSet,
-  openTransfer,
+  loading, error, transfers, visibleTransfers, filters, coverage, enabled, busy, selected,
+  drawer, binary, binaryError, binaryLoading, riskyCount, fileBoundCount, matchedText,
+  alertable, load, toggleRuleSet, openTransfer, onSortChange,
 } = useFlowReport()
 </script>
 
@@ -39,11 +39,14 @@ const {
           <span class="muted">规则集</span>
           <el-switch :model-value="enabled" :loading="busy" @change="(v: boolean | string | number) => toggleRuleSet(Boolean(v))" />
           <span class="muted">（规则配置在「采集与规则」）</span>
-          <el-button @click="load">刷新</el-button>
+          <el-input v-model="filters.search" clearable placeholder="文件名 / IP / 类型" style="width: 220px" />
+          <el-checkbox v-model="filters.risky_only">只看风险对象</el-checkbox>
+          <el-button @click="load()">刷新</el-button>
         </div>
         <StateBox :loading="loading" :error="error" :empty="false" @retry="load">
           <div class="stat-grid cols-5">
-            <StatCard label="传输对象" :value="transfers.length" sub="已分析的抓包对象" />
+            <StatCard label="传输对象" :value="visibleTransfers.length"
+                      :sub="filters.search || filters.risky_only ? `筛选前 ${transfers.length} 个` : '已分析的抓包对象'" />
             <StatCard label="风险对象" :value="riskyCount" sub="命中规则集且达置信度" tone="danger" />
             <StatCard label="命中对象" :value="transfers.filter((t) => t.matches.length).length" tone="warning" />
             <StatCard label="绑定文件" :value="fileBoundCount" sub="内容与已盘点文件一致" />
@@ -51,13 +54,13 @@ const {
           </div>
           <div class="soc-card" style="margin-top: 12px">
             <div class="soc-card-title"><span class="dot danger" />传输对象与命中</div>
-            <el-table :data="transfers" size="small" @row-click="openTransfer">
-              <el-table-column prop="pcap_id" label="PCAP" width="70" />
-              <el-table-column prop="filename" label="对象 / 文件" min-width="160" show-overflow-tooltip />
+            <el-table :data="visibleTransfers" size="small" @row-click="openTransfer" @sort-change="onSortChange">
+              <el-table-column prop="pcap_id" label="PCAP" width="80" sortable="custom" />
+              <el-table-column prop="filename" label="对象 / 文件" min-width="160" show-overflow-tooltip sortable="custom" />
               <el-table-column label="方向" min-width="220">
                 <template #default="{ row }">{{ row.src_ip }}:{{ row.src_port }} → {{ row.dst_ip }}:{{ row.dst_port }}</template>
               </el-table-column>
-              <el-table-column prop="size" label="字节" width="90" />
+              <el-table-column prop="size" label="字节" width="100" sortable="custom" />
               <el-table-column label="完整性" width="110">
                 <template #default="{ row }">{{ row.complete ? '完整' : '部分 / 未确认' }}</template>
               </el-table-column>

@@ -28,6 +28,11 @@ def _builtin_patterns() -> dict[str, Any]:
 
 REGEX_RULES = _builtin_patterns()
 
+# ``_builtin_patterns`` above already put the ``shared`` package on ``sys.path``
+# (app.services.sensitive_engine bootstraps it), so the shared OCR and
+# document-type classifier import here exactly as the probe would see them.
+from shared.scanning import document_types  # noqa: E402
+
 # Entity families behind the two file/text findings, and the confidence a hit
 # must reach before it may raise one. The threshold is the platform-wide alert
 # confidence so DLP and the file engine cannot disagree about what is "real".
@@ -69,6 +74,11 @@ SCAN_PARTIAL = "partial"
 SCAN_UNSUPPORTED = "unsupported"
 SCAN_FAILED = "failed"
 
+# Findings raised from the document-type signals of OCR'd images and scanned
+# PDFs. They are declared in app/rules/builtin.py like every other code rule.
+CLASSIFIED_RULE_ID = "DATA_CLASSIFIED_001"
+REDHEAD_RULE_ID = "DATA_REDHEAD_001"
+
 
 def _docx_text(path: Path) -> str:
     """Extract paragraphs from a .docx without an optional third-party parser."""
@@ -84,6 +94,56 @@ def _docx_text(path: Path) -> str:
         for paragraph in root.iter(f"{namespace}p")
     ]
     return "\n".join(paragraphs)
+
+
+def classify_document(text: str, layout: dict[str, Any]) -> list[Any]:
+    """Document-type signals for one document, or none.
+
+    A filing that trips the classifier is a missing finding, not a failed scan,
+    so the shared classifier is called defensively.
+    """
+    if not text and not layout:
+        return []
+    try:
+        return document_types.classify(text, layout)
+    except Exception:
+        return []
+
+
+def _ocr_document(path: Path, *, reason: str) -> tuple[str, dict[str, Any]]:
+    """Read an image or a scanned PDF through the bounded shared OCR stack.
+
+    Coverage is reported, never assumed: a missing toolchain, a too-large file
+    or a failed render comes back as ``unsupported``/``failed`` so the file is
+    not listed as inspected when it was not. The page layout travels with the
+    status as well, because a 红头文件's red band only exists as colour.
+    """
+    from shared.scanning import ocr
+
+    result = ocr.extract(path)
+    ocr_status = {"coverage": result.coverage, "pages": result.pages, "reason": result.reason}
+    base: dict[str, Any] = {
+        "format": path.suffix.lower(), "chars": len(result.text),
+        "truncated": False, "ocr": ocr_status, "layout": result.layout,
+    }
+    if result.ok:
+        status = SCAN_COMPLETE if result.coverage == ocr.COVERAGE_COMPLETE else SCAN_PARTIAL
+        return result.text, {**base, "status": status, "reason": ""}
+    if result.coverage in {ocr.COVERAGE_UNSUPPORTED, ocr.COVERAGE_UNAVAILABLE}:
+        return "", {**base, "status": SCAN_UNSUPPORTED, "reason": result.reason or reason}
+    return "", {**base, "status": SCAN_FAILED, "reason": result.reason or "ocr_failed"}
+
+
+def _ocr_supported(suffix: str) -> bool:
+    from shared.scanning import ocr
+
+    return ocr.supported(suffix)
+
+
+def _signal_severity(items: list[Any], fallback: str) -> str:
+    """Highest severity carried by the document signals, never invented."""
+    ranked = max(items, key=lambda item: _SEVERITY_RANK.get(item.severity, 0), default=None)
+    return ranked.severity if ranked and ranked.severity in _SEVERITY_RANK else fallback
 
 
 def extract_document(path: Path) -> tuple[str, dict[str, Any]]:
@@ -138,11 +198,16 @@ def extract_document(path: Path) -> tuple[str, dict[str, Any]]:
             return "", {"status": SCAN_FAILED, "format": ".pdf", "chars": 0,
                         "truncated": False, "reason": type(exc).__name__}
         if not text.strip():
-            # A scanned PDF has no text layer; it was not checked, so it is not clean.
-            return "", {"status": SCAN_UNSUPPORTED, "format": ".pdf", "chars": 0,
-                        "truncated": False, "reason": "no_text_layer"}
+            # A scanned PDF has no text layer. Rasterise and read it before
+            # calling it uninspected: a scanned 公文 is exactly the document this
+            # platform exists to find.
+            return _ocr_document(path, reason="no_text_layer")
         return text, {"status": SCAN_COMPLETE, "format": ".pdf", "chars": len(text),
                       "truncated": False, "reason": ""}
+    if _ocr_supported(suffix):
+        # An image is a document too: a photographed 红头文件 or a screenshot of a
+        # spreadsheet carries the same data as its source.
+        return _ocr_document(path, reason="unsupported_format")
     return "", {"status": SCAN_UNSUPPORTED, "format": suffix, "chars": 0,
                 "truncated": False, "reason": "unsupported_format"}
 
@@ -335,6 +400,12 @@ class DataEngine(DetectionEngine):
                 "presidio_status": presidio_status(),
                 "yara": yara_matches[:50],
             }
+            # Recognised text (including OCR'd pages) plus the page layout name
+            # the document's type; the signals travel in the evidence so an
+            # operator can see why a 红头/涉密 finding fired.
+            signals = classify_document(text, text_status.get("layout") or {})
+            if signals:
+                evidence["document_signals"] = [item.to_dict() for item in signals]
             columns = infer_columns(text, path.name)
             # The capture is evidence for network analysis, not a business document.
             # Keep YARA/findings below; extracted files can still become assets.
@@ -351,6 +422,28 @@ class DataEngine(DetectionEngine):
                     "sensitivity": "High" if has_confirmed else ("Unknown" if has_candidate else "Low"),
                     "source": path.name,
                     "columns": columns,
+                })
+            elif not capture_container and (text_status.get("ocr") or {}).get("coverage"):
+                # An OCR'd image/scanned PDF is inventoried with what the read
+                # actually covered, so "we looked and found nothing" and "we could
+                # not read it" stay distinguishable in the asset list.
+                strongest = document_types.strongest(signals)
+                context.data.setdefault("data_assets", []).append({
+                    "name": path.name,
+                    "asset_type": "file",
+                    # A read that did not happen is "Unknown", never "Low": the
+                    # point of the status column is that uninspected is visible.
+                    "sensitivity": (
+                        "Unknown" if text_status["status"] in {SCAN_FAILED, SCAN_UNSUPPORTED}
+                        else "High" if any(
+                            item.severity in {"Critical", "High"} for item in signals
+                        ) else "Low"
+                    ),
+                    "source": path.name,
+                    "scan_status": text_status["status"],
+                    "scan_reason": text_status.get("reason", ""),
+                    "ocr_coverage": text_status["ocr"].get("coverage", ""),
+                    "document_type": strongest.label if strongest else "",
                 })
             elif not capture_container and text_status["status"] in {SCAN_FAILED, SCAN_UNSUPPORTED}:
                 # Say the file was not inspected instead of letting an empty scan
@@ -403,6 +496,31 @@ class DataEngine(DetectionEngine):
                     confidence=0.9,
                     evidence=evidence,
                     recommendation="根据 YARA 规则检查文件来源、作者和是否包含恶意/敏感内容。",
+                ).normalize())
+            classified = [item for item in signals if item.kind == document_types.SIGNAL_CLASSIFIED]
+            if classified:
+                findings.append(DetectionResult(
+                    engine=self.name,
+                    rule_id=CLASSIFIED_RULE_ID,
+                    severity=_signal_severity(classified, "High"),
+                    confidence=max(item.confidence for item in classified),
+                    evidence=evidence,
+                    recommendation="按涉密载体管理处置：登记密级与知悉范围、限制流转、清除"
+                                   "未受控副本，并核对文件为何出现在该位置。",
+                ).normalize())
+            official = [
+                item for item in signals
+                if item.kind in {document_types.SIGNAL_RED_HEADER, document_types.SIGNAL_OFFICIAL}
+            ]
+            if official:
+                findings.append(DetectionResult(
+                    engine=self.name,
+                    rule_id=REDHEAD_RULE_ID,
+                    severity=_signal_severity(official, "Medium"),
+                    confidence=max(item.confidence for item in official),
+                    evidence=evidence,
+                    recommendation="确认该公文/红头文件是否应在当前存储位置出现，按公文管理"
+                                   "制度登记、归档并限制访问。",
                 ).normalize())
         text = context.data.get("text", "")
         if text:

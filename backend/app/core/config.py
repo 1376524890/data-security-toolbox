@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Data Security Toolbox"
+    app_name: str = "数据安全监测检测工具箱"
     app_env: str = "development"
     # Manual test-pack import (``POST /test/import``). Off unless an operator
     # turns it on, because delivery and demo environments hold real data only.

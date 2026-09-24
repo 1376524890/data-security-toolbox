@@ -125,4 +125,72 @@ describe('rule version console state', () => {
       to_version: 'rel-1', changelog: '回滚到 rel-1',
     })
   })
+
+  it('filters the version list by version, changelog or publisher', async () => {
+    vi.mocked(ruleSets.listRuleSetVersions).mockResolvedValue({
+      items: [
+        version({ id: 2, version: 'rel-2', changelog: '新增邮箱规则' }),
+        version({ id: 1, version: 'rel-1', status: 'superseded', published_by: 'ops' }),
+      ],
+      total: 2, active_version: 'rel-2',
+    })
+    const state = await mount(() => useRuleVersions())
+    expect(state.visibleVersions.value.map((item) => item.version)).toEqual(['rel-2', 'rel-1'])
+    state.versionFilters.search = '邮箱'
+    expect(state.visibleVersions.value.map((item) => item.version)).toEqual(['rel-2'])
+    state.versionFilters.search = 'ops'
+    expect(state.visibleVersions.value.map((item) => item.version)).toEqual(['rel-1'])
+    state.versionFilters.search = ''
+    expect(state.visibleVersions.value).toHaveLength(2)
+  })
+
+  it('sorts versions by the clicked column in both directions', async () => {
+    vi.mocked(ruleSets.listRuleSetVersions).mockResolvedValue({
+      items: [version({ id: 1, version: 'rel-1', rule_count: 30 }),
+              version({ id: 2, version: 'rel-2', rule_count: 5 })],
+      total: 2, active_version: 'rel-2',
+    })
+    const state = await mount(() => useRuleVersions())
+    // No column clicked yet: the server's order is what the page shows.
+    expect(state.visibleVersions.value.map((item) => item.rule_count)).toEqual([30, 5])
+    state.versionTable.onSortChange({ prop: 'rule_count', order: 'ascending' })
+    expect(state.visibleVersions.value.map((item) => item.rule_count)).toEqual([5, 30])
+    state.versionTable.onSortChange({ prop: 'rule_count', order: 'descending' })
+    expect(state.visibleVersions.value.map((item) => item.rule_count)).toEqual([30, 5])
+  })
+
+  it('filters probes by the sync state they actually report', async () => {
+    vi.mocked(probes.listProbes).mockResolvedValue({
+      items: [
+        probe(1, { current_ruleset_version: 'rel-2' }),
+        probe(2, { current_ruleset_version: 'rel-1' }),
+        probe(3, { current_ruleset_version: 'rel-2', ruleset_last_error: '下载超时' }),
+        probe(4),
+      ],
+      total: 4, page: 1, page_size: 200,
+    })
+    const state = await mount(() => useRuleVersions())
+    state.probeFilters.sync = 'outdated'
+    expect(state.visibleProbes.value.map((item) => item.id)).toEqual([2])
+    state.probeFilters.sync = 'failed'
+    expect(state.visibleProbes.value.map((item) => item.id)).toEqual([3])
+    // A probe that predates rule-version reporting is not "out of date".
+    state.probeFilters.sync = 'unsynced'
+    expect(state.visibleProbes.value.map((item) => item.id)).toEqual([4])
+    state.probeFilters.sync = ''
+    expect(state.visibleProbes.value).toHaveLength(4)
+  })
+
+  it('sorts probes by the version they report, not by their name', async () => {
+    vi.mocked(probes.listProbes).mockResolvedValue({
+      items: [probe(1, { current_ruleset_version: 'rel-2' }),
+              probe(2, { current_ruleset_version: 'rel-1' })],
+      total: 2, page: 1, page_size: 200,
+    })
+    const state = await mount(() => useRuleVersions())
+    state.probeTable.onSortChange({ prop: 'current_ruleset_version', order: 'ascending' })
+    // Sorting the reported version (rel-1 first) is [2, 1]; sorting the probe
+    // name would have been [1, 2].
+    expect(state.visibleProbes.value.map((item) => item.id)).toEqual([2, 1])
+  })
 })

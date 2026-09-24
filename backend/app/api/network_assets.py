@@ -24,6 +24,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.api.assets import serialize_asset
+from app.api.list_sort import order_rows
 from app.api.pagination import page_response
 from app.core.database import get_db
 from app.models import Asset, DetectionFinding
@@ -122,12 +123,26 @@ def _row(asset: Asset, hits: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+#: Whitelisted sort keys. Rows are merged with their CVE hits in Python, so the
+#: sort is applied there too; the natural order (weakest CVSS first) is untouched
+#: when the caller asks for nothing.
+NETWORK_ASSET_SORTABLE = {
+    "ip": lambda row: row["ip"], "port": lambda row: row["port"],
+    "service": lambda row: row["service"], "product": lambda row: row["product"],
+    "version": lambda row: row["version"], "source": lambda row: row["source"],
+    "risk_level": lambda row: row["risk_level"], "cve_count": lambda row: row["cve_count"],
+    "confirmed_cve_count": lambda row: row["confirmed_cve_count"],
+    "max_cvss": lambda row: row["max_cvss"], "last_seen": lambda row: row["last_seen"],
+}
+
+
 @router.get("/network/assets")
 def network_assets(
     search: str | None = None,
     severity: str | None = None,
     only_vulnerable: bool = False,
     source: str | None = None,
+    order_by: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -153,6 +168,9 @@ def network_assets(
     if only_vulnerable:
         items = [item for item in items if item["cve_count"]]
     items.sort(key=lambda item: (-item["max_cvss"], item["ip"], item["port"]))
+    if order_by:
+        items = order_rows(items, order_by, NETWORK_ASSET_SORTABLE,
+                           default="max_cvss", default_desc=True)
     total = len(items)
     start = (page - 1) * page_size
     return page_response(items[start:start + page_size], page, page_size, total)

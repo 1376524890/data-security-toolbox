@@ -8,6 +8,7 @@ import { useRuleVersions } from './composables/useRuleVersions'
 const {
   loading, error, ruleSet, versions, probes, dialog, saving, draft, activeVersion,
   syncedProbes, outOfDateProbes, probeField, probedVersion, shortHash,
+  visibleVersions, versionFilters, versionTable, visibleProbes, probeFilters, probeTable,
   load, openPublish, publish, rollback,
 } = useRuleVersions()
 </script>
@@ -35,14 +36,25 @@ const {
 
       <div class="soc-card" style="margin-top: 12px">
         <div class="soc-card-title"><span class="dot" />探针规则同步状态</div>
-        <el-table :data="probes" size="small" empty-text="尚未登记探针">
-          <el-table-column prop="name" label="探针" min-width="140" />
+        <div class="toolbar" style="margin-bottom: 10px">
+          <el-input v-model="probeFilters.search" clearable placeholder="探针 / 主机 / IP" style="width: 200px" />
+          <el-select v-model="probeFilters.sync" clearable placeholder="全部同步状态" style="width: 170px">
+            <el-option label="待更新" value="outdated" />
+            <el-option label="同步失败" value="failed" />
+            <el-option label="尚未上报" value="unsynced" />
+          </el-select>
+          <span class="muted">显示 {{ visibleProbes.length }} / {{ probes.length }} 条</span>
+        </div>
+        <el-table :data="visibleProbes" size="small" empty-text="尚未登记探针"
+                  @sort-change="probeTable.onSortChange">
+          <el-table-column prop="name" label="探针" min-width="140" sortable="custom" />
           <el-table-column label="在线状态" width="100">
             <template #default="{ row }">
               <el-tag size="small" :type="row.status === 'online' ? 'success' : 'info'">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="当前规则版本" min-width="150">
+          <el-table-column prop="current_ruleset_version" label="当前规则版本" min-width="150"
+                           sortable="custom">
             <template #default="{ row }">
               <template v-if="probedVersion(row)">
                 <span>{{ probedVersion(row) }}</span>
@@ -82,8 +94,13 @@ const {
 
       <div class="soc-card" style="margin-top: 12px">
         <div class="soc-card-title"><span class="dot" />发布记录（不可变）</div>
-        <el-table :data="versions" size="small" empty-text="尚未发布任何版本">
-          <el-table-column prop="version" label="版本" min-width="150">
+        <div class="toolbar" style="margin-bottom: 10px">
+          <el-input v-model="versionFilters.search" clearable placeholder="版本 / 说明 / 发布人" style="width: 240px" />
+          <span class="muted">显示 {{ visibleVersions.length }} / {{ versions.length }} 条</span>
+        </div>
+        <el-table :data="visibleVersions" size="small" empty-text="尚未发布任何版本"
+                  @sort-change="versionTable.onSortChange">
+          <el-table-column prop="version" label="版本" min-width="150" sortable="custom">
             <template #default="{ row }">
               <strong>{{ row.version }}</strong>
               <el-tag v-if="activeVersion && row.id === activeVersion.id" size="small" type="success"
@@ -91,7 +108,7 @@ const {
               <el-tag v-else-if="row.status === 'superseded'" size="small" type="info" style="margin-left: 6px">已被取代</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="rule_count" label="规则数" width="80" />
+          <el-table-column prop="rule_count" label="规则数" width="80" sortable="custom" />
           <el-table-column label="SHA256" min-width="140">
             <template #default="{ row }"><code>{{ shortHash(row.sha256) }}</code></template>
           </el-table-column>
@@ -110,9 +127,9 @@ const {
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column prop="published_by" label="发布人" width="110" />
-          <el-table-column prop="changelog" label="说明" min-width="160" show-overflow-tooltip />
-          <el-table-column label="发布时间" width="170">
+          <el-table-column prop="published_by" label="发布人" width="110" sortable="custom" />
+          <el-table-column prop="changelog" label="说明" min-width="160" show-overflow-tooltip sortable="custom" />
+          <el-table-column prop="created_at" label="发布时间" width="170" sortable="custom">
             <template #default="{ row }">{{ row.created_at?.replace('T', ' ').slice(0, 19) }}</template>
           </el-table-column>
           <el-table-column label="操作" width="90" fixed="right">

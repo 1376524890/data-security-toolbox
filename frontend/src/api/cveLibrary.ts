@@ -42,8 +42,25 @@ export interface OfflineImportResult {
   errors: string[]
 }
 
-export function listLocalCves(search = '', page = 1, pageSize = 50): Promise<PageResult<LocalCve>> {
-  return apiGet('/offline/cves', { search, page, page_size: pageSize })
+export interface CveQuery {
+  search?: string
+  severity?: string
+  source?: string
+  /** `field` ascending, `-field` descending; see `useTableSort`. */
+  order_by?: string
+  page?: number
+  page_size?: number
+}
+
+export function listLocalCves(
+  search = '', page = 1, pageSize = 50, options: Omit<CveQuery, 'search' | 'page' | 'page_size'> = {},
+): Promise<PageResult<LocalCve>> {
+  return apiGet('/offline/cves', {
+    search, page, page_size: pageSize,
+    severity: options.severity || undefined,
+    source: options.source || undefined,
+    order_by: options.order_by || undefined,
+  })
 }
 
 /** The products an online update would query NVD for: shown before the call so

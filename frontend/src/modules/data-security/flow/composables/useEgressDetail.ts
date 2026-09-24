@@ -9,6 +9,8 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { getAssessment, type AssessmentEnvelope } from '../../../../api/assessments'
+import { useAutoRefresh } from '../../../../composables/useAutoRefresh'
+import { useTableSort, sortRows } from '../../../../composables/useTableSort'
 import { getPcapFlowPackets, getPcapPacketDetail } from '../../../../api/pcaps'
 import type { Packet } from '../../../../types/pcap'
 
@@ -72,17 +74,36 @@ export function useEgressDetail() {
   const policy = computed(() => (data.value?.sections?.policy as Row) || {})
   const sensitiveCount = computed(() => transfers.value.filter((row) => row.sensitive).length)
 
-  async function load(): Promise<void> {
-    loading.value = true
-    error.value = ''
+  // The report covers every captured object, so filtering and sorting stay in
+  // the browser; the server sends the whole assessment envelope.
+  const filters = ref({ search: '', sensitive_only: false, outgoing_only: false })
+  const { sort, onSortChange } = useTableSort()
+  const visibleTransfers = computed(() => {
+    const needle = filters.value.search.trim().toLowerCase()
+    const rows = transfers.value.filter((row) => {
+      if (filters.value.sensitive_only && !row.sensitive) return false
+      if (filters.value.outgoing_only && !['country', 'blacklist'].includes(row.bucket)) return false
+      if (!needle) return true
+      return [row.filename, row.src_ip, row.dst_ip, row.content_type, row.region]
+        .some((field) => String(field || '').toLowerCase().includes(needle))
+    })
+    return sortRows(rows, sort.prop, sort.order, (row, prop) => (row as unknown as Record<string, unknown>)[prop])
+  })
+
+  async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+    if (!silent) { loading.value = true; error.value = '' }
     try {
       data.value = await getAssessment('egress')
+      error.value = ''
     } catch (err) {
-      error.value = String(err)
+      if (!silent) error.value = String(err)
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
+
+  // An egress verdict only changes when a capture segment finishes analysis.
+  useAutoRefresh(load, { intervalMs: 60000 })
 
   /** Every matched value of a transfer, flattened for the drawer table. */
   function matchedValues(row: EgressTransfer) {
@@ -152,7 +173,8 @@ export function useEgressDetail() {
   onMounted(load)
 
   return {
-    loading, error, data, transfers, buckets, regions, rules, policy, sensitiveCount,
+    loading, error, data, transfers, visibleTransfers, filters, sort, onSortChange,
+    buckets, regions, rules, policy, sensitiveCount,
     selected, drawer, packets, packetTotal, packetsLoading, packetsNote, detail,
     load, open, loadPackets, openPacket, matchedValues,
   }

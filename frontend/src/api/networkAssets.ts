@@ -46,6 +46,8 @@ export interface NetworkAssetQuery {
   severity?: string
   only_vulnerable?: boolean
   source?: string
+  /** `field` ascending, `-field` descending; see `useTableSort`. */
+  order_by?: string
   page?: number
   page_size?: number
 }

@@ -6,6 +6,8 @@ export interface TaskQuery {
   status?: string
   kind?: string
   search?: string
+  /** `field` ascending, `-field` descending; see `useTableSort`. */
+  order_by?: string
   page: number
   page_size: number
 }

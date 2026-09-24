@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Remove the Data Security Toolbox probe from this host.
+# Remove the 数据安全监测检测工具箱 probe (data-security-toolbox-probe) from this host.
 #
 # Everything deleted here comes from the fixed allow-list below, which mirrors
 # install.sh. Paths are never taken from command-line arguments or from a file

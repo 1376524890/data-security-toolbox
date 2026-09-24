@@ -163,7 +163,7 @@ fi
 
 cat > "/etc/systemd/system/${SERVICE}.service" <<EOF
 [Unit]
-Description=Data Security Toolbox Probe
+Description=数据安全监测检测工具箱 探针
 After=network-online.target
 Wants=network-online.target
 

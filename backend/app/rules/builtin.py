@@ -110,6 +110,25 @@ BUILTIN_RULES: dict[str, dict[str, Any]] = {
         "recommendation": "根据 YARA 规则检查文件来源、作者和是否包含恶意/敏感内容。",
         "source": "app/engine/data_engine/engine.py",
     },
+    "DATA_CLASSIFIED_001": {
+        "engine": "data_engine",
+        "title": "文件含涉密标志（密级/涉密）",
+        "severity": "High",
+        "condition": "文本或 OCR 识别出 密级★期限、密级：X，或两个以上涉密用语"
+                     "（绝密/机密/秘密）；绝密、机密提升为 Critical",
+        "recommendation": "按涉密载体管理处置：登记密级与知悉范围、限制流转、清除未受控副本，"
+                          "并核对文件为何出现在该位置。",
+        "source": "app/engine/data_engine/engine.py",
+    },
+    "DATA_REDHEAD_001": {
+        "engine": "data_engine",
+        "title": "红头文件 / 公文",
+        "severity": "Medium",
+        "condition": "页面红色版头与发文字号/公文标题一致，或文本出现发文字号、公文标题行",
+        "recommendation": "确认该公文/红头文件是否应在当前存储位置出现，按公文管理制度登记、"
+                          "归档并限制访问。",
+        "source": "app/engine/data_engine/engine.py",
+    },
     "ASSET_PUBLIC_DB_001": {
         "engine": "asset_engine",
         "title": "数据库服务暴露在公网",

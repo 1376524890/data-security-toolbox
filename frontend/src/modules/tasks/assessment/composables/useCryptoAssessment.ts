@@ -56,6 +56,32 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+/**
+ * The config an observed profile implies: the observed lists win when they have
+ * entries and the shipped default fills the gaps, so a host that only exposed a
+ * protocol still gets a complete assessment instead of an accidentally perfect
+ * (empty) one.
+ *
+ * Exported because the asset-side results page scores every host the same way:
+ * a second copy of this rule would let one host score differently depending on
+ * which page assessed it.
+ */
+export function configFromProfile(
+  profile: CryptoProfileLike,
+  defaults: CryptoConfig = defaultCryptoConfig,
+): CryptoConfig {
+  const observed = profile.config || {}
+  return {
+    algorithms: observed.algorithms?.length ? [...observed.algorithms] : [...defaults.algorithms],
+    cipherSuites: observed.cipherSuites?.length ? [...observed.cipherSuites] : [...defaults.cipherSuites],
+    protocols: observed.protocols?.length ? [...observed.protocols] : [...defaults.protocols],
+    keyLengths: observed.keyLengths?.length ? [...observed.keyLengths] : [...defaults.keyLengths],
+    keyManagement: { ...defaults.keyManagement, ...(observed.keyManagement || {}) },
+    sm4Key: defaults.sm4Key,
+    passwordSignals: [...(profile.passwordSignals || [])],
+  }
+}
+
 export interface UseCryptoAssessmentOptions {
   /** Per-host profiles to offer for one-click assessment, keyed by host (the
    *  scan's ``result.crypto_profiles`` is exactly this). Omitted for the plain
@@ -120,23 +146,9 @@ export function useCryptoAssessment(options: UseCryptoAssessmentOptions = {}) {
     result.value = null
   }
 
-  /**
-   * Fill the form from an observed profile. The observed lists win when they
-   * have entries and the shipped default fills the gaps, so a host that only
-   * exposed a protocol still gets a complete assessment instead of an
-   * accidentally perfect (empty) one.
-   */
+  /** Fill the form from an observed profile; see :func:`configFromProfile`. */
   function applyProfile(profile: CryptoProfileLike, label = ''): void {
-    const observed = profile.config || {}
-    config.value = {
-      algorithms: observed.algorithms?.length ? observed.algorithms : clone(defaultCryptoConfig.algorithms),
-      cipherSuites: observed.cipherSuites?.length ? observed.cipherSuites : clone(defaultCryptoConfig.cipherSuites),
-      protocols: observed.protocols?.length ? observed.protocols : clone(defaultCryptoConfig.protocols),
-      keyLengths: observed.keyLengths?.length ? observed.keyLengths : clone(defaultCryptoConfig.keyLengths),
-      keyManagement: { ...defaultCryptoConfig.keyManagement, ...(observed.keyManagement || {}) },
-      sm4Key: defaultCryptoConfig.sm4Key,
-      passwordSignals: profile.passwordSignals || [],
-    }
+    config.value = configFromProfile(profile, defaultCryptoConfig)
     writeTexts(config.value)
     source.value = {
       label,

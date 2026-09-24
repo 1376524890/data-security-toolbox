@@ -8,6 +8,8 @@ export interface DataAssetQuery {
   asset_type?: string
   source?: string
   probe_id?: number
+  /** `field` ascending, `-field` descending; see `useTableSort`. */
+  order_by?: string
   page: number
   page_size: number
 }

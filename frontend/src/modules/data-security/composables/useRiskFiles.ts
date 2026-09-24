@@ -13,13 +13,22 @@ import {
   downloadRiskFile, getRiskContent, getRiskPoints, listRiskFiles,
   type RiskContent, type RiskFile, type RiskPoints,
 } from '../../../api/riskFiles'
+import { useAutoRefresh } from '../../../composables/useAutoRefresh'
+import { useTableSort } from '../../../composables/useTableSort'
 
 export function useRiskFiles() {
   const loading = ref(true)
   const error = ref('')
   const rows = ref<RiskFile[]>([])
   const total = ref(0)
-  const filters = reactive({ page: 1, page_size: 50, search: '', source_kind: '' })
+  const filters = reactive({
+    page: 1, page_size: 50, search: '', source_kind: '', severity: '',
+    order_by: undefined as string | undefined,
+  })
+
+  // Sorting is a server-side action here: the list is paginated, so reordering
+  // only the rows already on screen would reorder a page, not the inventory.
+  const { onSortChange, orderBy } = useTableSort(() => { filters.page = 1; void load() })
 
   const selected = ref<RiskFile | null>(null)
   const drawer = ref(false)
@@ -33,19 +42,25 @@ export function useRiskFiles() {
   const browseError = ref('')
   const revealAll = ref(false)
 
-  async function load(): Promise<void> {
-    loading.value = true
-    error.value = ''
+  async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+    if (!silent) { loading.value = true; error.value = '' }
     try {
+      filters.order_by = orderBy()
       const page = await listRiskFiles(filters)
       rows.value = page.items
       total.value = page.total
+      error.value = ''
     } catch (err) {
-      error.value = String(err)
+      // A background refresh must not blank a list an operator is reading.
+      if (!silent) error.value = String(err)
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
+
+  // A risk file only changes when a scan finishes, so a minute is frequent
+  // enough to feel current without re-reading the inventory every few seconds.
+  useAutoRefresh(load, { intervalMs: 60000 })
 
   function setPage(page: number): void {
     filters.page = page
@@ -113,6 +128,6 @@ export function useRiskFiles() {
     loading, error, rows, total, filters, selected, drawer,
     riskPoints, riskLoading, riskError,
     browse, browseLoading, browseError, revealAll,
-    load, setPage, open, browseContent, download, resetReads,
+    load, setPage, open, browseContent, download, resetReads, onSortChange,
   }
 }

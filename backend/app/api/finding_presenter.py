@@ -52,6 +52,16 @@ ATTACK_MAP: dict[str, dict[str, str]] = {
         "technique": "Obfuscated Files or Information",
         "technique_id": "T1027",
     },
+    "DATA_CLASSIFIED_001": {
+        "tactic": "Collection",
+        "technique": "Data from Information Repositories",
+        "technique_id": "T1213",
+    },
+    "DATA_REDHEAD_001": {
+        "tactic": "Collection",
+        "technique": "Data from Information Repositories",
+        "technique_id": "T1213",
+    },
     "ASSET_PUBLIC_DB_001": {
         "tactic": "Initial Access",
         "technique": "Exposed Database",

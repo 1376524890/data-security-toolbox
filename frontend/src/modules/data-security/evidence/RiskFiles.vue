@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import StateBox from '../../../components/common/StateBox.vue'
 import JsonViewer from '../../../components/evidence/JsonViewer.vue'
-import { formatCoverage, formatTerminationReason } from '../../../utils/format'
+import { formatCoverage, formatDateTime, formatTerminationReason } from '../../../utils/format'
 import { useRiskFiles } from '../composables/useRiskFiles'
 import type { RiskPoint } from '../../../api/riskFiles'
 
@@ -14,10 +14,11 @@ const {
   loading, error, rows, total, filters, selected, drawer,
   riskPoints, riskLoading, riskError,
   browse, browseLoading, browseError, revealAll,
-  load, setPage, open, browseContent, download,
+  load, setPage, open, browseContent, download, onSortChange,
 } = useRiskFiles()
 
 const SOURCES = [{ l: '主机文件', v: 'file' }, { l: '共享文件', v: 'file_share' }, { l: '数据库', v: 'database' }]
+const SEVERITIES = ['Critical', 'High', 'Medium', 'Low']
 
 /** One matched value, with the line it came from when the collector sent one. */
 function matchLabel(match: { value: string; context?: string }): string {
@@ -40,12 +41,15 @@ function evidenceCount(point: RiskPoint): number {
       <el-select v-model="filters.source_kind" clearable placeholder="全部来源" style="width: 140px" @change="load()">
         <el-option v-for="item in SOURCES" :key="item.v" :label="item.l" :value="item.v" />
       </el-select>
+      <el-select v-model="filters.severity" clearable placeholder="全部风险等级" style="width: 150px" @change="load()">
+        <el-option v-for="item in SEVERITIES" :key="item" :label="item" :value="item" />
+      </el-select>
       <el-button @click="load">刷新</el-button>
     </div>
     <StateBox :loading="loading" :error="error" :empty="!rows.length"
               empty-text="还没有扫到含敏感内容的文件；先在任务中心下发一次扫描" @retry="load">
-      <el-table :data="rows" size="small" @row-click="open">
-        <el-table-column label="文件" min-width="260" show-overflow-tooltip>
+      <el-table :data="rows" size="small" @row-click="open" @sort-change="onSortChange">
+        <el-table-column prop="name" label="文件" min-width="260" show-overflow-tooltip sortable="custom">
           <template #default="{ row }">
             <strong>{{ row.name }}</strong>
             <div class="muted">{{ row.path }}</div>
@@ -57,7 +61,7 @@ function evidenceCount(point: RiskPoint): number {
             <div class="muted">{{ row.host }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="分级" width="150">
+        <el-table-column prop="severity" label="分级" width="160" sortable="custom">
           <template #default="{ row }">
             <el-tag size="small" :type="row.level === 'L4' ? 'danger' : row.level === 'L3' ? 'warning' : 'info'">
               {{ row.level }} {{ row.sensitivity }}
@@ -70,12 +74,15 @@ function evidenceCount(point: RiskPoint): number {
             <div class="muted">{{ row.risk_point_count }} 类 · {{ row.risk_hit_count }} 处命中</div>
           </template>
         </el-table-column>
-        <el-table-column prop="size" label="字节" width="100" />
+        <el-table-column prop="size" label="字节" width="110" sortable="custom" />
         <el-table-column label="覆盖 / 状态" width="180">
           <template #default="{ row }">
             {{ row.status }}
             <div class="muted">{{ formatCoverage(row.coverage) }} · {{ formatTerminationReason(row.termination_reason) }}</div>
           </template>
+        </el-table-column>
+        <el-table-column prop="last_seen_at" label="最近发现" width="180" sortable="custom">
+          <template #default="{ row }">{{ formatDateTime(row.last_seen_at) }}</template>
         </el-table-column>
       </el-table>
       <el-pagination background layout="total, prev, pager, next" :total="total"

@@ -15,7 +15,7 @@ import { useDataAssetCollection } from './composables/useDataAssetCollection'
 
 const router = useRouter()
 const { loading, error, items, total, detail, drawer, filters, probes, piiData,
-  load, loadProbes, open, reset } = useDataAssetList()
+  load, loadProbes, open, reset, onSortChange } = useDataAssetList()
 const { collectDialog, collecting, collectProgress, collectStage, collectForm,
   openCollect, submitCollect } = useDataAssetCollection(load)
 const filterFields = computed<FilterField[]>(() => [
@@ -45,11 +45,11 @@ onMounted(() => { load(); loadProbes() })
           <DataRiskCard :asset="a" />
         </div>
       </div>
-      <el-table :data="items" size="small" @row-click="open">
-        <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="asset_type" label="类型" width="110" />
+      <el-table :data="items" size="small" @row-click="open" @sort-change="onSortChange">
+        <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip sortable="custom" />
+        <el-table-column prop="asset_type" label="类型" width="110" sortable="custom" />
         <el-table-column label="敏感等级" width="100"><template #default="{ row }"><RiskBadge :level="row.sensitivity" /></template></el-table-column>
-        <el-table-column prop="source" label="来源" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="source" label="来源" min-width="150" show-overflow-tooltip sortable="custom" />
         <el-table-column label="主机" width="140"><template #default="{ row }"><span class="mono">{{ row.host || '-' }}</span></template></el-table-column>
         <el-table-column label="字段数" width="80"><template #default="{ row }">{{ row.columns?.length || 0 }}</template></el-table-column>
         <el-table-column label="状态" width="110"><template #default="{ row }"><StatusBadge :value="row.status || 'observed'" /></template></el-table-column>

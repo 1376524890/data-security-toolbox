@@ -43,6 +43,10 @@ REQUIRED_SHARED = (
     "shared/scanning/cache.py",
     "shared/scanning/parsers/__init__.py",
     "shared/scanning/parsers/xlsx.py",
+    # OCR and document typing: the package mirrors the whole shared/scanning
+    # tree, and the platform's data engine reads a scanned document through both.
+    "shared/scanning/ocr.py",
+    "shared/scanning/document_types.py",
 )
 
 

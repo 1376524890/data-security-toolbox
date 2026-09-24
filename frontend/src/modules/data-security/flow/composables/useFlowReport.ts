@@ -8,6 +8,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, apiPost } from '../../../../api/client'
+import { useAutoRefresh } from '../../../../composables/useAutoRefresh'
+import { useTableSort, sortRows } from '../../../../composables/useTableSort'
 
 export interface MatchedText { value: string; context?: string }
 /** One inventoried file whose content hash equals the transferred object's:
@@ -43,6 +45,20 @@ export function useFlowReport() {
   const binaryError = ref('')
   const binaryLoading = ref(false)
   let evidenceRequest = 0
+  // The report is one page of everything captured so far, so filtering and
+  // sorting are client-side; the server sends the list whole.
+  const filters = ref({ search: '', risky_only: false })
+  const { sort, onSortChange } = useTableSort()
+  const visibleTransfers = computed(() => {
+    const needle = filters.value.search.trim().toLowerCase()
+    const rows = transfers.value.filter((row) => {
+      if (filters.value.risky_only && !row.matches.some(alertable)) return false
+      if (!needle) return true
+      return [row.filename, row.src_ip, row.dst_ip, row.content_type]
+        .some((field) => String(field || '').toLowerCase().includes(needle))
+    })
+    return sortRows(rows, sort.prop, sort.order, (row, prop) => (row as unknown as Record<string, unknown>)[prop])
+  })
 
   /** Every matched原文 across a transfer, flattened for the evidence drawer. */
   function matchedText(row: Transfer) {
@@ -61,9 +77,8 @@ export function useFlowReport() {
    *  ones the report can attach to a concrete file instead of a bare hash. */
   const fileBoundCount = computed(() => transfers.value.filter((row) => row.file_bound).length)
 
-  async function load(): Promise<void> {
-    loading.value = true
-    error.value = ''
+  async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+    if (!silent) { loading.value = true; error.value = '' }
     try {
       const [policy, data] = await Promise.all([
         apiGet<{ enabled: boolean; min_confidence: number }>('/dlp/policy'),
@@ -73,12 +88,18 @@ export function useFlowReport() {
       threshold.value = Number(policy.min_confidence ?? 0.6)
       transfers.value = data.items
       coverage.value = data.coverage
+      error.value = ''
     } catch (err) {
-      error.value = String(err)
+      if (!silent) error.value = String(err)
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
+
+  // New transfers appear as capture segments finish analysis (every ~30 s on
+  // the probe), so a minute keeps the report current without re-reading the
+  // whole object list more often than it can change.
+  useAutoRefresh(load, { intervalMs: 60000 })
 
   async function toggleRuleSet(value: boolean): Promise<void> {
     busy.value = true
@@ -114,7 +135,8 @@ export function useFlowReport() {
   }
 
   onMounted(load)
-  return { loading, error, transfers, coverage, enabled, threshold, busy, selected, drawer,
+  return { loading, error, transfers, visibleTransfers, filters, sort, onSortChange,
+    coverage, enabled, threshold, busy, selected, drawer,
     binary, binaryError, binaryLoading, riskyCount, fileBoundCount, matchedText, alertable, load,
     toggleRuleSet, openTransfer }
 }

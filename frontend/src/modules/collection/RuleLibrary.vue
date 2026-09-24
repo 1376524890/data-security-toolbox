@@ -3,6 +3,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import StateBox from '../../components/common/StateBox.vue'
 import { apiGet, apiPatch, apiPost } from '../../api/client'
+import { useAutoRefresh } from '../../composables/useAutoRefresh'
+import { useTableSort, sortRows } from '../../composables/useTableSort'
 
 // The rule set: the regular expressions that drive sensitive-data discovery and
 // network traffic monitoring. This is the single place a rule is written;
@@ -18,21 +20,42 @@ const rules = ref<Rule[]>([])
 const busy = ref(false)
 const dialog = ref(false)
 const draft = reactive({ name: '', entity: '', pattern: '', enabled: true })
+// The whole rule set arrives in one response (no paging), so filtering and
+// sorting happen here rather than costing a round trip per keystroke.
+const filters = reactive({ search: '', source: '', enabled: '' })
+const { sort, onSortChange } = useTableSort()
+const sources = computed(() => [...new Set(rules.value.map((rule) => rule.source).filter(Boolean))].sort())
+const visibleRules = computed(() => {
+  const needle = filters.search.trim().toLowerCase()
+  const rows = rules.value.filter((rule) => {
+    if (filters.source && rule.source !== filters.source) return false
+    if (filters.enabled === 'yes' && !rule.enabled) return false
+    if (filters.enabled === 'no' && rule.enabled) return false
+    if (!needle) return true
+    return [rule.name, rule.entity, rule.pattern].some(
+      (field) => String(field || '').toLowerCase().includes(needle))
+  })
+  return sortRows(rows, sort.prop, sort.order, (rule, prop) => (rule as unknown as Record<string, unknown>)[prop])
+})
 /** Categories already in use, so a new rule can reuse one instead of inventing a
  *  near-duplicate spelling. Free text stays possible. */
 const entities = computed(() => [...new Set(rules.value.map((rule) => rule.entity).filter(Boolean))].sort())
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
+async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+  if (!silent) { loading.value = true; error.value = '' }
   try {
     rules.value = (await apiGet<{ items: Rule[] }>('/dlp/rules')).items
+    error.value = ''
   } catch (err) {
-    error.value = String(err)
+    if (!silent) error.value = String(err)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
+
+// Rules only change when an operator edits them, so this is a slow poll on
+// purpose: it exists to pick up another analyst's edit, not to chase data.
+useAutoRefresh(load, { intervalMs: 120000 })
 
 async function toggle(rule: Rule, enabled: boolean): Promise<void> {
   try {
@@ -83,15 +106,26 @@ onMounted(load)
       <span class="muted">敏感数据发现与网络流量监控的正则匹配规则</span>
       <div class="toolbar-spacer" />
       <el-button :loading="busy" @click="importPresidio">导入 / 更新 Presidio 规则库</el-button>
-      <el-button @click="load">刷新</el-button>
+      <el-button @click="load()">刷新</el-button>
       <el-button type="primary" @click="dialog = true">手动添加规则</el-button>
     </div>
     <StateBox :loading="loading" :error="error" :empty="false" @retry="load">
-      <el-table :data="rules" size="small" max-height="460" empty-text="尚无规则">
-        <el-table-column prop="name" label="规则名称" min-width="200" />
-        <el-table-column prop="source" label="来源" width="110" />
-        <el-table-column prop="entity" label="敏感类别" min-width="140" />
-        <el-table-column prop="confidence" label="置信度" width="90" />
+      <div class="toolbar" style="margin-bottom: 10px">
+        <el-input v-model="filters.search" clearable placeholder="规则名称 / 类别 / 正则" style="width: 260px" />
+        <el-select v-model="filters.source" clearable placeholder="全部来源" style="width: 150px">
+          <el-option v-for="item in sources" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-select v-model="filters.enabled" clearable placeholder="全部状态" style="width: 130px">
+          <el-option label="已启用" value="yes" />
+          <el-option label="已停用" value="no" />
+        </el-select>
+        <span class="muted">显示 {{ visibleRules.length }} / {{ rules.length }} 条</span>
+      </div>
+      <el-table :data="visibleRules" size="small" max-height="460" empty-text="尚无规则" @sort-change="onSortChange">
+        <el-table-column prop="name" label="规则名称" min-width="200" sortable="custom" />
+        <el-table-column prop="source" label="来源" width="120" sortable="custom" />
+        <el-table-column prop="entity" label="敏感类别" min-width="140" sortable="custom" />
+        <el-table-column prop="confidence" label="置信度" width="100" sortable="custom" />
         <el-table-column label="可告警" width="100">
           <template #default="{ row }">
             <el-tag size="small" :type="row.alertable ? 'success' : 'info'">{{ row.alertable ? '是' : '仅证据' }}</el-tag>

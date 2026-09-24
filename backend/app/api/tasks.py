@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.api.list_sort import order_query
 from app.api.pagination import page_response, paginate
 from app.api.task_presenter import serialize_task
 from app.core.database import get_db
@@ -47,6 +48,13 @@ STOPPABLE_TASK_KINDS = (
     "scan",
 )
 
+#: Whitelisted sort keys for ``GET /tasks`` (``order_by=-created_at`` etc.).
+TASK_SORTABLE = {
+    "id": Task.id, "kind": Task.kind, "status": Task.status,
+    "progress": Task.progress, "created_at": Task.created_at,
+    "started_at": Task.started_at, "finished_at": Task.finished_at,
+}
+
 STOP_UNSUPPORTED = (
     "当前仅支持停止探针扫描、数据资产采集、数据库采集、文件源采集、"
     "网络扫描、流量解析和监测任务"
@@ -60,6 +68,7 @@ def list_tasks(
     status: str | None = None,
     kind: str | None = None,
     search: str | None = None,
+    order_by: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -83,7 +92,8 @@ def list_tasks(
                 Task.error.ilike(f"%{search}%"),
             )
         )
-    result = paginate(db, query.order_by(Task.id.desc()), page, page_size)
+    result = paginate(db, order_query(query, order_by, TASK_SORTABLE,
+                                       default="id", default_desc=True), page, page_size)
     for item in result["items"]:
         if item.kind == monitoring.MONITOR_KIND:
             monitoring.refresh(db, item)

@@ -34,6 +34,8 @@ import {
   type TcpStreamFollow,
 } from '../../../../api/pcaps'
 import { getTask } from '../../../../api/tasks'
+import { useAutoRefresh } from '../../../../composables/useAutoRefresh'
+import { useTableSort } from '../../../../composables/useTableSort'
 import type { Layer } from '../../../../components/network/ProtocolTree.vue'
 import type { AlertItem, Flow, NetworkFile, Packet, PcapRecord, TrafficOverview } from '../../../../types/pcap'
 
@@ -89,7 +91,12 @@ export function usePcapWorkbench() {
   let fileVersion = 0
   let taskVersion = 0
   let taskTimer: ReturnType<typeof setTimeout> | undefined
-  const filters = reactive({ search: '', status: '', page: 1, page_size: 50 })
+  const filters = reactive({
+    search: '', status: '', order_by: undefined as string | undefined, page: 1, page_size: 50,
+  })
+  // The capture list is paginated, so its sort is a server query; the packet and
+  // file tables below are single-capture reads and sort client-side.
+  const { onSortChange, orderBy } = useTableSort(() => { filters.page = 1; void load() })
 
   const packetLayers = computed<Layer[]>(() => {
     return packetDetail.value?.layers || []
@@ -117,17 +124,20 @@ export function usePcapWorkbench() {
   const httpColumns = ['method', 'uri', 'host', 'status', 'user_agent', 'source']
   const tlsColumns = ['server_name', 'sni', 'cipher', 'ja3', 'version', 'source']
 
-  async function load(): Promise<void> {
-    loading.value = true
-    error.value = ''
+  async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+    if (!silent) { loading.value = true; error.value = '' }
     try {
+      filters.order_by = orderBy()
       const result = await listPcaps({ ...filters })
       items.value = result.items
       total.value = result.total
+      error.value = ''
     } catch (err) {
-      error.value = err instanceof Error ? err.message : String(err)
+      // Keep the last good list on a failed poll; a capture is not "gone"
+      // because one request timed out.
+      if (!silent) error.value = err instanceof Error ? err.message : String(err)
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
 
@@ -317,6 +327,10 @@ export function usePcapWorkbench() {
   // flight, so a late answer cannot fill a dialog the operator already closed.
   function closeFileDialog(): void { ++fileVersion }
 
+  // The capture list changes only when a segment arrives or an analysis
+  // finishes, so a minute is enough; the task poller below has its own timer.
+  useAutoRefresh(load, { intervalMs: 60000 })
+
   onMounted(load)
   onUnmounted(() => { ++viewVersion; ++packetVersion; ++detailVersion; ++fileVersion; ++taskVersion; clearTimeout(taskTimer) })
 
@@ -359,6 +373,7 @@ export function usePcapWorkbench() {
     analyzingId,
     analysisStage,
     filters,
+    onSortChange,
     packetLayers,
     packetHex,
     packetText,

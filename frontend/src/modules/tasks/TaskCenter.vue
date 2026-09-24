@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useAutoRefresh } from '../../composables/useAutoRefresh'
+import { useTableSort } from '../../composables/useTableSort'
 import StateBox from '../../components/common/StateBox.vue'
 import StatCard from '../../components/common/StatCard.vue'
 import StatusBadge from '../../components/security/StatusBadge.vue'
@@ -21,7 +23,14 @@ const loading = ref(true)
 const error = ref('')
 const rows = ref<Task[]>([])
 const total = ref(0)
-const filters = reactive({ page: 1, page_size: 50, status: '', kind: '' })
+const filters = reactive({
+  page: 1, page_size: 50, status: '', kind: '', search: '',
+  order_by: undefined as string | undefined,
+})
+
+// Sorting travels to the server: the list is paginated, so ordering the rows on
+// screen would reorder a page rather than the queue.
+const { onSortChange, orderBy } = useTableSort(() => { filters.page = 1; void load() })
 const detail = ref<Task | null>(null)
 
 const wizardOpen = ref(false)
@@ -65,19 +74,26 @@ const KINDS = ['monitoring', 'pcap', 'probe_scan', 'data_asset_scan', 'scan',
 const failedHosts = computed(() => wizard.hosts.value.filter(
   (host) => !host.registered && (host.deployError || host.manual)))
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
+async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+  if (!silent) { loading.value = true; error.value = '' }
   try {
+    filters.order_by = orderBy()
     const page = await listTasks({ ...filters })
     rows.value = page.items
     total.value = page.total
+    error.value = ''
   } catch (err) {
-    error.value = String(err)
+    // Keep the last good queue on screen: a failed poll must not look like an
+    // empty task list.
+    if (!silent) error.value = String(err)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
+
+// Tasks move while an operator watches, so this is the fastest page timer in
+// the console; the in-flight guard keeps a slow server from stacking requests.
+useAutoRefresh(load, { intervalMs: 15000 })
 
 /** A short, honest read of a task's health from the fields the worker reports. */
 function health(task: Task): { label: string; tone: string } {
@@ -276,29 +292,33 @@ onMounted(load)
       <strong>任务中心</strong>
       <span class="muted">下发与进度监控；任务结束后按引用计数卸载探针</span>
       <div class="toolbar-spacer" />
-      <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 140px" @change="load">
+      <el-input v-model="filters.search" clearable placeholder="类型 / 阶段 / 错误" style="width: 200px"
+                @keyup.enter="load()" @clear="load()" />
+      <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 140px" @change="load()">
         <el-option v-for="s in ['Pending', 'Running', 'Success', 'Failed', 'Partial', 'Cancelled']" :key="s" :label="s" :value="s" />
       </el-select>
-      <el-select v-model="filters.kind" clearable placeholder="全部类型" style="width: 160px" @change="load">
+      <el-select v-model="filters.kind" clearable placeholder="全部类型" style="width: 160px" @change="load()">
         <el-option v-for="k in KINDS" :key="k" :label="k" :value="k" />
       </el-select>
-      <el-button @click="load">刷新</el-button>
+      <el-button @click="load()">刷新</el-button>
       <el-button type="primary" @click="openWizard">新建任务</el-button>
     </div>
 
     <StateBox :loading="loading" :error="error" :empty="!rows.length" empty-text="还没有任务" @retry="load">
-      <el-table :data="rows" size="small" @row-click="open">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="kind" label="类型" width="150" />
-        <el-table-column label="状态" width="110"><template #default="{ row }"><StatusBadge :value="row.status" /></template></el-table-column>
-        <el-table-column label="完成度" width="200">
+      <el-table :data="rows" size="small" @row-click="open" @sort-change="onSortChange">
+        <el-table-column prop="id" label="ID" width="80" sortable="custom" />
+        <el-table-column prop="kind" label="类型" width="150" sortable="custom" />
+        <el-table-column prop="status" label="状态" width="120" sortable="custom">
+          <template #default="{ row }"><StatusBadge :value="row.status" /></template>
+        </el-table-column>
+        <el-table-column prop="progress" label="完成度" width="200" sortable="custom">
           <template #default="{ row }"><el-progress :percentage="Math.max(0, Math.min(100, row.progress || 0))" :stroke-width="10" /></template>
         </el-table-column>
         <el-table-column label="健康度" min-width="200">
           <template #default="{ row }"><el-tag size="small" :type="health(row).tone as never">{{ health(row).label }}</el-tag></template>
         </el-table-column>
         <el-table-column label="耗时" width="110"><template #default="{ row }">{{ duration(row) }}</template></el-table-column>
-        <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
+        <el-table-column prop="created_at" label="创建时间" width="180" sortable="custom"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button v-if="['Pending', 'Running'].includes(row.status) && canStop(row)" link type="warning" size="small" @click.stop="stop(row)">停止</el-button>

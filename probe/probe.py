@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Data Security Toolbox Probe daemon (V3.1).
+"""数据安全监测检测工具箱 探针守护进程 (V3.1).
 
 Implements persistent probe identity, a strict upload state machine, atomic
 spool manifests, sequence restoration, capture-format metadata and real (or
@@ -1266,7 +1266,7 @@ class ProbeAgent:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Data Security Toolbox Probe daemon")
+    parser = argparse.ArgumentParser(description="数据安全监测检测工具箱 探针守护进程")
     parser.add_argument("--config", default="/etc/data-security-toolbox/probe.toml", help="TOML config path")
     args = parser.parse_args()
     return ProbeAgent(Config(Path(args.config))).run()

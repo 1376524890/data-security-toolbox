@@ -83,3 +83,66 @@ def test_explicitly_uploaded_capture_file_is_still_inventoried(tmp_path):
     context = DetectionContext(target_type="file", path=capture)
     DataEngine().analyze(context)
     assert context.data["data_assets"][0]["name"] == capture.name
+
+
+def _stub_ocr(monkeypatch, *, text: str, coverage: str, layout: dict | None = None):
+    """Replace the shared OCR call so the engine path is tested, not tesseract."""
+    from shared.scanning import ocr
+
+    monkeypatch.setattr(ocr, "extract", lambda path, **kwargs: ocr.OcrResult(
+        text=text, pages=1, coverage=coverage,
+        reason="complete" if coverage == ocr.COVERAGE_COMPLETE else "no_text_recognized",
+        layout=layout or {},
+    ))
+
+
+def test_a_scanned_document_is_read_through_ocr_and_classified(tmp_path, monkeypatch):
+    """A document with no text layer is inspected, not merely inventoried."""
+    scan = tmp_path / "scan.png"
+    scan.write_bytes(b"png" + b"0" * 64)
+    _stub_ocr(monkeypatch, coverage="complete",
+              text="机密★10年\nXX市人民政府文件\n〔2023〕12号\n关于数据安全的通知\n",
+              layout={"red_title_band": True, "red_seal": False})
+
+    context = DetectionContext(target_type="file", files=[scan])
+    findings = DataEngine().analyze(context)
+    rules = {item.rule_id: item.severity for item in findings}
+    assert rules["DATA_CLASSIFIED_001"] == "Critical"
+    assert rules["DATA_REDHEAD_001"] == "Medium"
+
+    asset = context.data["data_assets"][0]
+    assert asset["ocr_coverage"] == "complete"
+    assert asset["document_type"]
+    assert asset["scan_status"] == "complete"
+
+
+def test_ocr_text_reaches_the_sensitive_rules(tmp_path, monkeypatch):
+    """The point of OCR is that a photographed number is a finding like any other."""
+    scan = tmp_path / "photo.jpg"
+    scan.write_bytes(b"jpg" + b"0" * 64)
+    _stub_ocr(monkeypatch, coverage="partial", text="联系人 13800138000")
+
+    findings = DataEngine().analyze(DetectionContext(target_type="file", files=[scan]))
+    assert any(item.rule_id == "DATA_PII_001" for item in findings)
+
+
+def test_without_ocr_tools_the_image_is_reported_uninspected(tmp_path, monkeypatch):
+    from shared.scanning import ocr
+
+    scan = tmp_path / "scan.png"
+    scan.write_bytes(b"png" + b"0" * 64)
+    monkeypatch.setattr(ocr, "extract", lambda path, **kwargs: ocr.OcrResult(
+        coverage=ocr.COVERAGE_UNAVAILABLE, reason="ocr_unavailable"))
+    context = DetectionContext(target_type="file", files=[scan])
+    DataEngine().analyze(context)
+    asset = context.data["data_assets"][0]
+    assert asset["scan_status"] == "unsupported"
+    assert asset["sensitivity"] == "Unknown"
+
+
+def test_a_clean_ocr_read_raises_no_document_finding(tmp_path, monkeypatch):
+    scan = tmp_path / "receipt.png"
+    scan.write_bytes(b"png" + b"0" * 64)
+    _stub_ocr(monkeypatch, coverage="complete", text="购物小票 合计 12.00 元")
+    findings = DataEngine().analyze(DetectionContext(target_type="file", files=[scan]))
+    assert not any(item.rule_id in {"DATA_CLASSIFIED_001", "DATA_REDHEAD_001"} for item in findings)

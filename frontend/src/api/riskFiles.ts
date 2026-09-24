@@ -37,6 +37,9 @@ export interface RiskFile {
 export interface RiskFileQuery {
   search?: string
   source_kind?: string
+  severity?: string
+  /** `field` ascending, `-field` descending; see `useTableSort`. */
+  order_by?: string
   page: number
   page_size: number
 }
@@ -114,6 +117,7 @@ export function listRiskFiles(query: RiskFileQuery): Promise<PageResult<RiskFile
   return apiGet('/asset-instances', {
     sensitive_only: true, page: query.page, page_size: query.page_size,
     search: query.search || undefined, source_kind: query.source_kind || undefined,
+    severity: query.severity || undefined, order_by: query.order_by || undefined,
   })
 }
 

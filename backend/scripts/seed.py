@@ -16,7 +16,7 @@ def main() -> None:
         if not db.scalar(select(User).where(User.username == "admin")):
             db.add(User(username="admin", role="admin"))
         if not db.scalar(select(SystemSetting).where(SystemSetting.key == "platform")):
-            db.add(SystemSetting(key="platform", value={"name": "Data Security Toolbox", "version": "v1.0"}))
+            db.add(SystemSetting(key="platform", value={"name": "数据安全监测检测工具箱", "version": "v1.0"}))
         db.commit()
     print("seed complete")
 

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import StateBox from '../../../../components/common/StateBox.vue'
 import StatCard from '../../../../components/common/StatCard.vue'
 import { getAssessment, type AssessmentEnvelope, type AssessmentKind } from '../../../../api/assessments'
+import { useAutoRefresh } from '../../../../composables/useAutoRefresh'
+import { useTableSort, sortRows } from '../../../../composables/useTableSort'
 
 // One renderer for every assessment endpoint: the exact five-段式 skeleton
 // (结论条 → KPI 带分母 → 主视图 → 明细 → 口径与缺口). A failed refresh keeps the
@@ -34,30 +36,51 @@ const COLUMNS: Record<string, { prop: string; label: string }[]> = {
     { prop: 'region', label: '地区' }, { prop: 'reason', label: '依据' }],
 }
 
+// One envelope holds every table, so filtering and sorting are client-side; the
+// search box applies to every section at once.
+const filters = reactive({ search: '' })
+const { sort, onSortChange } = useTableSort()
+
+function matches(row: Record<string, unknown>, needle: string): boolean {
+  if (!needle) return true
+  return Object.values(row).some((value) => String(value ?? '').toLowerCase().includes(needle))
+}
+
 const tables = computed(() => {
   const sections = data.value?.sections || {}
+  const needle = filters.search.trim().toLowerCase()
   return Object.entries(COLUMNS)
     .filter(([key]) => Array.isArray(sections[key]) && (sections[key] as unknown[]).length)
-    .map(([key, columns]) => ({ key, columns, rows: sections[key] as Record<string, unknown>[] }))
+    .map(([key, columns]) => ({
+      key, columns,
+      rows: sortRows(
+        (sections[key] as Record<string, unknown>[]).filter((row) => matches(row, needle)),
+        sort.prop, sort.order, (row, prop) => row[prop],
+      ),
+    }))
 })
 const direction = computed(() => (data.value?.sections?.direction as Record<string, number>) || null)
 const buckets = computed(() => (data.value?.sections?.buckets as Record<string, number>) || null)
 const dedup = computed(() => (data.value?.sections?.dedup as Record<string, unknown>) || null)
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
+async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+  if (!silent) { loading.value = true; error.value = '' }
   try {
     data.value = await getAssessment(props.kind)
+    error.value = ''
   } catch (err) {
-    error.value = String(err)
+    if (!silent) error.value = String(err)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
+// Assessment envelopes are re-aggregated from stored rows, so a minute keeps
+// them current without re-running the aggregation more often than it changes.
+useAutoRefresh(load, { intervalMs: 60000 })
+
 onMounted(load)
-watch(() => props.kind, load)
+watch(() => props.kind, () => { void load() })
 </script>
 
 <template>
@@ -94,11 +117,16 @@ watch(() => props.kind, load)
         </div>
       </div>
 
+      <div class="toolbar" style="margin-top: 12px">
+        <el-input v-model="filters.search" clearable placeholder="筛选所有明细表" style="width: 260px" />
+        <span class="muted">点击列标题可排序</span>
+      </div>
       <div v-for="table in tables" :key="table.key" class="soc-card" style="margin-top: 12px">
         <div class="soc-card-title"><span class="dot" />{{ table.key }}</div>
-        <el-table :data="table.rows" size="small" max-height="360">
+        <el-table :data="table.rows" size="small" max-height="360" @sort-change="onSortChange">
           <el-table-column v-for="column in table.columns" :key="column.prop"
-                           :prop="column.prop" :label="column.label" show-overflow-tooltip />
+                           :prop="column.prop" :label="column.label" show-overflow-tooltip
+                           sortable="custom" />
         </el-table>
       </div>
 

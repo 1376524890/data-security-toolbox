@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.finding_presenter import _serialize_detection as _serialize_detection
+from app.api.list_sort import order_query
 from app.api.pagination import page_response, paginate
 from app.core.database import get_db
 from app.models import AssetInstance, DataAsset, Detection, DetectionFinding
@@ -43,6 +44,14 @@ def _serialize_data_asset(item: DataAsset) -> dict[str, Any]:
     }
 
 
+#: Whitelisted sort keys for ``GET /data/assets``.
+DATA_ASSET_SORTABLE = {
+    "id": DataAsset.id, "name": DataAsset.name, "asset_type": DataAsset.asset_type,
+    "sensitivity": DataAsset.sensitivity, "source": DataAsset.source,
+    "created_at": DataAsset.created_at,
+}
+
+
 @router.get("/data/assets")
 def data_assets(
     search: str | None = None,
@@ -50,6 +59,7 @@ def data_assets(
     asset_type: str | None = None,
     source: str | None = None,
     probe_id: int | None = None,
+    order_by: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -65,7 +75,8 @@ def data_assets(
         query = query.where(DataAsset.source == source)
     if probe_id:
         query = query.where(DataAsset.extra["probe_id"].as_integer() == probe_id)
-    result = paginate(db, query.order_by(DataAsset.id.desc()), page, page_size)
+    result = paginate(db, order_query(query, order_by, DATA_ASSET_SORTABLE,
+                                       default="id", default_desc=True), page, page_size)
     return page_response(
         [_serialize_data_asset(item) for item in result["items"]], page, page_size, result["total"]
     )
@@ -137,7 +148,14 @@ def data_asset_detail(data_asset_id: int, db: Session = Depends(get_db)) -> dict
     }
 
 
-SENSITIVE_RULE_BUCKETS = {"DATA_SECRET_001": "secret", "DATA_PII_001": "pii"}
+SENSITIVE_RULE_BUCKETS = {
+    "DATA_SECRET_001": "secret",
+    "DATA_PII_001": "pii",
+    # A document-type signal is not a YARA match; the catch-all default would
+    # report a 红头/涉密 finding under "yara".
+    "DATA_CLASSIFIED_001": "document",
+    "DATA_REDHEAD_001": "document",
+}
 
 
 def _sensitive_bucket(engine: str, rule_id: str) -> str:

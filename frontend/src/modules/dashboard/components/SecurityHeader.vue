@@ -47,7 +47,7 @@ const apiOk = () => props.apiStatus === 'ok'
         </svg>
       </div>
       <div class="ds-brand-text">
-        <div class="ds-brand-name">Data Security Toolbox</div>
+        <div class="ds-brand-name">数据安全监测检测工具箱</div>
         <div class="ds-brand-sub">数据安全 · 监测 · 分析 · 处置</div>
       </div>
     </div>

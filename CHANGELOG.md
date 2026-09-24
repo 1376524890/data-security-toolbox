@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-09-24 — v3.3.0：列表筛选与排序、页面自动刷新、OCR 红头/涉密判定、平台更名
+
+平台版本自 3.2.0 升到 **3.3.0**（`backend/app/main.py`、`frontend/package.json` 与
+`frontend/package-lock.json`），探针保持 3.7.0（`shared/` 与 `probe/probe.py` 有改动，
+分发包按 arm64 重建），**无新增 Alembic 迁移**（head 仍为 `0019_policy_group_fingerprints`）。
+四项需求：① 页面自动刷新；② 列表筛选 + 点击列标题排序；③ OCR/图像识别判断红头、涉密文件；
+④ 名称改为「数据安全监测检测工具箱」。
+
+- **自动刷新收进一个共享 composable**（`frontend/src/composables/useAutoRefresh.ts`）：
+  每个页面原来各写一份 `setInterval`，三件事各错各的。现在统一三条保证——**上一拍没回来就不再排下一拍**
+  （慢接口不会瞬间变成 5 个并发请求）、**标签页隐藏时完全不轮询**（大屏被最小化时没人看，
+  后台轮询只是在耗数据分区）、**组件卸载即清 timer**（活过组件的 timer 会往已销毁的 ref 里写）。
+  刷新一律走 `load({ silent: true })`：**后台失败保留上一次成功的数据**，不清空成假象。
+  间隔按数据变化速度取值：任务中心 15 s、抓包工作台/看板 30–60 s、规则库/漏洞库 120 s。
+- **筛选与排序**：前端 `useTableSort` 把 Element Plus 的 `@sort-change` 归一成列表 API 只认的
+  `order_by` 拼写（`field` 升序、`-field` 降序，见 `backend/app/api/list_sort.py`），
+  并**同时把页码复位到第 1 页**——只换顺序不换页码，看到的是「新顺序下早已不存在的那一页」。
+  后端 `order_by` 走白名单，**未知列直接 400**（`{"error":"unsupported_sort","allowed":[...]}`）
+  而不是静默忽略：静默忽略会让页面顶着一个从未生效的排序箭头。一次取全的列表（规则库、策略组、
+  指纹候选、评估发现、传输对象、规则版本）在浏览器内筛选排序，不为此多打一次请求；规则版本页两张表
+  各持一份排序状态，共用会让点一张表把另一张也重排。已接入 `/tasks`、`/files`、`/pcaps`、
+  `/data/assets`、`/network/assets`、`/asset-instances`、`/offline/cves`；敏感度按**等级排序**
+  （`SEVERITY_RANK`）而不是按字母拼写。
+- **修复一个排序期间才现形的缺陷**：`order_rows()` 用 `sorted(..., reverse=True)`，
+  **空值会被 reverse 顶到最前面**（`None` 读成「最高」而不是「未知」）。现在先把有值的行排序、
+  再把缺值的行原样接在后面，两个方向都成立。
+- **OCR 补齐数据安全扫描的盲区**（`shared/scanning/ocr.py`）：平台此前只看得到**有文本层**的文件，
+  扫描版 PDF 与照片一律落成 `binary_metadata_only`——**登记在册、从未被检查**。现在图片与扫描版 PDF
+  经 `tesseract`（`chi_sim+eng`）+ `pdftoppm` 读出文字，**边界写死**：单文件最多 20 页 / 20 万字符、
+  单页 60 秒超时、单图 30 MB 上限、版式分析在 256 px 缩略图上做（逐像素循环不碰原图），
+  每一字节都记进共用的 `ScanBudget`。**覆盖率如实上报**：`complete`/`partial`/`failed`/`unavailable`/
+  `unsupported`，缺工具链就是「未检查」，绝不装成「干净」。工具链加进 `backend/Dockerfile` 的 base 阶段
+  （api 与 analysis-worker 共用）。
+- **红头文件 / 涉密文件判定**（`shared/scanning/document_types.py`）：把 OCR 文本 + 页面颜色
+  变成**可解释的信号**，而不是一个分数。涉密标志要 `密级★期限` 或 `密级：X` 的形状，
+  或两个以上独立涉密用语；**光一个「秘密」不算**（"秘密地点"也会命中）。红头文件要**版式红头与公文文字
+  互证**（`发文字号`、以「文件」结尾的标题行、`关于……的通知`、发文机关、成文日期）；
+  只有红头没有公文文字时只报「红头版式文件（Low）」。产出两条规则：`DATA_CLASSIFIED_001`
+  （绝密/机密 Critical、秘密/通用 High）与 `DATA_REDHEAD_001`。文件源扫描
+  （`services/file_scan/ingest.py`）同样接上：OCR 文本进入同一套敏感扫描，覆盖率由
+  `binary_metadata_only` 变成 `partial/ocr_read`。
+- **密码评估按资产常驻展示**（`modules/data-security/composables/useCryptoAssessmentResults.ts`）：
+  密码评估页原来列的是**检查任务**，点一条才渲染那次运行的主机——结果被绑在「哪次跑的」上，而运维问的是
+  「这台资产现在怎么样」。现在把当前页每条含密码评估的检查任务**折叠成一行一台主机**，同一主机多次观测
+  **取最新一次**，行里直接给出结论（`level`/`overallScore`/`violations`）；任务表降级为观测来源。
+  判定口径只有一份：观测值优先、缺项用内置默认补齐的规则抽成导出的 `configFromProfile()`，
+  页面与资产行都走它——两份实现会让同一台主机在两个页面上评出不同等级。等级排序按**结论档位**
+  （最差在前）而不是按字符串顺序；两张表各持一份排序状态，共用一个会把另一张也重排。
+- **更名**：用户可见的产品名统一为「数据安全监测检测工具箱」（后端 `settings.app_name`、
+  报告模板、通知、控制台标题/登录页/导航、种子脚本、部署脚本、README）。**不动**的是
+  标识符与路径：探针 systemd 单元 `data-security-toolbox-probe`、安装目录
+  `/opt/data-security-toolbox` 等保持原样，避免已下发探针失联。
+
 ## 2026-09-24 — v3.2.0：漏洞库不再卡在「任务不存在」、抓包段不再刷屏任务监控、大屏两张图分开并画出数据链路
 
 平台版本自 3.1.0 升到 **3.2.0**（`backend/app/main.py`、`frontend/package.json` 与

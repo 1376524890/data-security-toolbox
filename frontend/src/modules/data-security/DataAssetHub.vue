@@ -7,6 +7,7 @@ import BarChart from '../../components/charts/BarChart.vue'
 import NetworkAssets from './NetworkAssets.vue'
 import CryptoAssessmentResults from './CryptoAssessmentResults.vue'
 import { getAssessment, type AssessmentEnvelope, type AssessmentKpi } from '../../api/assessments'
+import { useAutoRefresh } from '../../composables/useAutoRefresh'
 
 // 资产中心 has two inventories: 数据资产 (a: the overview and distribution of the
 // data landscape, b: the risky and fragile data with its rating) and 网络资产
@@ -28,19 +29,25 @@ const error = ref('')
 const classification = ref<AssessmentEnvelope | null>(null)
 const exposure = ref<AssessmentEnvelope | null>(null)
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
+async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+  if (!silent) { loading.value = true; error.value = '' }
   try {
     const [a, b] = await Promise.all([getAssessment('classification'), getAssessment('exposure')])
     classification.value = a
     exposure.value = b
+    error.value = ''
   } catch (err) {
-    error.value = String(err)
+    // The last good assessment stays on screen; a blip must not blank the page.
+    if (!silent) error.value = String(err)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
+
+// Assessment cards are re-aggregated from stored rows, so they only move when a
+// scan lands; a minute keeps them current without re-running the aggregation
+// more often than it can change.
+useAutoRefresh(load, { intervalMs: 60000 })
 
 function kpiOf(envelope: AssessmentEnvelope | null, key: string): AssessmentKpi | undefined {
   return envelope?.kpis.find((item) => item.key === key)

@@ -612,11 +612,38 @@ def list_offline_resources(db: Session) -> list[dict[str, Any]]:
     ]
 
 
-def list_local_cves(db: Session, search: str = "", limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+#: Whitelisted columns for ``GET /offline/cves``'s ``order_by`` (the API layer
+#: turns a bad key into a 400 before this runs).
+LOCAL_CVE_SORTABLE: dict[str, Any] = {
+    "cve_id": LocalCve.cve_id,
+    "severity": LocalCve.severity,
+    "cvss_score": LocalCve.cvss_score,
+    "source": LocalCve.source,
+    "published": LocalCve.published,
+    "modified": LocalCve.modified,
+}
+
+
+def list_local_cves(db: Session, search: str = "", limit: int = 100, offset: int = 0, *,
+                    severity: str | None = None, source: str | None = None,
+                    order_by: str | None = None) -> list[dict[str, Any]]:
     query = select(LocalCve)
     if search:
         query = query.where(LocalCve.cve_id.ilike(f"%{search}%"))
-    rows = db.scalars(query.order_by(LocalCve.cvss_score.desc(), LocalCve.cve_id).offset(offset).limit(limit)).all()
+    if severity:
+        query = query.where(LocalCve.severity == severity)
+    if source:
+        query = query.where(LocalCve.source == source)
+    if order_by:
+        raw = str(order_by).strip()
+        column = LOCAL_CVE_SORTABLE.get(raw.lstrip("-"))
+        if column is None:
+            raise ValueError(f"unsupported sort: {order_by}")
+        order = (column.desc() if raw.startswith("-") else column.asc(), LocalCve.cve_id)
+    else:
+        # Natural order: strongest CVSS first, ties broken by id so paging is stable.
+        order = (LocalCve.cvss_score.desc(), LocalCve.cve_id)
+    rows = db.scalars(query.order_by(*order).offset(offset).limit(limit)).all()
     return [
         {
             "cve_id": item.cve_id,

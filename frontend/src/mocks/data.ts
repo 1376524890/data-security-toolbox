@@ -8,7 +8,7 @@ export const iso = (ms: number) => new Date(ms).toISOString()
 const ago = (min: number) => iso(now - min * 60_000)
 
 export const health = {
-  status: 'ok', service: 'Data Security Toolbox', api: 'ok', database: 'ok', redis: 'ok',
+  status: 'ok', service: '数据安全监测检测工具箱', api: 'ok', database: 'ok', redis: 'ok',
   celery: { broker: 'ok', workers: 3, running: 2, queued: 4 },
   analysis_worker: 'ready',
   tshark: { available: true, version: '4.2.5' },

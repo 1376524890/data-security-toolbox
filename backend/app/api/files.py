@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.api.data_assets import _serialize_data_asset as _serialize_data_asset
 from app.api.dependencies import enforce_queue_backpressure, upload_probe_id
 from app.api.finding_presenter import _serialize_detection as _serialize_detection
+from app.api.list_sort import order_query
 from app.api.pagination import page_response, paginate
 from app.api.task_presenter import serialize_task
 from app.core.config import settings
@@ -37,6 +38,13 @@ router = APIRouter()
 # The console filters files by extension ("png") while the record stores the
 # detected MIME ("image/png"). Map both spellings onto one candidate set so a
 # filter never silently returns nothing.
+#: Whitelisted sort keys for ``GET /files``.
+FILE_SORTABLE = {
+    "id": FileRecord.id, "name": FileRecord.name, "size": FileRecord.size,
+    "file_type": FileRecord.file_type, "risk_level": FileRecord.risk_level,
+    "created_at": FileRecord.created_at,
+}
+
 FILE_TYPE_ALIASES: dict[str, str] = {
     "pdf": "application/pdf",
     "doc": "application/msword",
@@ -147,6 +155,7 @@ def list_files(
     search: str | None = None,
     file_type: str | None = None,
     risk_level: str | None = None,
+    order_by: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -161,7 +170,8 @@ def list_files(
         query = query.where(FileRecord.file_type.in_(candidates))
     if risk_level:
         query = query.where(FileRecord.risk_level == risk_level)
-    result = paginate(db, query.order_by(FileRecord.id.desc()), page, page_size)
+    result = paginate(db, order_query(query, order_by, FILE_SORTABLE,
+                                       default="id", default_desc=True), page, page_size)
     return page_response(
         [serialize_file(item) for item in result["items"]], page, page_size, result["total"]
     )

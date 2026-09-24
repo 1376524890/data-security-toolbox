@@ -140,11 +140,17 @@ sudo systemctl restart data-security-toolbox-probe
 
 也可直接在管理台 **资产与数据安全 → 文件分析** 上传单个文件手动分析。
 
+图片与扫描版 PDF（没有文本层、原先只登记为 `binary_metadata_only`）会先经 OCR（tesseract `chi_sim`
++ `pdftoppm`）读出文字，再进入同一套检测；OCR 覆盖率（`complete`/`partial`/`failed`/`unavailable`/
+`unsupported`）与文档类型随资产行上报，**读不到就说读不到**，不会记成「干净」。
+
 实测可检出的示例规则：
 
 - `DATA_SECRET_001`（Critical，密钥/口令）
 - `DATA_PII_001`（High，身份证/手机号/银行卡/邮箱）
 - `DATA_YARA_001`（High，恶意文件特征，如 eicar）
+- `DATA_CLASSIFIED_001`（High/Critical，涉密标志：`密级★期限`、`密级：X` 或两个以上涉密用语）
+- `DATA_REDHEAD_001`（Medium，红头文件/公文：红色版头与发文字号/公文标题互证）
 
 ### 3.4 路径 D：资产分析与弱口令 / 弱认证检测
 

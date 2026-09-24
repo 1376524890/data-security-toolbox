@@ -145,7 +145,7 @@ def stage(name: str, arch: str, version: str) -> pathlib.Path:
     (out / ".local" / "deployment").mkdir(parents=True, exist_ok=True)
 
     (out / "VERSION").write_text(
-        "Data Security Toolbox（数据安全工具箱）\n"
+        "数据安全监测检测工具箱\n"
         f"平台版本 platform : {version}\n"
         "探针版本 probe    : 3.7.0\n"
         "数据库迁移 head   : 0019_policy_group_fingerprints\n"

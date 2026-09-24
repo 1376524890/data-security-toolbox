@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 数据安全工具箱 —— 一键部署（离线 / arm64）
+# 数据安全监测检测工具箱 —— 一键部署（离线 / arm64）
 #
 #   ./deploy.sh                   按 deploy.conf 一键跑完：载入镜像 → 生成 .env → 起容器 → 等健康
 #   ./deploy.sh --dry-run         只看会写入的 .env 与将执行的命令

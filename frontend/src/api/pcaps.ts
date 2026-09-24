@@ -5,6 +5,8 @@ import type { AlertItem, Flow, NetworkFile, Packet, PcapRecord, TrafficOverview 
 export interface PcapQuery {
   search?: string
   status?: string
+  /** `field` ascending, `-field` descending; see `useTableSort`. */
+  order_by?: string
   page: number
   page_size: number
 }

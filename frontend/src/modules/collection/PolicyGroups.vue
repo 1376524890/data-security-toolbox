@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import StateBox from '../../components/common/StateBox.vue'
+import { useAutoRefresh } from '../../composables/useAutoRefresh'
+import { useTableSort, sortRows } from '../../composables/useTableSort'
 import {
   createPolicyGroup, deletePolicyGroup, listPolicyGroups, updatePolicyGroup,
   type PolicyGroup, type PolicyGroupDraft,
@@ -18,6 +20,20 @@ const editingId = ref<number | null>(null)
 const draft = reactive({
   name: '', description: '', enabled: true, scope: ['file', 'network', 'database'] as string[],
   rules: '', categories: '', keywords: '', min_confidence: 0.6, min_matches: 1,
+})
+// The list is fetched whole (page_size 200), so filtering and sorting stay here.
+const filters = reactive({ search: '', enabled: '' })
+const { sort, onSortChange } = useTableSort()
+const visibleItems = computed(() => {
+  const needle = filters.search.trim().toLowerCase()
+  const rows = items.value.filter((row) => {
+    if (filters.enabled === 'yes' && !row.enabled) return false
+    if (filters.enabled === 'no' && row.enabled) return false
+    if (!needle) return true
+    return [row.name, row.description].some(
+      (field) => String(field || '').toLowerCase().includes(needle))
+  })
+  return sortRows(rows, sort.prop, sort.order, (row, prop) => (row as unknown as Record<string, unknown>)[prop])
 })
 
 function open(row?: PolicyGroup): void {
@@ -47,17 +63,21 @@ function payload(): PolicyGroupDraft {
   }
 }
 
-async function load(): Promise<void> {
-  loading.value = true
-  error.value = ''
+async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+  if (!silent) { loading.value = true; error.value = '' }
   try {
     items.value = (await listPolicyGroups({ page: 1, page_size: 200 })).items
+    error.value = ''
   } catch (err) {
-    error.value = String(err)
+    if (!silent) error.value = String(err)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
+
+// Policy groups change only through this page's own edits or another analyst's,
+// so the poll is deliberately slow.
+useAutoRefresh(load, { intervalMs: 120000 })
 
 async function save(): Promise<void> {
   if (!draft.name.trim()) { ElMessage.warning('请填写策略组名称'); return }
@@ -93,13 +113,21 @@ onMounted(load)
     <div class="toolbar"><strong>策略分组</strong>
       <span class="muted">下发任务时勾选使用哪些策略组进行检查或监测</span>
       <div class="toolbar-spacer" />
-      <el-button @click="load">刷新</el-button>
+      <el-button @click="load()">刷新</el-button>
       <el-button type="primary" @click="open()">新建策略组</el-button>
     </div>
     <StateBox :loading="loading" :error="error" :empty="false" @retry="load">
-      <el-table :data="items" size="small" empty-text="尚无策略组">
-        <el-table-column prop="name" label="名称" min-width="160" />
-        <el-table-column prop="description" label="说明" min-width="200" show-overflow-tooltip />
+      <div class="toolbar" style="margin-bottom: 10px">
+        <el-input v-model="filters.search" clearable placeholder="名称 / 说明" style="width: 240px" />
+        <el-select v-model="filters.enabled" clearable placeholder="全部状态" style="width: 130px">
+          <el-option label="已启用" value="yes" />
+          <el-option label="已停用" value="no" />
+        </el-select>
+        <span class="muted">显示 {{ visibleItems.length }} / {{ items.length }} 个</span>
+      </div>
+      <el-table :data="visibleItems" size="small" empty-text="尚无策略组" @sort-change="onSortChange">
+        <el-table-column prop="name" label="名称" min-width="160" sortable="custom" />
+        <el-table-column prop="description" label="说明" min-width="200" show-overflow-tooltip sortable="custom" />
         <el-table-column label="适用范围" width="180">
           <template #default="{ row }">
             <el-tag v-for="scope in row.scope" :key="scope" size="small" style="margin: 2px">{{ scope }}</el-tag>
@@ -111,7 +139,7 @@ onMounted(load)
         <el-table-column label="阈值" width="150">
           <template #default="{ row }">置信度 ≥ {{ row.min_confidence }} · 命中 ≥ {{ row.min_matches }}</template>
         </el-table-column>
-        <el-table-column label="启用" width="80">
+        <el-table-column prop="enabled" label="启用" width="90" sortable="custom">
           <template #default="{ row }"><el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template>
         </el-table-column>
         <el-table-column label="操作" width="140" fixed="right">

@@ -75,7 +75,7 @@ def deliver_alert_task(alert_id: int) -> None:
                     import email.message
 
                     message = email.message.EmailMessage()
-                    message["Subject"] = f"[Data Security Toolbox] {alert.severity} {alert.title}"
+                    message["Subject"] = f"[数据安全监测检测工具箱] {alert.severity} {alert.title}"
                     message["From"] = settings.smtp_from or settings.smtp_user
                     message["To"] = row.target
                     message.set_content(json.dumps(payload, ensure_ascii=False, indent=2))

@@ -80,7 +80,7 @@ def readme(images: list[str], arch: str, saved: bool) -> str:
              f"  docker save -o dist-offline/{TARBALL} " + " ".join(images)
     )
     return (
-        "Data Security Toolbox 离线包\n"
+        "数据安全监测检测工具箱 离线包\n"
         "\n"
         "架构：本包内镜像为 " + arch + "，目标机 uname -m 必须一致（aarch64 / x86_64 不可混用）。\n"
         "\n"

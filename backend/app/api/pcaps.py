@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import enforce_queue_backpressure, upload_probe_id
 from app.api.finding_presenter import _serialize_detection as _serialize_detection
+from app.api.list_sort import order_query
 from app.api.pagination import page_response, paginate
 from app.api.task_presenter import serialize_task
 from app.core.config import settings
@@ -221,10 +222,21 @@ async def upload_pcap(
     }
 
 
+#: Whitelisted sort keys for ``GET /pcaps``.
+PCAP_SORTABLE = {
+    "id": PcapRecord.id, "filename": PcapRecord.filename, "size": PcapRecord.size,
+    "analysis_status": PcapRecord.analysis_status, "ingest_status": PcapRecord.ingest_status,
+    "status": PcapRecord.status, "packet_count": PcapRecord.packet_count,
+    "total_packet_count": PcapRecord.total_packet_count, "duration": PcapRecord.duration,
+    "capture_start": PcapRecord.capture_start, "created_at": PcapRecord.created_at,
+}
+
+
 @router.get("/pcaps")
 def list_pcaps(
     search: str | None = None,
     status: str | None = None,
+    order_by: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -234,7 +246,8 @@ def list_pcaps(
         query = query.where(PcapRecord.filename.ilike(f"%{search}%"))
     if status:
         query = query.where(PcapRecord.status == status)
-    result = paginate(db, query.order_by(PcapRecord.id.desc()), page, page_size)
+    result = paginate(db, order_query(query, order_by, PCAP_SORTABLE,
+                                       default="id", default_desc=True), page, page_size)
     return page_response(
         [serialize_pcap(item) for item in result["items"]], page, page_size, result["total"]
     )

@@ -1,5 +1,128 @@
 # 当前任务：资产与数据安全增强
 
+## 第五十批：页面自动刷新、列表筛选与排序、OCR 红头/涉密判定、平台更名（2026-09-24）
+
+用户要求：① 所有页面加间隔合理的自动刷新；② 列表加筛选与点击列标题升降序排序；
+③ 加 OCR/图像识别，把图片、PDF 识别出来并判断红头文件、涉密文件，并入数据安全扫描扩大覆盖面；
+④ 名称由 `Data Security Toolbox` 改为「数据安全监测检测工具箱」。
+
+### 一、自动刷新：三件事收进一个 composable
+
+每个列表页原先各写一份 `setInterval`，于是各错各的。新增
+`frontend/src/composables/useAutoRefresh.ts`，统一三条保证：
+
+- **上一拍没回来就不再排下一拍**（`running` 守卫）：慢接口不会在一瞬间变成一串并发请求；
+- **`document.hidden` 时完全不轮询**：被最小化的大屏没人看，后台轮询只在耗数据分区；
+- **卸载清 timer**，且 `start/stop/pause/resume/refreshNow` 都先看 `disposed`——
+  活过组件的 timer 会往已销毁的 ref 里写。
+
+刷新一律 `load({ silent: true })`，**后台失败保留上一次成功的数据**（各 composable 的 `load` 也
+相应改了：`silent` 时不置 `loading`、不写 `error`）。间隔按数据变化速度取：任务中心 15 s，
+抓包工作台、看板、文件/资产/流量列表 60 s，规则库、漏洞库 120 s；`LoginView` 与编辑中的表单不轮询。
+`useAutoRefresh` 用 `getCurrentInstance()` 守住生命周期钩子，所以普通函数/单测里调用它不会触发
+Vue 的「无实例」告警，只是不自动起表。
+
+### 二、筛选 + 点击列标题排序
+
+- 前端 `useTableSort`：把 Element Plus 的 `@sort-change` 归一成列表 API 只认的 **`order_by` 拼写**
+  （`field` 升序 / `-field` 降序），并**同时把页码复位到第 1 页**——只换顺序不换页码，
+  看到的是「新顺序下早已不存在的那一页」。客户端列表（数据已在手）用同一套状态 + `sortRows()`。
+- 后端 `app/api/list_sort.py`：`order_by` 走白名单，**未知列直接 400**
+  （`{"error":"unsupported_sort","allowed":[...]}`）而不是静默忽略。静默忽略会让页面顶着一个
+  从未生效的排序箭头；白名单同时是安全边界，查询参数永远变不成未建索引的全表扫描。
+- 接入面：`/tasks`、`/files`、`/pcaps`、`/data/assets`、`/network/assets`、`/asset-instances`
+  （并新增 `severity` 过滤）、`/offline/cves`（并新增 `severity`/`source` 过滤）。
+  敏感度按 `SEVERITY_RANK = case(...)` **按等级**排序，而不是按 `Critical/High/...` 的字母拼写。
+
+**缺陷（写断言时才发现）**：`order_rows()` 用 `sorted(..., reverse=True)`，**空值会被 reverse 顶到最前**
+——`None` 读成「最高」而不是「未知」，与函数自己的文档字符串相反。现在先把有值的行排序、
+缺值的行原样接在后面，升序降序都成立。
+
+### 三、OCR：红头 / 涉密判定并入数据安全扫描
+
+平台此前只看得到**有文本层**的文件：扫描版 PDF 与图片一律落成 `binary_metadata_only`——
+**登记在册、从未被检查**。
+
+- `shared/scanning/ocr.py`：图片与扫描版 PDF 经 `tesseract`（`chi_sim+eng`）+ `pdftoppm` 读出文字。
+  **边界写死**——单文件最多 20 页 / 20 万字符、单页 60 秒超时、单图 30 MB 上限、
+  版式分析在 256 px 缩略图上做（逐像素循环不碰原图）、每一字节都记进共用的 `ScanBudget`；
+  预算耗尽时 `BudgetExceeded` **向上抛**，不做成一次「空读取」。
+- **覆盖率如实上报**：`complete`/`partial`/`failed`/`unavailable`/`unsupported`。缺工具链 = 「未检查」；
+  识别出文字但被字符上限截断也算 `partial`（原先只按页数判断，**截断会被读成 complete**——已修）。
+  资产行因此带 `ocr_coverage` 与 `document_type`，读不到时 `sensitivity` 记 `Unknown` 而不是 `Low`。
+- `shared/scanning/document_types.py`：把 OCR 文本 + 页面颜色变成**可解释的信号**，不是一个分数。
+  涉密标志要求 `密级★期限`、`密级：X` 的形状，或两个以上独立涉密用语；**光一个「秘密」不算**
+  （「秘密地点」也会命中，这是刻意的 abstain）。红头文件要求**版式红头与公文文字互证**
+  （发文字号、以「文件」结尾的标题行、`关于……的通知`、发文机关、成文日期）；
+  只有红头没有公文文字时只报「红头版式文件（Low）」，不替对方拔高。
+- 产出两条规则：`DATA_CLASSIFIED_001`（绝密/机密 Critical、秘密/通用 High）、
+  `DATA_REDHEAD_001`（Medium），已登记进 `app/rules/builtin.py` 与
+  `api/finding_presenter.py` 的 ATT&CK 映射；`data_assets.py` 的敏感桶新增 `document`
+  （否则红头/涉密会被归到 catch-all 的 `yara` 桶里）。
+- `services/file_scan/ingest.py`（文件源扫描）同样接上：OCR 文本进入同一套敏感扫描，
+  覆盖率由 `binary_metadata_only` 变成 `partial / ocr_read`，`ocr` 与 `document_signals`
+  随资产 `extra` 落库。
+- `backend/Dockerfile` base 阶段加 `tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng poppler-utils`，
+  api 与 analysis-worker 共用。**探针不做 OCR**：依赖与负载留在服务端，`shared` 里的实现无工具链时降级。
+
+### 四、更名
+
+用户可见的产品名统一为「数据安全监测检测工具箱」：后端 `settings.app_name`、`app/__init__.py`、
+报告模板 `report.html.j2`、通知文案、控制台标题/登录页/导航/主题、`index.html`、种子脚本、
+离线打包脚本、`deploy/*`、README，以及探针 `--help` 的守护进程描述。
+**刻意不动**标识符与安装路径：systemd 单元 `data-security-toolbox-probe`、`/opt/data-security-toolbox`、
+`/etc/data-security-toolbox`、`/var/lib/data-security-toolbox`、探针上报里的 `plugin/classification`
+保持不变——改名换来的是已下发探针失联，不是收益。
+
+### 五、密码评估页按资产常驻展示结果
+
+用户要求「密码评估页面应该可以按资产常驻展示结果」。原页面（资产中心 → 密码评估）列的是**检查任务**，
+点一条任务才在下面渲染那次运行观测到的主机；结果实际上是「任务的结果」，而运维找的是「某个资产现在怎么样」。
+
+- `composables/useCryptoAssessmentResults.ts` 新增 `assets`/`toAssetRows()`：把当前页每条含密码评估的
+  检查任务**折叠成一行一台主机**，同一主机被多次观测时**取最新一次**（按 `finished_at`、再按 id），
+  天然按最近观测倒序。行里直接带上结论：`level`/`overallScore`/`violations`。
+- 判定口径只有一份：`useCryptoAssessment.ts` 里把「观测值优先、缺项用内置默认补齐」抽成导出的
+  `configFromProfile()`，页面与资产行都走它再调 `assessCrypto()`——两份实现会让同一台主机
+  在两个页面上评出不同等级。
+- 页面上「按资产常驻结果」是主表（筛选 + 点击列标题排序；等级按**结论档位**排、
+  不是按 `合规/不合规` 的字符串顺序），下面的检查任务表降级为**观测来源**。两张表**各持一份排序状态**，
+  共用一份会让点一张表把另一张也重排。
+- 面板只有一个：点资产看该资产的常驻结论，点任务看那次运行的主机；两边互斥，
+  刷新后选择项若已不在当前页会回落到资产视图（不显示过期画像）。
+- 无后端改动、无迁移：服务端本来就只存观测事实（`result.crypto_profiles`），
+  评估一直在浏览器内算。
+
+### 交付与验证
+
+平台版本 3.2.0 → **3.3.0**（`backend/app/main.py`、`frontend/package.json`、`frontend/package-lock.json`），
+**无新增 Alembic 迁移**（head 仍为 `0019_policy_group_fingerprints`），探针保持 3.7.0。
+
+- 前端 **23 文件 / 147 项通过**（原 22 / 124）。
+  新增 `__tests__/auto-refresh-table-sort.test.ts` 15 项（不叠拍、隐藏不轮询、失败上报、
+  `refreshNow` 的同一个守卫、`order_by` 拼写、清空排序回默认、`sortRows` 的数字/中文/空值语义）；
+  `__tests__/rule-versions-state.test.ts` 补 4 项（规则版本页的版本筛选、按列双向排序、
+  探针按**上报状态**筛选、探针按**上报版本**排序的取值口径）；
+  `__tests__/crypto-assessment-results-state.test.ts` 补 6 项（折叠成一行一台主机且**最新观测获胜**、
+  一次任务的多台主机各占一行、按资产筛选与按**结论档位**排序、资产与任务选择互斥、
+  选中项掉出当前页后回落到资产视图）。`vue-tsc --noEmit` 无输出。
+- 后端全量（容器内，`--ignore=tests/test_rule_libraries.py`）**35 failed / 1000 passed / 5 skipped / 8 errors**；
+  新增 34 项：`tests/shared/test_document_types.py` 9、`tests/shared/test_ocr.py` 9、
+  `tests/test_list_sort.py` 9、`tests/test_file_scan_ocr.py` 3、`tests/engine/test_data_engine.py` +4。
+- **同布局 A/B**（不是「和上次的数字比」）：同一 worktree 布局下把工作区换回 HEAD 跑一次，
+  基线 **44 failed / 957 passed / 5 skipped / 8 errors**，两次失败集合 **diff 为空**
+  （基线多出的 9 项全部是需要 `probe_packages/` 的分发包测试，干净 worktree 里没有该目录），
+  通过数 957 → **1000** = 新增 34 + 转绿 9，**零新增失败**。
+- ruff：新增文件零告警；被改文件告警集合与 HEAD 相同或更少（`engine.py` 12 E501 不变、
+  `ingest.py` 8 → 7、`offline_manager.py` 29 → 27、`integrations.py` 0 → 0）。
+- `shared/` 与 `probe/probe.py` 有改动，**按 arm64 重建探针分发包**
+  （`scripts/build_probe_packages.py --arch=arm64`，新 sha256 `29f2a0c6…`），
+  并复核出包闸门 `verify_probe_package()`（逐字节比对包内 `probe/` 与 `shared/**/*.py`）**通过**。
+
+**已知遗留（非本轮引入）**：`backend/tests/test_rule_libraries.py` 仍 import 早已在 `8080857` 删除的
+`app.api.rules`，会让 pytest 在收集阶段中断，全量跑必须带 `--ignore`；本机只构建了 arm64 运行时，
+`probe_packages/probe-3.7.0/amd64` 不存在，四个 amd64 分发包用例因此常红。
+
 ## 第四十九批：漏洞库「任务不存在」、抓包刷屏任务监控、大屏两张图分开切换（2026-09-24）
 
 用户要求：① 大屏的「地理位置态势」和「数据流动」做成两个可切换的页面、不要并列、并在地图上

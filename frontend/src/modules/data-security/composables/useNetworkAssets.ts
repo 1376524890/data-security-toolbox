@@ -11,6 +11,8 @@
  * reads as "the network is clean" — it is not the same statement.
  */
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useAutoRefresh } from '../../../composables/useAutoRefresh'
+import { useTableSort } from '../../../composables/useTableSort'
 import {
   getNetworkAssetSummary,
   listNetworkAssets,
@@ -28,14 +30,21 @@ export function useNetworkAssets() {
   const total = ref(0)
   const page = ref(1)
   const pageSize = ref(50)
-  const filters = reactive({ search: '', severity: '', only_vulnerable: false, source: '' })
+  const filters = reactive({
+    search: '', severity: '', only_vulnerable: false, source: '',
+    order_by: undefined as string | undefined,
+  })
+
+  // Rows are merged with their CVE hits in Python on the server, so the sort is
+  // applied there and only the requested page is ordered.
+  const { onSortChange, orderBy } = useTableSort(() => { page.value = 1; void load() })
   const selected = ref<NetworkAsset | null>(null)
   const drawer = ref(false)
 
-  async function load(): Promise<void> {
-    loading.value = true
-    error.value = ''
+  async function load({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+    if (!silent) { loading.value = true; error.value = '' }
     try {
+      filters.order_by = orderBy()
       const [pageData, summaryData] = await Promise.all([
         listNetworkAssets({ ...filters, page: page.value, page_size: pageSize.value }),
         getNetworkAssetSummary(),
@@ -43,12 +52,16 @@ export function useNetworkAssets() {
       items.value = pageData.items
       total.value = pageData.total
       summary.value = summaryData
+      error.value = ''
     } catch (err) {
-      error.value = String(err)
+      if (!silent) error.value = String(err)
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
+
+  // A port scan runs on demand, so a minute is often enough to notice a new one.
+  useAutoRefresh(load, { intervalMs: 60000 })
 
   /** Whether the CVE library can match anything at all; null while unknown. */
   async function loadLibrarySize(): Promise<void> {
@@ -98,5 +111,6 @@ export function useNetworkAssets() {
   return {
     loading, error, items, summary, libraryTotal, total, page, pageSize, filters,
     selected, drawer, cves, emptyCveReason, load, loadLibrarySize, search, setPage, open,
+    onSortChange,
   }
 }
