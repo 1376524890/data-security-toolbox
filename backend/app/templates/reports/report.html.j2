@@ -36,6 +36,48 @@
     <div class="card"><div class="num">{{ summary.integration_finding_count }}</div><div class="label">集成检测</div></div>
   </div>
 
+  {% if coverage and coverage.overall and coverage.overall.total %}
+  <h2>检查覆盖</h2>
+  <p>{{ coverage.overall.statement }}</p>
+  <table>
+    <tr><th>采集来源</th><th>已登记</th><th>完整读取</th><th>部分读取</th><th>未读取</th><th>完整读取率</th></tr>
+    {% for s in coverage.sources %}
+    <tr>
+      <td>{{ s.label }}</td>
+      <td>{{ s.total }}</td>
+      <td>{{ s.complete }}</td>
+      <td>{{ s.partial }}</td>
+      <td>{{ s.not_inspected }}</td>
+      <td>{{ s.coverage_percent }}%</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  {% if coverage.overall.miss_reasons %}
+  <p class="meta">未完整读取的原因分布（同一对象只计一个原因）：</p>
+  <table>
+    <tr><th>原因</th><th>数量</th></tr>
+    {% for r in coverage.overall.miss_reasons %}
+    <tr><td>{{ r.label }}</td><td>{{ r.count }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if coverage.overall.samples %}
+  <p class="meta">未完整读取的对象（下表为举例，共 {{ coverage.overall.samples|length }} 条；完整清单见控制台）：</p>
+  <table>
+    <tr><th>采集来源</th><th>对象</th><th>状态</th><th>原因</th></tr>
+    {% for s in coverage.overall.samples %}
+    <tr><td>{{ s.source }}</td><td>{{ s.name }}</td><td>{{ s.status_label }}</td><td>{{ s.reason_label }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if coverage.network %}
+  <p class="meta">{{ coverage.network.label }}：本次覆盖 {{ coverage.network.captures }} 个抓包，提取对象 {{ coverage.network.extracted_objects }} 个，其中加密流 {{ coverage.network.encrypted_streams }} 条未能解读。{{ coverage.network.note }}</p>
+  {% endif %}
+  {% endif %}
+
   {% if findings %}
   <h2>检测发现（{{ findings|length }}）</h2>
   <table>

@@ -221,9 +221,65 @@ def _sample(status: str, code: str, name: str) -> dict[str, str]:
     }
 
 
-def _block(status_counts: Mapping[str, int], reason_counts: Mapping[str, int],
-           samples: list[dict[str, str]]) -> dict[str, Any]:
-    """Assemble the block from counted parts - the one place its shape is set."""
+def _sample_parts(entry: Any) -> tuple[str, str, str]:
+    status, reason = _row_pair(entry)
+    return status, normalize_reason(status, reason), _row_name(entry)
+
+
+def _absorb_reason_rows(target: dict[str, dict[str, Any]],
+                        rows: Iterable[Mapping[str, Any]]) -> None:
+    """Fold label-grouped reason rows into an accumulating map.
+
+    Grouped by *label*, not by code. Two codes can share one label -
+    ``row_limit`` caps a single file, ``row_budget`` caps the whole run, and
+    both read as "达到行数上限" - so counting the group once is what keeps a
+    merged total equal to the sum of its parts. Splitting a group's count back
+    over its codes would count the same objects twice.
+    """
+    for item in rows or []:
+        name = str(item.get("label") or "")
+        if not name:
+            continue
+        entry = target.setdefault(name, {"label": name, "count": 0, "codes": []})
+        entry["count"] += int(item.get("count") or 0)
+        codes = item.get("codes") or ([item.get("code")] if item.get("code") else [])
+        for code in codes:
+            text = str(code or "")
+            if text and text not in entry["codes"]:
+                entry["codes"].append(text)
+
+
+def _reason_list(target: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The rows of a reason table, most common first, ties broken by label."""
+    return [
+        {"label": entry["label"], "count": entry["count"], "codes": sorted(entry["codes"])}
+        for entry in sorted(target.values(), key=lambda item: (-item["count"], item["label"]))
+    ]
+
+
+def _reason_rows(counts: Mapping[str, int]) -> list[dict[str, Any]]:
+    """Reason rows grouped by label, keeping the codes that produced them.
+
+    Printing two identical lines - one for each code behind "达到行数上限" -
+    makes a report look like it counted something twice. The codes are kept on
+    the row so the console can still say which one it was.
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    for code, count in counts.items():
+        _absorb_reason_rows(grouped, [{"label": label(code), "count": count, "codes": [code]}])
+    return _reason_list(grouped)
+
+
+def _block_from_rows(status_counts: Mapping[str, int],
+                     reasons: list[dict[str, Any]],
+                     miss_reasons: list[dict[str, Any]],
+                     samples: list[dict[str, str]]) -> dict[str, Any]:
+    """Assemble the block from parts that are already counted and grouped.
+
+    The one place the block's shape is set; ``_block`` and ``merge`` only differ
+    in how they get here, so a merged block and a single-source block can never
+    disagree about what a field means.
+    """
     total = sum(status_counts.values())
     complete = status_counts.get(COMPLETE, 0)
     partial = status_counts.get(PARTIAL, 0)
@@ -244,39 +300,56 @@ def _block(status_counts: Mapping[str, int], reason_counts: Mapping[str, int],
             {"status": status, "label": status_label(status), "count": count}
             for status, count in sorted(status_counts.items(), key=lambda item: (-item[1], item[0]))
         ],
-        "reasons": [
-            {"code": code, "label": label(code), "count": count}
-            for code, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
-        ],
+        #: Every reason, including the ones on fully-read rows.
+        "reasons": reasons,
+        #: Only the reasons belonging to rows that were not read in full - the
+        #: table a report puts under "未完整读取的原因". A breakdown that also
+        #: listed "正常完成 11376" under that heading contradicted itself.
+        "miss_reasons": miss_reasons,
         "samples": samples[:20],
     }
     block["statement"] = statement(block)
     return block
 
 
-def summarize_counts(pairs: Iterable[Any], *, samples: Iterable[Any] | None = None) -> dict[str, Any]:
-    """The coverage block for ``(status, reason, count)`` triples.
+def _block(status_counts: Mapping[str, int], reason_counts: Mapping[str, int],
+           miss_reason_counts: Mapping[str, int],
+           samples: list[dict[str, str]]) -> dict[str, Any]:
+    """Build a block from reason->count maps (the per-row and triple paths)."""
+    return _block_from_rows(status_counts, _reason_rows(reason_counts),
+                            _reason_rows(miss_reason_counts), samples)
 
-    The aggregate path reads grouped counts rather than rows - 11 groups stand
-    for 15 000 instances - and it still has to produce the same block as the
-    row-by-row path. Both go through ``_block`` so the two can never disagree.
-    """
+
+def _tally(pairs: Iterable[Any]) -> tuple[dict[str, int], dict[str, int], dict[str, int], int]:
+    """(status counts, reason counts, miss-reason counts, total) from triples."""
     status_counts: dict[str, int] = {}
     reason_counts: dict[str, int] = {}
+    miss_reason_counts: dict[str, int] = {}
+    total = 0
     for item in pairs:
         status, reason, count = str(item[0] or ""), str(item[1] or ""), int(item[2] or 0)
         if not count:
             continue
+        total += count
         status_counts[status] = status_counts.get(status, 0) + count
         code = normalize_reason(status, reason)
         reason_counts[code] = reason_counts.get(code, 0) + count
+        if status != COMPLETE:
+            miss_reason_counts[code] = miss_reason_counts.get(code, 0) + count
+    return status_counts, reason_counts, miss_reason_counts, total
+
+
+def summarize_counts(pairs: Iterable[Any], *, samples: Iterable[Any] | None = None) -> dict[str, Any]:
+    """The coverage block for ``(status, reason, count)`` triples.
+
+    The aggregate path reads grouped counts rather than rows - eleven groups
+    stand for fifteen thousand instances - and it still has to produce the same
+    block as the row-by-row path. Both go through ``_block`` so the two can
+    never disagree.
+    """
+    status_counts, reason_counts, miss_reason_counts, _ = _tally(pairs)
     extra = [_sample(*_sample_parts(entry)) for entry in (samples or [])]
-    return _block(status_counts, reason_counts, extra)
-
-
-def _sample_parts(entry: Any) -> tuple[str, str, str]:
-    status, reason = _row_pair(entry)
-    return status, normalize_reason(status, reason), _row_name(entry)
+    return _block(status_counts, reason_counts, miss_reason_counts, extra)
 
 
 def summarize(rows: Iterable[Any], *, sample: int = 20) -> dict[str, Any]:
@@ -287,17 +360,15 @@ def summarize(rows: Iterable[Any], *, sample: int = 20) -> dict[str, Any]:
     were *not* fully inspected - the list an operator needs in order to say
     which items are still open.
     """
-    status_counts: dict[str, int] = {}
-    reason_counts: dict[str, int] = {}
+    triples: list[tuple[str, str, int]] = []
     missing: list[dict[str, str]] = []
     for row in rows:
         status, reason = _row_pair(row)
-        status_counts[status] = status_counts.get(status, 0) + 1
-        code = normalize_reason(status, reason)
-        reason_counts[code] = reason_counts.get(code, 0) + 1
+        triples.append((status, reason, 1))
         if status != COMPLETE and len(missing) < sample:
-            missing.append(_sample(status, code, _row_name(row)))
-    return _block(status_counts, reason_counts, missing)
+            missing.append(_sample(status, normalize_reason(status, reason), _row_name(row)))
+    status_counts, reason_counts, miss_reason_counts, _ = _tally(triples)
+    return _block(status_counts, reason_counts, miss_reason_counts, missing)
 
 
 def merge(blocks: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -307,7 +378,8 @@ def merge(blocks: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     percentages would let a 100-file source outvote a 10 000-file one.
     """
     by_status: dict[str, int] = {}
-    reasons: dict[str, int] = {}
+    reasons: dict[str, dict[str, Any]] = {}
+    miss_reasons: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, str]] = []
     for block in blocks:
         if not block or not block.get("total"):
@@ -315,11 +387,10 @@ def merge(blocks: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         for item in block.get("by_status") or []:
             status = str(item.get("status") or "")
             by_status[status] = by_status.get(status, 0) + int(item.get("count") or 0)
-        for item in block.get("reasons") or []:
-            code = str(item.get("code") or "")
-            reasons[code] = reasons.get(code, 0) + int(item.get("count") or 0)
+        _absorb_reason_rows(reasons, block.get("reasons") or [])
+        _absorb_reason_rows(miss_reasons, block.get("miss_reasons") or [])
         samples.extend(block.get("samples") or [])
-    return _block(by_status, reasons, samples)
+    return _block_from_rows(by_status, _reason_list(reasons), _reason_list(miss_reasons), samples)
 
 
 def statement(block: Mapping[str, Any]) -> str:

@@ -82,6 +82,11 @@ def asset_sources(db: Session, *, sample: int = 5) -> list[dict[str, Any]]:
         )
         block["key"] = source_kind
         block["label"] = source_label(source_kind)
+        # ``merge`` concatenates the samples of every source into the one list
+        # the report prints, so each row has to carry where it came from - a
+        # path without its collector does not tell an operator whom to ask.
+        for entry in block["samples"]:
+            entry["source"] = block["label"]
         blocks.append(block)
     return blocks
 
@@ -106,10 +111,11 @@ def network(db: Session, *, limit: int = 50) -> dict[str, Any]:
         encrypted += int((payload.get("coverage") or {}).get("encrypted_streams") or 0)
         objects += len(payload.get("objects") or [])
     captures = len(seen)
-    note = "网络流量为被动采集，平台不解密 TLS。"
+    # The label already states the capability ("不解密 TLS"), so the note only
+    # has to say what that cost this run.
+    note = ""
     if encrypted:
-        note += (f"本次有 {encrypted} 条加密流未能解读，按未检查计——"
-                 "它们的内容没有参与检测，也不代表其中没有敏感数据。")
+        note = ("这些加密流的内容没有参与检测，也不代表其中没有敏感数据，按未检查计。")
     return {
         "key": "network",
         "label": "网络流量（被动采集，不解密 TLS）",

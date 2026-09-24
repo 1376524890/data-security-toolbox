@@ -8,7 +8,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 
 
-def build_summary(assets: list[dict[str, Any]], files: list[dict[str, Any]], pcaps: list[dict[str, Any]], anomalies: list[dict[str, Any]], audit: dict[str, Any], findings: list[dict[str, Any]] | None = None, data_assets: list[dict[str, Any]] | None = None, incidents: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def build_summary(assets: list[dict[str, Any]], files: list[dict[str, Any]], pcaps: list[dict[str, Any]], anomalies: list[dict[str, Any]], audit: dict[str, Any], findings: list[dict[str, Any]] | None = None, data_assets: list[dict[str, Any]] | None = None, incidents: list[dict[str, Any]] | None = None, coverage: dict[str, Any] | None = None) -> dict[str, Any]:
     findings = findings or []
     data_assets = data_assets or []
     incidents = incidents or []
@@ -24,14 +24,18 @@ def build_summary(assets: list[dict[str, Any]], files: list[dict[str, Any]], pca
         "incident_count": len(incidents),
         "integration_finding_count": len(integration_findings),
         "audit": audit,
+        # Carried inside the summary rather than only into the template: the
+        # stored report is what the console lists, and a coverage statement a
+        # reader cannot see next to the counts is the gap this closes.
+        "coverage": coverage or {},
     }
 
 
-def render_html(summary: dict[str, Any], assets: list[dict[str, Any]], files: list[dict[str, Any]], pcaps: list[dict[str, Any]], anomalies: list[dict[str, Any]], findings: list[dict[str, Any]] | None = None, data_assets: list[dict[str, Any]] | None = None, incidents: list[dict[str, Any]] | None = None) -> str:
+def render_html(summary: dict[str, Any], assets: list[dict[str, Any]], files: list[dict[str, Any]], pcaps: list[dict[str, Any]], anomalies: list[dict[str, Any]], findings: list[dict[str, Any]] | None = None, data_assets: list[dict[str, Any]] | None = None, incidents: list[dict[str, Any]] | None = None, coverage: dict[str, Any] | None = None) -> str:
     template_root = resource_files("app").joinpath("templates/reports")
     env = Environment(loader=FileSystemLoader(str(template_root)), autoescape=select_autoescape(["html"]))
     template = env.get_template("report.html.j2")
-    return template.render(summary=summary, assets=assets, files=files, pcaps=pcaps, anomalies=anomalies, findings=findings or [], data_assets=data_assets or [], incidents=incidents or [])
+    return template.render(summary=summary, assets=assets, files=files, pcaps=pcaps, anomalies=anomalies, findings=findings or [], data_assets=data_assets or [], incidents=incidents or [], coverage=coverage or summary.get("coverage") or {})
 
 
 def render_pdf(html: str, output: Path) -> Path:

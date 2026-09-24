@@ -42,6 +42,7 @@ from app.models import (
     Report,
 )
 from app.schemas import GenerateReportRequest, LogAnalysisRequest
+from app.services import coverage_service
 from app.services.audit_service import audit_summary, log_analysis
 from app.services.report_service import build_summary, render_html, render_pdf
 
@@ -106,6 +107,10 @@ def generate_report(
         serialize_incident(item)
         for item in db.scalars(select(Incident).order_by(Incident.risk_score.desc())).all()
     ]
+    # Which collection paths actually reached their scope. Read from
+    # ``asset_instances`` by source, not from the lists above: those lists are
+    # capped by pagination concerns and say nothing about what was *not* read.
+    coverage = coverage_service.report(db)
     summary = build_summary(
         assets,
         files,
@@ -115,8 +120,10 @@ def generate_report(
         findings,
         data_assets,
         incidents,
+        coverage,
     )
-    html = render_html(summary, assets, files, pcaps, anomalies, findings, data_assets, incidents)
+    html = render_html(summary, assets, files, pcaps, anomalies, findings, data_assets,
+                       incidents, coverage)
     report_format = payload.format
     stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     output = settings.report_dir / f"{payload.title.replace(' ', '_')}_{stamp}.{report_format}"
