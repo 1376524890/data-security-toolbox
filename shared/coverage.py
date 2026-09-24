@@ -211,6 +211,74 @@ def _row_name(row: Any) -> str:
     return str(getattr(row, "name", "") or getattr(row, "path", "") or "")
 
 
+def _sample(status: str, code: str, name: str) -> dict[str, str]:
+    return {
+        "name": name,
+        "status": status,
+        "status_label": status_label(status),
+        "reason": code,
+        "reason_label": label(code),
+    }
+
+
+def _block(status_counts: Mapping[str, int], reason_counts: Mapping[str, int],
+           samples: list[dict[str, str]]) -> dict[str, Any]:
+    """Assemble the block from counted parts - the one place its shape is set."""
+    total = sum(status_counts.values())
+    complete = status_counts.get(COMPLETE, 0)
+    partial = status_counts.get(PARTIAL, 0)
+    inspected = complete + partial
+    block: dict[str, Any] = {
+        "total": total,
+        "complete": complete,
+        "partial": partial,
+        "inspected": inspected,
+        "not_inspected": total - inspected,
+        #: Share read *in full*. A partial read is deliberately left out: a file
+        #: whose long lines were clipped, or one sampled head/middle/tail, is not
+        #: covered, and a headline that counted it as such would be exactly the
+        #: false claim this module exists to prevent. (An earlier version of this
+        #: function reported "100%" for a source whose six items were all partial.)
+        "coverage_percent": round(complete * 100.0 / total, 1) if total else 0.0,
+        "by_status": [
+            {"status": status, "label": status_label(status), "count": count}
+            for status, count in sorted(status_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "reasons": [
+            {"code": code, "label": label(code), "count": count}
+            for code, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "samples": samples[:20],
+    }
+    block["statement"] = statement(block)
+    return block
+
+
+def summarize_counts(pairs: Iterable[Any], *, samples: Iterable[Any] | None = None) -> dict[str, Any]:
+    """The coverage block for ``(status, reason, count)`` triples.
+
+    The aggregate path reads grouped counts rather than rows - 11 groups stand
+    for 15 000 instances - and it still has to produce the same block as the
+    row-by-row path. Both go through ``_block`` so the two can never disagree.
+    """
+    status_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    for item in pairs:
+        status, reason, count = str(item[0] or ""), str(item[1] or ""), int(item[2] or 0)
+        if not count:
+            continue
+        status_counts[status] = status_counts.get(status, 0) + count
+        code = normalize_reason(status, reason)
+        reason_counts[code] = reason_counts.get(code, 0) + count
+    extra = [_sample(*_sample_parts(entry)) for entry in (samples or [])]
+    return _block(status_counts, reason_counts, extra)
+
+
+def _sample_parts(entry: Any) -> tuple[str, str, str]:
+    status, reason = _row_pair(entry)
+    return status, normalize_reason(status, reason), _row_name(entry)
+
+
 def summarize(rows: Iterable[Any], *, sample: int = 20) -> dict[str, Any]:
     """Collapse rows into the coverage block a report or a card can render.
 
@@ -219,42 +287,17 @@ def summarize(rows: Iterable[Any], *, sample: int = 20) -> dict[str, Any]:
     were *not* fully inspected - the list an operator needs in order to say
     which items are still open.
     """
-    total = 0
-    by_status: dict[str, int] = {}
-    reasons: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
     missing: list[dict[str, str]] = []
     for row in rows:
         status, reason = _row_pair(row)
-        total += 1
-        by_status[status] = by_status.get(status, 0) + 1
+        status_counts[status] = status_counts.get(status, 0) + 1
         code = normalize_reason(status, reason)
-        reasons[code] = reasons.get(code, 0) + 1
+        reason_counts[code] = reason_counts.get(code, 0) + 1
         if status != COMPLETE and len(missing) < sample:
-            missing.append({
-                "name": _row_name(row),
-                "status": status,
-                "status_label": status_label(status),
-                "reason": code,
-                "reason_label": label(code),
-            })
-    inspected = sum(count for status, count in by_status.items() if status in INSPECTED)
-    block: dict[str, Any] = {
-        "total": total,
-        "inspected": inspected,
-        "not_inspected": total - inspected,
-        "coverage_percent": round(inspected * 100.0 / total, 1) if total else 0.0,
-        "by_status": [
-            {"status": status, "label": status_label(status), "count": by_status[status]}
-            for status in sorted(by_status, key=lambda item: (-by_status[item], item))
-        ],
-        "reasons": [
-            {"code": code, "label": label(code), "count": count}
-            for code, count in sorted(reasons.items(), key=lambda item: (-item[1], item[0]))
-        ],
-        "samples": missing,
-    }
-    block["statement"] = statement(block)
-    return block
+            missing.append(_sample(status, code, _row_name(row)))
+    return _block(status_counts, reason_counts, missing)
 
 
 def merge(blocks: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -263,16 +306,12 @@ def merge(blocks: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     Counts are re-derived from the parts rather than averaged: an average of
     percentages would let a 100-file source outvote a 10 000-file one.
     """
-    total = inspected = not_inspected = 0
     by_status: dict[str, int] = {}
     reasons: dict[str, int] = {}
     samples: list[dict[str, str]] = []
     for block in blocks:
         if not block or not block.get("total"):
             continue
-        total += int(block.get("total") or 0)
-        inspected += int(block.get("inspected") or 0)
-        not_inspected += int(block.get("not_inspected") or 0)
         for item in block.get("by_status") or []:
             status = str(item.get("status") or "")
             by_status[status] = by_status.get(status, 0) + int(item.get("count") or 0)
@@ -280,23 +319,7 @@ def merge(blocks: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             code = str(item.get("code") or "")
             reasons[code] = reasons.get(code, 0) + int(item.get("count") or 0)
         samples.extend(block.get("samples") or [])
-    merged: dict[str, Any] = {
-        "total": total,
-        "inspected": inspected,
-        "not_inspected": not_inspected,
-        "coverage_percent": round(inspected * 100.0 / total, 1) if total else 0.0,
-        "by_status": [
-            {"status": status, "label": status_label(status), "count": count}
-            for status, count in sorted(by_status.items(), key=lambda item: (-item[1], item[0]))
-        ],
-        "reasons": [
-            {"code": code, "label": label(code), "count": count}
-            for code, count in sorted(reasons.items(), key=lambda item: (-item[1], item[0]))
-        ],
-        "samples": samples[:20],
-    }
-    merged["statement"] = statement(merged)
-    return merged
+    return _block(by_status, reasons, samples)
 
 
 def statement(block: Mapping[str, Any]) -> str:
@@ -309,18 +332,16 @@ def statement(block: Mapping[str, Any]) -> str:
     total = int(block.get("total") or 0)
     if not total:
         return "本次未产生可统计的检查对象。"
-    parts = "、".join(
-        f"{item['label']} {item['count']} 项" for item in block.get("by_status") or []
-    )
-    inspected = int(block.get("inspected") or 0)
+    complete = int(block.get("complete") or 0)
+    partial = int(block.get("partial") or 0)
     not_inspected = int(block.get("not_inspected") or 0)
     percent = block.get("coverage_percent") or 0.0
-    tail = (
-        "未检查不等于无风险，未检查项需单独复核。"
-        if not_inspected
-        else "本次没有留下未检查项。"
-    )
+    if not partial and not not_inspected:
+        tail = "本次全部对象均已完整读取。"
+    else:
+        tail = ("部分读取只说明读到了内容的一部分，未读取说明内容没有参与检测；"
+                "两者都不代表其中没有敏感数据，需单独复核。")
     return (
-        f"共登记 {total} 项：{parts}。"
-        f"其中已读取内容 {inspected} 项（{percent}%），未检查 {not_inspected} 项。{tail}"
+        f"共登记 {total} 项：完整读取 {complete} 项（{percent}%）、"
+        f"部分读取 {partial} 项、未读取 {not_inspected} 项。{tail}"
     )
