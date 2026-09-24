@@ -32,7 +32,7 @@
 <仓库根>/
 ├── backend/                 # FastAPI + Celery 后端
 │   ├── app/
-│   │   ├── api/             # HTTP 路由，43 个模块按域拆分（v1.py 只做聚合）
+│   │   ├── api/             # HTTP 路由，41 个模块按域拆分（v1.py 只做聚合）
 │   │   ├── application/     # 分析编排（analysis.py）
 │   │   ├── core/            # 配置、数据库、日志、时间归一化等基础设施
 │   │   ├── deployment/      # 探针下发/回收的状态机与记录
@@ -41,7 +41,7 @@
 │   │   ├── incident_engine/ # 事件关联（Finding -> Incident）
 │   │   ├── integrations/    # 第三方适配器（Zeek/Suricata/MISP/离线导入等）
 │   │   ├── rules/           # 规则目录、规则库、解释器与同步
-│   │   ├── services/        # 领域服务（53 个模块 + data_objects 等子包）
+│   │   ├── services/        # 领域服务（46 个模块 + 6 个子包）
 │   │   ├── templates/reports/
 │   │   ├── threat_intel/    # 威胁情报引擎（IOC 匹配、CVE 关联）
 │   │   ├── workers/         # Celery 任务（按职责拆分）+ 注册名
@@ -94,7 +94,7 @@
 ## API 规范
 
 - 统一前缀 `/api/v1`；后端容器监听 8000，控制台由 nginx 监听容器内 80、宿主 `${HTTP_PORT}`（`.env` 默认 8080）。
-- 路由按域拆到 `app/api/` 下的独立模块（共 43 个）。`app/api/v1.py` **只做聚合**：它挂载 21 个子路由，
+- 路由按域拆到 `app/api/` 下的独立模块（41 个 .py，不含 `__init__.py`）。`app/api/v1.py` **只做聚合**：它挂载 20 个子路由，
   自身 `router_routes(v1.py)` 必须为空（由 `backend/tests/test_test_data_boundaries.py` 锁定）。
   另有 6 个路由器**不经 v1**、由 `app/main.py` 直接挂载：`deployments`(前缀 `/api/v1/probe-deployments`)、
   `extensions`、`libraries`、`profiles`、`data_catalog`、`rulesets`（后五者自带 `/api/v1` 前缀）。
@@ -232,7 +232,7 @@ worker 任务按职责分在 `workers/{analysis,notification,maintenance,deploym
 
 ## API 域路由边界
 
-`app/api/` 共 43 个模块。路由只做鉴权、分页与响应结构，判定与计算都在对应服务里；每个域都有
+`app/api/` 共 41 个模块。路由只做鉴权、分页与响应结构，判定与计算都在对应服务里；每个域都有
 `tests/test_*_boundaries.py` 冻结路径/方法、禁止复制共享守卫、并断言全应用无重复注册。
 **改任何一条路径前先跑对应边界测试。**
 

@@ -6,8 +6,8 @@
 小节描述的路由、页面、composable、测试**早已被删除**——`api/{rules,incidents,detections,engines}.py`、
 `frontend/src/modules/{operations,asset,threat,engines,tools}/` 与十余个 `*-state.test.ts` 都已不存在，
 「当前最新迁移」还停在 `0016_database_connections`（真实 head 是 `0019_policy_group_fingerprints`）。
-核对方法：抽出文中全部反引号路径逐条落到真实文件，**239 条源码路径里 75 条指向的文件根本不存在**；重写后同一脚本复核 **0 条悬空**。同时修正：仓库根路径（不再是 `00-数据安全工具箱/source/`）、`app/api/` 的 43 个真实模块与
-`/api/v1` 的 172 条路径、v1 只聚合 21 个子路由而另有 6 个路由器由 `main.py` 直挂、前端只有 8 条真实路由
+核对方法：抽出文中全部反引号路径逐条落到真实文件，**239 条源码路径里 75 条指向的文件根本不存在**；重写后同一脚本复核 **0 条悬空**。同时修正：仓库根路径（不再是 `00-数据安全工具箱/source/`）、`app/api/` 的 41 个真实模块与
+`/api/v1` 的 172 条路径、v1 只聚合 20 个子路由而另有 6 个路由器由 `main.py` 直挂、前端只有 8 条真实路由
 （其余是深链重定向）、`domain/` `application/` `schemas.py` `templates/` 等真实目录。新增「存储与容量保护」
 「配置与账号」两节，把 `storage_guard` 的两道限制写成硬约束；**删掉原先写死在文档里的管理口令与主机地址**
 （改为指向 `.env` 与本文档），主机地址不再进版本库。
