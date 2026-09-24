@@ -1,5 +1,36 @@
 # 项目状态
 
+2026-09-24 第五十一批（本轮）：**AGENTS.md 对齐真实代码 + 释放本机存储**。本轮不改代码、不改 API、不改库结构。
+
+**AGENTS.md 重写（639 → 344 行）**。原文件是 40 多个批次笔记的堆叠，其中十余个「域路由入口」与「页状态边界」
+小节描述的路由、页面、composable、测试**早已被删除**——`api/{rules,incidents,detections,engines}.py`、
+`frontend/src/modules/{operations,asset,threat,engines,tools}/` 与十余个 `*-state.test.ts` 都已不存在，
+「当前最新迁移」还停在 `0016_database_connections`（真实 head 是 `0019_policy_group_fingerprints`）。
+核对方法：抽出文中全部反引号路径逐条落到真实文件，**239 条源码路径里 75 条指向的文件根本不存在**；重写后同一脚本复核 **0 条悬空**。同时修正：仓库根路径（不再是 `00-数据安全工具箱/source/`）、`app/api/` 的 43 个真实模块与
+`/api/v1` 的 172 条路径、v1 只聚合 21 个子路由而另有 6 个路由器由 `main.py` 直挂、前端只有 8 条真实路由
+（其余是深链重定向）、`domain/` `application/` `schemas.py` `templates/` 等真实目录。新增「存储与容量保护」
+「配置与账号」两节，把 `storage_guard` 的两道限制写成硬约束；**删掉原先写死在文档里的管理口令与主机地址**
+（改为指向 `.env` 与本文档），主机地址不再进版本库。
+
+**释放本机存储**。`/home` 与 `/data` 是同一块盘（`/dev/sdd5`），docker root 也在上面，当时 **93% 已用、仅剩 22 GB**，
+平台的 `storage_guard` 因为低于可用空间下限**已开始拒绝上传**（探针采不到、只能看到 429）。清理后 **59% 已用、
+可用 116 GB**，约释放 **95 GB**：
+
+- `docker image prune -f`：176 个悬空镜像（历次重建的中间层）回收 **62.7 GB**，镜像数 226 → 54；
+  `docker builder prune -f` 清完构建缓存。
+- 旧发布产物：`dist-release/` 下 2.14.0 / 3.0.0 / 3.1.0 / 3.2.0 的 tar.gz 与解包目录、以及 3.3.0 的解包暂存目录
+  约 **20 GB**。**保留** 3.3.0 的 `tar.gz` + `.sha256`（清理后 `sha256sum -c` 校验通过）+ `extras/`。
+- 已被取代的部署包 `dist-deploy/`、`dist-deploy.tar`、`dist-deploy.zip`（09-14 的 3.0.0 期产物）：**6.9 GB**。
+- 本项目旧栈的悬空卷 `0901-_*`、`0916_v27_*`、`dsttest_*`：**7.1 GB**。判定依据是 compose 的
+  `com.docker.compose.project` 标签 + 已无任何容器引用；**其它项目的悬空卷一个没动**。
+- `deploy-data/backend/storage/pcap_objects` 里 **278 个孤儿对象目录**（pcap 行早已删除、文件留在盘上，
+  磁盘 1181 个目录 vs 库内 1091 条 pcap 行）：**3.9 GB**。按库内 id 集合求差集后逐个删除，未碰任何有主目录。
+- `0916_v2.7/` 空脚手架、docker builder 缓存：收尾。
+
+**没有动的**：`deploy-data/`（本地栈的实时库与存储，只清孤儿文件）、`dist-offline/security-toolbox-images.tar`
+（3.3.0 的离线镜像包，与解包目录硬链接）、`probe_packages/`、手工测试样本，以及其它项目的镜像/容器/卷。
+清理后本地栈 8 个容器仍 healthy、`/api/v1/health` 返回 `ok`；`deploy-data/backend/storage/pcap_objects` 12 G → 7.3 G。
+
 2026-09-24 第五十批（本轮）：**平台升到 3.3.0**。四项需求一起落码：①页面自动刷新；②列表筛选与按列排序；
 ③OCR/图像识别判断红头、涉密文件并并入数据安全扫描；④产品名改为「数据安全监测检测工具箱」。
 本轮**无新增 Alembic 迁移**（head 仍为 `0019_policy_group_fingerprints`），探针保持 3.7.0。
