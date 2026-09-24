@@ -116,6 +116,27 @@ def test_failed_connection_is_terminal_without_password_echo(monkeypatch):
         assert 'never-return-this' not in task.error
 
 
+def test_a_transport_code_survives_instead_of_being_flattened():
+    """``SourceError`` carries the code; ``category`` must not throw it away.
+
+    ``connect``/``entries`` wrap a transport failure as ``SourceError(category(exc))``
+    - a 550, a DNS failure, a timeout. Re-deriving the category from that wrapper
+    used to return ``source_error`` for all of them, so the reason column an
+    operator reads could not tell a wrong password from a missing directory.
+    """
+    assert adapters.category(adapters.SourceError("auth_error")) == "auth_error"
+    assert adapters.category(adapters.SourceError("path_error")) == "path_error"
+    assert adapters.category(adapters.SourceError("host_key_mismatch")) == "host_key_mismatch"
+
+
+def test_an_exception_name_is_still_never_echoed():
+    """The one thing the reason column must never carry is a class name."""
+    assert adapters.category(ValueError("boom")) == "source_error"
+    assert adapters.category(adapters.SourceError("SSHException")) == "source_error"
+    assert adapters.category(adapters.SourceError("530 Login incorrect")) == "source_error"
+    assert adapters.category(adapters.SourceError("")) == "source_error"
+
+
 def test_a_root_that_cannot_be_listed_is_never_a_complete_scope(monkeypatch):
     """A missing root must not read as "Success / 0 files".
 
@@ -141,8 +162,11 @@ def test_a_root_that_cannot_be_listed_is_never_a_complete_scope(monkeypatch):
         assert result['assets'] == 0
         assert result['complete_scope'] is False
         assert result['termination_reason'] == 'unreadable'
-        assert result['unreadable'] == [{'path': '/share', 'reason': 'SourceError',
-                                        'fallback': 'SourceError'}]
+        # The code the adapter raised, not "SourceError": the reason column is
+        # what the console and the report print, and a class name says nothing
+        # about the operator's data (see ``adapters.category``).
+        assert result['unreadable'] == [{'path': '/share', 'reason': 'unreadable_root',
+                                        'fallback': 'unreadable_root'}]
         db.refresh(task)
         assert task.status == 'Failed'
 

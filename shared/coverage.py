@@ -99,7 +99,25 @@ REASON_LABELS: dict[str, str] = {
     "resource_limit": "达到资源上限",
     "unconfigured": "未配置扫描范围",
     "unreadable": "内容无法读取",
+    # Transport failures from ``services/file_scan/adapters.py::category``. These
+    # are the codes the reason column actually carries for a file-source scan, so
+    # a missing label here is the difference between "认证失败" and ``auth_error``.
     "source_error": "读取来源出错",
+    "auth_error": "认证失败",
+    "path_error": "路径不存在或无权限",
+    "protocol_error": "对端协议错误",
+    "dns_error": "域名解析失败",
+    "unreachable": "网络不可达",
+    "host_key_mismatch": "主机密钥不匹配",
+    "directory_entry_budget": "达到目录条目上限",
+    "source_busy": "数据源正在被其他任务扫描",
+    "unsupported_protocol": "协议不支持",
+    "invalid_remote_name": "远端文件名不合法",
+    "invalid_host": "主机地址不合法",
+    "invalid_username": "用户名不合法",
+    "invalid_root_path": "根路径不合法",
+    "invalid_name": "名称不合法",
+    "unreadable_root": "根目录无法列出",
     "unspecified": "未记录具体原因",
     # Content-level: the file itself was read incompletely.
     "sampled": "按头/中/尾采样",
@@ -339,7 +357,8 @@ def _tally(pairs: Iterable[Any]) -> tuple[dict[str, int], dict[str, int], dict[s
     return status_counts, reason_counts, miss_reason_counts, total
 
 
-def summarize_counts(pairs: Iterable[Any], *, samples: Iterable[Any] | None = None) -> dict[str, Any]:
+def summarize_counts(pairs: Iterable[Any], *,
+                     samples: Iterable[Any] | None = None) -> dict[str, Any]:
     """The coverage block for ``(status, reason, count)`` triples.
 
     The aggregate path reads grouped counts rather than rows - eleven groups

@@ -31,6 +31,12 @@ _LIST_ROW = re.compile(
 )
 
 
+#: Our own codes are lowercase snake_case (``auth_error``, ``path_error``). A
+#: message that does not look like one is not a code we produced, so it is not
+#: echoed either.
+_SOURCE_CODE = re.compile(r"^[a-z][a-z0-9_]{2,39}$")
+
+
 def category(exc):
     """A stable label for a transport failure; server text is never echoed.
 
@@ -40,6 +46,14 @@ def category(exc):
     which the console and the generated report both print. Which library raised
     belongs in the log, not in a deliverable.
     """
+    if isinstance(exc, SourceError):
+        # Our own exception already carries a code - either a fixed literal or a
+        # ``category()`` result wrapped by ``connect``/``entries``. Re-deriving
+        # the category here used to flatten every one of them to
+        # ``source_error``: a 550 on a missing directory and a DNS failure were
+        # stored identically, so the reason column told the operator nothing.
+        text = str(exc.args[0]) if exc.args else ""
+        return text if _SOURCE_CODE.match(text) else "source_error"
     if isinstance(exc, ftplib.error_perm):
         reply = str(exc)
         if reply.startswith("530"):
