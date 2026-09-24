@@ -144,8 +144,8 @@ def run(db, task_id):
                                 if _is_global_stop(exc):
                                     raise
                                 unreadable.append({'path': directory,
-                                                   'reason': type(listing_error).__name__,
-                                                   'fallback': type(exc).__name__})
+                                                   'reason': adapters.category(listing_error),
+                                                   'fallback': adapters.category(exc)})
                                 skipped += 1
                                 # A directory that could not be listed means the
                                 # scope was not covered. Leaving ``complete`` true
@@ -220,12 +220,13 @@ def run(db, task_id):
                                     # A file we could not read is recorded as failed
                                     # rather than dropped: an unreadable asset must
                                     # never look like a clean one.
+                                    failed_reason = adapters.category(exc)
                                     scan = {'counts': {}, 'hits': [], 'rows': 0,
                                             'coverage': 'failed',
-                                            'reason': type(exc).__name__}
+                                            'reason': failed_reason}
                                     unreadable.append({'path': path,
-                                                       'reason': type(exc).__name__})
-                                    complete, reason = False, type(exc).__name__
+                                                       'reason': failed_reason})
+                                    complete, reason = False, failed_reason
                                 finally:
                                     local.unlink(missing_ok=True)
                             instance, added, modified = ingest.store(db, source, task, path, size,
@@ -245,7 +246,7 @@ def run(db, task_id):
                             db.commit()
     except Exception as exc:
         complete = False
-        reason = str(exc) if isinstance(exc, adapters.SourceError) else type(exc).__name__
+        reason = str(exc) if isinstance(exc, adapters.SourceError) else adapters.category(exc)
         errors.append(reason)
         db.rollback()
         task = db.get(Task, task_id)

@@ -32,7 +32,14 @@ _LIST_ROW = re.compile(
 
 
 def category(exc):
-    """A stable label for a transport failure; server text is never echoed."""
+    """A stable label for a transport failure; server text is never echoed.
+
+    The fallback is a fixed code rather than ``type(exc).__name__``: the class
+    name of a third-party exception is not something an operator can act on, and
+    this value is written straight into ``asset_instances.termination_reason``,
+    which the console and the generated report both print. Which library raised
+    belongs in the log, not in a deliverable.
+    """
     if isinstance(exc, ftplib.error_perm):
         reply = str(exc)
         if reply.startswith("530"):
@@ -48,7 +55,7 @@ def category(exc):
         return "dns_error"
     if isinstance(exc, OSError):
         return "unreachable"
-    return type(exc).__name__
+    return "source_error"
 
 
 class PinnedKey(paramiko.MissingHostKeyPolicy):

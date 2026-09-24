@@ -228,7 +228,10 @@ def extract(path: Path, *, budget=None, max_pages: int = MAX_PAGES,
 
         if isinstance(exc, BudgetExceeded):
             raise
-        return OcrResult(coverage=COVERAGE_FAILED, reason=type(exc).__name__)
+        # ``ocr_error``, not ``type(exc).__name__``: the class name of a
+        # third-party failure says which library broke, and this value is shown
+        # to the operator and copied into the report.
+        return OcrResult(coverage=COVERAGE_FAILED, reason="ocr_error")
 
 
 def _extract_image(path: Path, budget, max_chars: int) -> OcrResult:

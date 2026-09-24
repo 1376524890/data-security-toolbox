@@ -7,6 +7,7 @@ from app.services import sensitive_engine, sensitivity_map
 from app.services import fingerprint_candidates
 from app.services.data_objects.evidence import _evidence_rows, _merge_detection
 from app.services.data_objects.persistence import _get_or_create, recount_object
+from shared.coverage import normalize_reason
 from shared.scanning import document_types, magic, ocr
 from shared.scanning.budget import ScanBudget
 from shared.scanning.parsers import parse_file
@@ -63,6 +64,11 @@ def analyze(path, limits=None):
     if ocr_status.get('coverage') in {'complete', 'partial'}:
         # The document was read after all, through OCR.
         coverage, reason = 'partial', 'ocr_read'
+    # ``parsed.coverage`` and ``parsed.termination_reason`` are independent
+    # fields in the parsers, and a parser that decides "partial" without also
+    # recording why leaves the reason at its ``complete`` default. Storing that
+    # pair verbatim is what put "部分内容 / 正常完成" in the console.
+    reason = normalize_reason(coverage, reason)
     return {'hits': hits, 'counts': counts, 'coverage': coverage, 'reason': reason,
             'rows': parsed.rows_read, 'ocr': ocr_status, 'document_signals': document_signals}
 
