@@ -24,11 +24,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from shared import coverage as terms
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import AnalysisResult, AssetInstance, Task
+from shared import coverage as terms
 
 #: ``asset_instances.source_kind`` -> the collection path that wrote the row.
 #: These are the values the writers actually use (``data_objects/ingestion.py``,
@@ -39,6 +39,23 @@ SOURCE_LABELS: dict[str, str] = {
     "file_share": "文件来源扫描",
     "database": "数据库直连盘点",
 }
+
+
+#: The one value an operator can select that is not a stored status.
+INCOMPLETE = "incomplete"
+
+
+def coverage_clause(value: str) -> Any:
+    """The ``AssetInstance.coverage`` filter for a console-selected value.
+
+    ``incomplete`` answers "what did we not read?", which no single status does:
+    only ``complete`` means the content was read in full, so everything else
+    answers it. Defined here, next to the vocabulary, instead of in the route.
+    """
+    text = str(value or "").strip().lower()
+    if text == INCOMPLETE:
+        return AssetInstance.coverage != terms.COMPLETE
+    return AssetInstance.coverage == text
 
 
 def source_label(source_kind: str | None) -> str:

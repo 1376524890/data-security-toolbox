@@ -22,7 +22,7 @@ export function useRiskFiles() {
   const rows = ref<RiskFile[]>([])
   const total = ref(0)
   const filters = reactive({
-    page: 1, page_size: 50, search: '', source_kind: '', severity: '',
+    page: 1, page_size: 50, search: '', source_kind: '', severity: '', coverage: '',
     order_by: undefined as string | undefined,
   })
 

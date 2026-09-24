@@ -19,6 +19,16 @@ const {
 
 const SOURCES = [{ l: '主机文件', v: 'file' }, { l: '共享文件', v: 'file_share' }, { l: '数据库', v: 'database' }]
 const SEVERITIES = ['Critical', 'High', 'Medium', 'Low']
+// `incomplete` is the report's "what did we not read?" question, not a stored
+// status: 内容完整 is the only answer that means the content was read in full.
+const COVERAGES = [
+  { l: '未完整读取', v: 'incomplete' },
+  { l: formatCoverage('complete'), v: 'complete' },
+  { l: formatCoverage('partial'), v: 'partial' },
+  { l: formatCoverage('unsupported'), v: 'unsupported' },
+  { l: formatCoverage('unavailable'), v: 'unavailable' },
+  { l: formatCoverage('failed'), v: 'failed' },
+]
 
 /** One matched value, with the line it came from when the collector sent one. */
 function matchLabel(match: { value: string; context?: string }): string {
@@ -43,6 +53,9 @@ function evidenceCount(point: RiskPoint): number {
       </el-select>
       <el-select v-model="filters.severity" clearable placeholder="全部风险等级" style="width: 150px" @change="load()">
         <el-option v-for="item in SEVERITIES" :key="item" :label="item" :value="item" />
+      </el-select>
+      <el-select v-model="filters.coverage" clearable placeholder="全部覆盖率" style="width: 150px" @change="load()">
+        <el-option v-for="item in COVERAGES" :key="item.v" :label="item.l" :value="item.v" />
       </el-select>
       <el-button @click="load">刷新</el-button>
     </div>

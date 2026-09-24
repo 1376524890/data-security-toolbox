@@ -64,7 +64,7 @@
   {% endif %}
 
   {% if coverage.overall.samples %}
-  <p class="meta">未完整读取的对象（下表为举例，共 {{ coverage.overall.samples|length }} 条；完整清单见控制台）：</p>
+  <p class="meta">未完整读取的对象（下表为举例，共 {{ coverage.overall.samples|length }} 条；完整清单见控制台「文件证据 → 风险文件」，覆盖率选「未完整读取」——该列表只列已命中敏感规则的实例）：</p>
   <table>
     <tr><th>采集来源</th><th>对象</th><th>状态</th><th>原因</th></tr>
     {% for s in coverage.overall.samples %}

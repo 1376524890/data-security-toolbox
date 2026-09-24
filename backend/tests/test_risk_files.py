@@ -132,3 +132,41 @@ def test_download_returns_the_whole_file(monkeypatch) -> None:
 def _owner_key(instance_id: int) -> str:
     with SessionLocal() as db:
         return db.get(AssetInstance, instance_id).owner_key
+
+def test_the_list_can_be_asked_for_what_was_not_read_in_full() -> None:
+    """The generated report points here, so this filter has to answer it.
+
+    ``complete`` is the only status whose content was read in full, so
+    ``incomplete`` is "everything else" - the partial read and the three ways a
+    file can be listed without being inspected. A filter that only matched a
+    stored value could not answer the report's question at all.
+    """
+    with TestClient(app) as client:
+        probe_id, token = _register_probe(client, "coverage-filter-probe")
+        rows = [
+            _file("/srv/cov/read.csv", sha=_h("cov-complete")),
+            _file("/srv/cov/clipped.csv", sha=_h("cov-partial")),
+            _file("/srv/cov/image.png", sha=_h("cov-unsupported")),
+            _file("/srv/cov/scan.pdf", sha=_h("cov-unavailable")),
+            _file("/srv/cov/broken.xlsx", sha=_h("cov-failed")),
+        ]
+        for row, (coverage, reason) in zip(rows, [
+            ("complete", "complete"), ("partial", "line_truncated"),
+            ("unsupported", "binary_metadata_only"), ("unavailable", "ocr_unavailable"),
+            ("failed", "source_error"),
+        ], strict=True):
+            row["evidence"]["coverage"] = coverage
+            row["evidence"]["termination_reason"] = reason
+        assert _post(client, probe_id, token, _report("r-coverage-filter", rows)).status_code == 200
+
+        def paths(query: str) -> set[str]:
+            body = client.get(f"/api/v1/asset-instances?probe_id={probe_id}&{query}").json()
+            return {item["path"] for item in body["items"]}
+
+        assert paths("coverage=incomplete") == {
+            "/srv/cov/clipped.csv", "/srv/cov/image.png",
+            "/srv/cov/scan.pdf", "/srv/cov/broken.xlsx",
+        }
+        assert paths("coverage=complete") == {"/srv/cov/read.csv"}
+        assert paths("coverage=partial") == {"/srv/cov/clipped.csv"}
+        assert paths("coverage=unsupported") == {"/srv/cov/image.png"}

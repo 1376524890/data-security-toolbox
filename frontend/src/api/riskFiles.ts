@@ -38,6 +38,8 @@ export interface RiskFileQuery {
   search?: string
   source_kind?: string
   severity?: string
+  /** A stored status, or `incomplete` for "everything but 内容完整". */
+  coverage?: string
   /** `field` ascending, `-field` descending; see `useTableSort`. */
   order_by?: string
   page: number
@@ -117,7 +119,8 @@ export function listRiskFiles(query: RiskFileQuery): Promise<PageResult<RiskFile
   return apiGet('/asset-instances', {
     sensitive_only: true, page: query.page, page_size: query.page_size,
     search: query.search || undefined, source_kind: query.source_kind || undefined,
-    severity: query.severity || undefined, order_by: query.order_by || undefined,
+    severity: query.severity || undefined, coverage: query.coverage || undefined,
+    order_by: query.order_by || undefined,
   })
 }
 

@@ -76,6 +76,16 @@ describe('risk files state', () => {
     expect(state.revealAll.value).toBe(true)
   })
 
+  it('asks the server for the rows that were not read in full', async () => {
+    vi.mocked(listRiskFiles).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
+    const state = useRiskFiles()
+    // The generated report points an operator here, so the page has to be able
+    // to ask the question the report asks: which objects did we not read?
+    state.filters.coverage = 'incomplete'
+    await state.load()
+    expect(listRiskFiles).toHaveBeenLastCalledWith(expect.objectContaining({ coverage: 'incomplete' }))
+  })
+
   it('reports a failed source read without losing the risk points already shown', async () => {
     vi.mocked(listRiskFiles).mockResolvedValue({ items: [file], total: 1, page: 1, page_size: 50 })
     vi.mocked(getRiskPoints).mockResolvedValue(points)

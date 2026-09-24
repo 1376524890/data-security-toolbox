@@ -43,7 +43,7 @@ from app.models import (
     Probe,
     Task,
 )
-from app.services import sensitivity_map
+from app.services import coverage_service, sensitivity_map
 from app.services.audit_service import record_audit
 from app.services.data_objects import definitions, projection, queries
 from app.services.masking import masked
@@ -287,6 +287,7 @@ def list_asset_instances(probe_id: int | None = None, object_id: int | None = No
                          status: str | None = None, category: str | None = None,
                          instance_type: str | None = None, search: str | None = None,
                          source_kind: str | None = None, severity: str | None = None,
+                         coverage: str | None = None,
                          task_id: int | None = None,
                          owner_key: str | None = None, sensitive_only: bool = False,
                          order_by: str | None = None, page: int = Query(1, ge=1),
@@ -334,6 +335,10 @@ def list_asset_instances(probe_id: int | None = None, object_id: int | None = No
         query = query.where(AssetInstance.source_kind == str(source_kind).lower())
     if severity:
         query = query.where(AssetInstance.sensitivity == severity)
+    if coverage:
+        # The report tells a reader the full list of not-fully-read objects is
+        # here, so this filter is what makes that sentence true.
+        query = query.where(coverage_service.coverage_clause(coverage))
     if category:
         query = query.where(AssetInstance.categories.contains([str(category).lower()]))
     if search:
