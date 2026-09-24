@@ -119,6 +119,29 @@ Vue 的「无实例」告警，只是不自动起表。
   （`scripts/build_probe_packages.py --arch=arm64`，新 sha256 `29f2a0c6…`），
   并复核出包闸门 `verify_probe_package()`（逐字节比对包内 `probe/` 与 `shared/**/*.py`）**通过**。
 
+- **测试口径修正（收尾时发现）**：上面那组 35 failed / 8 errors 是在**没设 `SECRET_KEY`** 的容器里跑的。
+  `core/config.py` 的凭据加解密要求 `DATABASE_CREDENTIAL_KEY` 或 `SECRET_KEY`，而 `tests/conftest.py` 不设它，
+  于是多出 29 项 `CredentialError`（`test_database_credentials`、`test_database_scan_api`、`test_file_sources`、
+  `test_file_scan_exclusions`、`test_risk_files` 等）——**看着像真失败，其实是测试环境缺环境变量**。
+  按仓库既有跑法（`docker compose run backend pytest` 会带 `.env`）或显式
+  `SECRET_KEY=<.env 里的值> python -m pytest -q --ignore=tests/test_rule_libraries.py`，
+  结果收敛到 **11 failed / 1032 passed / 5 skipped（共收集 1048 项）**。
+- **同布局 A/B 复核**：把工作区换回 `70cba18` 同法再跑一次，基线 **20 failed / 989 passed / 5 skipped**；
+  `comm -13 base ours` **为空**——失败集合是基线的**真子集**，零回归（基线多出的 9 项是需要
+  `probe_packages/` 的分发包用例，干净 worktree 里没有该目录）。剩下 11 项全部是**改动前就红**的
+  断言过期 / 环境依赖项，清单与成因见 `docs/releases/v3.3.0.md` 第四节。
+- **真机验证（192.168.110.168 与 192.168.110.50）**：本机新镜像 `--force-recreate` 后 8 服务健康、
+  `/openapi.json` = 3.3.0、backend 容器内 `tesseract --list-langs` 有 `chi_sim`；前端下发**探针任务**
+  `PREFLIGHT → INSTALLING → ONLINE`、**检查任务** `Success`；OCR 用**真实样本**（带噪点、微旋转的 PNG
+  与无文本层 PDF）在发布镜像里复核：红头 → `DATA_REDHEAD_001` Medium、`机密★5年` → `DATA_CLASSIFIED_001`
+  High、对照表格不出结论。`.50` 停旧 3.2.0 栈并把 **3.0.0 / 3.2.0 的目录、包与数据一并删除**
+  （含 `deploy-data-3.0.0-backup`、`prev-20260923-192256`），`docker image prune -f` 回收 5.16 GB，
+  根分区 **89% → 29%**；随后部署 3.3.0，9 容器全 Up、health `ok`；从 `.50` 向 `.168` 下发探针任务
+  （`ONLINE`）与检查任务（探针侧 `probe_scan` Success、平台侧 `scan` Success 且写入
+  `result.crypto_profiles['192.168.110.168']`，密码评估页按资产常驻出结论）。
+  交付包 `dst-toolbox-3.3.0-linux-arm64.tar.gz` sha256
+  `9228d561e730ddbc645ff44c5e6e23a46075f4f1a72e527d438e66310605329e`，Git 标签 `v3.3.0`。
+
 **已知遗留（非本轮引入）**：`backend/tests/test_rule_libraries.py` 仍 import 早已在 `8080857` 删除的
 `app.api.rules`，会让 pytest 在收集阶段中断，全量跑必须带 `--ignore`；本机只构建了 arm64 运行时，
 `probe_packages/probe-3.7.0/amd64` 不存在，四个 amd64 分发包用例因此常红。
